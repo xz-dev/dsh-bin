@@ -1,0 +1,6 @@
+/.pi/
+/out/
+/work/
+node_modules/
+launcher/zig-out/
+launcher/.zig-cache/
