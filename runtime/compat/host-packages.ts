@@ -117,15 +117,29 @@ export function withInvocationAccessor<T extends new (...args: never[]) => objec
 	});
 }
 
-export type HostPackages = { packages: number; specifiers: number };
+export type HostPackages = { packages: number; specifiers: ReadonlySet<string> };
 
-export function installHostPackages(appDir: string): HostPackages {
-	const scope = hostScope(appDir);
+export type HostPackageOptions = {
+	/** Extra first-party packages (name → dir) outside the app tree, for example from an enabled addon. */
+	extra?: ReadonlyMap<string, string>;
+	/** Package root specifiers replaced by a fixed module namespace (declared degradations, D8). */
+	overrides?: ReadonlyMap<string, Record<string, unknown>>;
+	/** Specifiers whose host namespace is adapted before profiles see it (for example skill-office's node). */
+	wrap?: ReadonlyMap<string, (exports: Record<string, unknown>) => Record<string, unknown>>;
+};
+
+const CORDIS_WRAP = (exports: Record<string, unknown>) => ({ ...exports, Context: withInvocationAccessor(exports.Context as new () => object) });
+
+export function installHostPackages(appDir: string, options: HostPackageOptions = {}): HostPackages {
+	const scope = new Map([...hostScope(appDir), ...(options.extra ?? [])]);
+	const overrides = options.overrides ?? new Map();
+	const wrap = new Map([["@deepseek-ai/cordis", CORDIS_WRAP], ...(options.wrap ?? [])]);
 	const targets = new Map<string, string>();
 	for (const [name, dir] of scope) {
+		if (overrides.has(name)) continue;
 		for (const spec of packageSpecifiers(name, dir)) {
 			try {
-				targets.set(spec, Bun.resolveSync(spec, appDir));
+				targets.set(spec, Bun.resolveSync(spec, dir));
 			} catch {
 				// Export keys whose conditions Bun cannot select are not importable natively either.
 			}
@@ -134,11 +148,11 @@ export function installHostPackages(appDir: string): HostPackages {
 	Bun.plugin({
 		name: "dsh-bin:host-packages",
 		setup(build) {
+			for (const [spec, exports] of overrides) build.module(spec, () => ({ exports, loader: "object" }));
 			for (const [spec, target] of targets) {
 				build.module(spec, async () => {
 					const exports: Record<string, unknown> = { ...(await import(target)) };
-					if (spec === "@deepseek-ai/cordis") exports.Context = withInvocationAccessor(exports.Context as new () => object);
-					return { exports, loader: "object" };
+					return { exports: wrap.get(spec)?.(exports) ?? exports, loader: "object" };
 				});
 			}
 			// Filesystem-layout lookups (import.meta.resolve of `<pkg>/package.json`, then resolve.paths and
@@ -149,5 +163,5 @@ export function installHostPackages(appDir: string): HostPackages {
 			});
 		},
 	});
-	return { packages: scope.size, specifiers: targets.size };
+	return { packages: scope.size, specifiers: new Set([...overrides.keys(), ...targets.keys()]) };
 }

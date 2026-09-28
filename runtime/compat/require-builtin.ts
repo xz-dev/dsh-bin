@@ -28,9 +28,11 @@ function parentDir(parentURL: string | undefined): string {
 
 /**
  * Build the `requireBuiltin` export. `hostDir` is a directory inside the app tree; a specifier the
- * importer cannot resolve falls back to the host tree, as dsh's installation scope does.
+ * importer cannot resolve falls back to the host tree, as dsh's installation scope does. Specifiers in
+ * `virtuals` (host-package and degradation modules) are imported by name, so the Bun plugin serves them
+ * instead of the file a path resolution would bypass them with.
  */
-export function createRequireBuiltin(hostDir: string) {
+export function createRequireBuiltin(hostDir: string, virtuals: ReadonlySet<string> = new Set()) {
 	const resolveFrom = (specifier: string, dir: string) => {
 		try {
 			return Bun.resolveSync(specifier, dir);
@@ -46,6 +48,7 @@ export function createRequireBuiltin(hostDir: string) {
 			throw new UnsupportedBuiltinError("internal/modules/esm/loader#getOrCreateModuleJob");
 		},
 		import(specifier: string, parentURL: string | undefined) {
+			if (virtuals.has(specifier)) return import(specifier);
 			return import(esm.resolveSync(parentURL, { specifier }).url);
 		},
 	};
@@ -66,11 +69,11 @@ export function createRequireBuiltin(hostDir: string) {
 	};
 }
 
-export function installRequireBuiltin(hostDir: string): void {
+export function installRequireBuiltin(hostDir: string, virtuals?: ReadonlySet<string>): void {
 	Bun.plugin({
 		name: "dsh-bin:require-builtin",
 		setup(build) {
-			build.module(REQUIRE_BUILTIN_SPECIFIER, () => ({ exports: createRequireBuiltin(hostDir), loader: "object" }));
+			build.module(REQUIRE_BUILTIN_SPECIFIER, () => ({ exports: createRequireBuiltin(hostDir, virtuals), loader: "object" }));
 		},
 	});
 }
