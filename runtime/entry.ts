@@ -1,6 +1,6 @@
 // Compiled entry (D1): install the Bun compatibility layer (D3), then run dsh from the on-disk app tree
 // next to this executable (`bundles/<v>/dsh-native` + `bundles/<v>/app`).
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { dshArgv } from "./argv.ts";
 import { officeWiring, SKILL_OFFICE, withOfficeNode } from "./compat/addons.ts";
@@ -8,8 +8,16 @@ import { degradedPlugin, HMR_DEGRADATION } from "./compat/degradations.ts";
 import { installHostPackages } from "./compat/host-packages.ts";
 import { installNodeModuleCompat } from "./compat/node-module-compat.ts";
 import { installRequireBuiltin } from "./compat/require-builtin.ts";
+import { USAGE_GUARD } from "./layout.ts";
+import { holdSessionClaim } from "./usage-claim.ts";
 
 const bundleDir = dirname(process.execPath);
+// D4: directly started processes (in-app restarts) take the same shared claim the launcher takes.
+const guard = join(bundleDir, USAGE_GUARD);
+if (existsSync(guard) && holdSessionClaim(guard) === "busy") {
+	process.stderr.write("dsh: this bundle is being removed by `dsh update`; start dsh again to use the active version\n");
+	process.exit(1);
+}
 const appDir = realpathSync(join(bundleDir, "app"));
 const binJs = join(appDir, "lib", "bin.js");
 
