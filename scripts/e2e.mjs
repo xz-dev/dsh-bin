@@ -99,6 +99,17 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 		}
 		r = await run(["update"]);
 		check(r.code === 0 && /already up to date/.test(r.out), "second update must be a no-op");
+		for (const argv of [["update", "self"], ["update", "dsh"], ["update", "--self"], ["update", "--all"]]) {
+			r = await run(argv);
+			check(r.code === 0 && /already up to date/.test(r.out), `${argv.join(" ")} must be up to date`);
+		}
+		r = await run(["list"]);
+		check(r.code === 0 && r.out.includes(v2.version), "list must show the installed version");
+		r = await run(["update", "--help"]);
+		check(r.code === 0 && r.out.includes("dsh update --clean"), "update --help");
+		const other = channel === "release" ? "live" : "release";
+		r = await run(["update", "--channel", other]);
+		check(idx.channels[other].some((e) => e.assets[t.id]) ? r.code === 0 : r.code === 1 && r.out.includes(other), `--channel ${other}`);
 
 		const office = idx.addons?.office?.length && v2.addons?.office?.pinned;
 		if (office) {
@@ -106,6 +117,12 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 			check(r.code === 0 && existsSync(join(root, "addons", "office", office)), "addon install");
 			r = await run(["list", "--addon", "office", "--json"]);
 			check(r.code === 0 && JSON.parse(r.out).addons[0].installed?.version === office, "list must show the installed addon");
+			r = await run(["install", "--addon", "office", "--version", office]);
+			check(r.code === 0, "install --addon office --version <pinned>");
+			r = await run(["update", "--addon", "office"]);
+			check(r.code === 0 && existsSync(join(root, "addons", "office", office)), "update --addon office");
+			r = await run(["update", "--all"]);
+			check(r.code === 0, "update --all with an addon");
 			r = await run(["uninstall", "--addon", "office"]);
 			check(r.code === 0 && !JSON.parse(readFileSync(join(root, "addons.json"), "utf8")).office, "addon uninstall");
 		}
