@@ -2,6 +2,7 @@
 // next to this executable (`bundles/<v>/dsh-native` + `bundles/<v>/app`).
 import { realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { dshArgv } from "./argv.ts";
 import { installHostPackages } from "./compat/host-packages.ts";
 import { installNodeModuleCompat } from "./compat/node-module-compat.ts";
 import { installRequireBuiltin } from "./compat/require-builtin.ts";
@@ -13,7 +14,6 @@ installRequireBuiltin(join(appDir, "lib"));
 installHostPackages(appDir);
 installNodeModuleCompat();
 
-// dsh reads `process.argv.slice(2)` and respawns itself with `argv.slice(1)` (D3, restart normalization).
-process.argv = [process.execPath, binJs, ...process.argv.slice(2)];
+process.argv = dshArgv(process.argv, process.execPath, binJs);
 const { runCli } = (await import(binJs)) as { runCli(): Promise<void> };
 await runCli();
