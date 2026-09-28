@@ -46,8 +46,11 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 	const idx = JSON.parse(readFileSync(indexPath, "utf8"));
 	const channel = idx.channels.release.some((e) => e.assets[t.id]) ? "release" : "live";
 	const list = idx.channels[channel].filter((e) => e.assets[t.id]).sort((a, b) => a.seq - b.seq);
-	if (list.length < 2) throw new Error(`e2e needs two ${channel} bundles for ${t.id} in the index`);
-	const [v1, v2] = [list.at(-2), list.at(-1)];
+	if (!list.length) throw new Error(`e2e needs a ${channel} bundle for ${t.id} in the index`);
+	// First publication of a channel: there is no previous version, so the update step is skipped and
+	// the single candidate goes through every other check.
+	const single = list.length === 1;
+	const [v1, v2] = single ? [list[0], list[0]] : [list.at(-2), list.at(-1)];
 	work ??= mkdtempSync(join(tmpdir(), "dsh-e2e-"));
 	const root = join(work, "root");
 	const home = join(work, "home");
@@ -84,14 +87,16 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 		r = await run(["list", "--json"]);
 		check(r.code === 0 && JSON.parse(r.out).channels.find((c) => c.channel === channel).newest === v2.version, "list must show the newest version");
 
-		const before = srv.requests.length;
-		r = await run(["update"]);
-		check(r.code === 0 && r.out.includes(`Updated dsh from ${v1.version} to ${v2.version}`), "update V1 -> V2");
-		check(marker() === v2.version, `launcher marker after update is ${marker()}`);
-		check(srv.requests.slice(before).every((p) => p === "/index.json" || p.startsWith(`/download/${v2.tag}/`)), "update requested something other than the index and the new asset");
-		check(!existsSync(env.DSH_HOME), "update created a profile directory");
-		r = await run(["--version"]);
-		check(r.code === 0, "the updated bundle does not start");
+		if (!single) {
+			const before = srv.requests.length;
+			r = await run(["update"]);
+			check(r.code === 0 && r.out.includes(`Updated dsh from ${v1.version} to ${v2.version}`), "update V1 -> V2");
+			check(marker() === v2.version, `launcher marker after update is ${marker()}`);
+			check(srv.requests.slice(before).every((p) => p === "/index.json" || p.startsWith(`/download/${v2.tag}/`)), "update requested something other than the index and the new asset");
+			check(!existsSync(env.DSH_HOME), "update created a profile directory");
+			r = await run(["--version"]);
+			check(r.code === 0, "the updated bundle does not start");
+		}
 		r = await run(["update"]);
 		check(r.code === 0 && /already up to date/.test(r.out), "second update must be a no-op");
 
@@ -122,7 +127,7 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 		r = await run(["update"]);
 		check(r.code === 1 && /managed by portage/.test(r.out) && srv.requests.length === managedFrom, "managed refusal");
 		rmSync(join(root, ".portage.managed.lock"));
-		log(`e2e: ok (${t.id}, ${channel} ${v1.version} -> ${v2.version})`);
+		log(`e2e: ok (${t.id}, ${channel} ${single ? `${v2.version}, first publication` : `${v1.version} -> ${v2.version}`})`);
 	} finally {
 		srv.stop();
 		if (!keep) {
