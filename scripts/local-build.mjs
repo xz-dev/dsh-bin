@@ -1,6 +1,7 @@
 // Assemble and archive a host-target bundle from already-built inputs under work/ (app, pnpm, addon),
 // for local end-to-end runs and tests. CI uses the same steps per target (build workflow).
-// usage: bun scripts/local-build.mjs <out-dir> <channel> <run> [--index index.json] [--upstream-commit sha] [--upstream-version v]
+// usage: bun scripts/local-build.mjs <out-dir> <channel> <run> [--index index.json] [--upstream-commit sha] [--slot slot-json] [--native f]
+//   writes <out>/<tag>-<asset> and <out>/<tag>.json (release manifest)
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -45,7 +46,18 @@ export function localBuild({ out, channel, run, attempt = 1, index, upstreamComm
 	const zip = join(out, `${id.tag}-${t.archive}`);
 	archive(root, zip);
 	const bytes = readFileSync(zip);
-	return { ...id, target: t.id, zip, root, bundleMeta: r.meta, asset: { name: t.archive, size: statSync(zip).size, sha256: sha256(bytes) } };
+	const asset = { name: t.archive, size: statSync(zip).size, sha256: sha256(bytes) };
+	// Same shape as the build workflow's release-manifest.json (input of scripts/index.mjs append-bundle).
+	const manifest = {
+		tag: id.tag,
+		version: id.version,
+		channel,
+		upstream: r.meta.upstream,
+		launcherCommit,
+		addons: { office: { slot: r.meta.addons.office.slot, pinned: r.meta.addons.office.pinned } },
+		targets: { [t.id]: { file: asset.name, size: asset.size, sha256: asset.sha256 } },
+	};
+	return { ...id, target: t.id, zip, root, bundleMeta: r.meta, asset, manifest };
 }
 
 if (import.meta.main) {
@@ -55,8 +67,8 @@ if (import.meta.main) {
 		const i = rest.indexOf(k);
 		return i >= 0 ? rest[i + 1] : undefined;
 	};
-	const r = localBuild({ out: resolve(out), channel, run: Number(run), index: opt("--index"), native: opt("--native"), upstreamCommit: opt("--upstream-commit") });
+	const r = localBuild({ out: resolve(out), channel, run: Number(run), index: opt("--index"), native: opt("--native"), upstreamCommit: opt("--upstream-commit"), slot: opt("--slot") ? JSON.parse(opt("--slot")) : null });
 	if (!existsSync(r.zip)) throw new Error("no archive");
-	writeFileSync(join(resolve(out), `${r.tag}.json`), `${JSON.stringify({ ...r, root: undefined }, null, 2)}\n`);
+	writeFileSync(join(resolve(out), `${r.tag}.json`), `${JSON.stringify(r.manifest, null, 2)}\n`);
 	console.log(JSON.stringify({ tag: r.tag, zip: r.zip, asset: r.asset }));
 }
