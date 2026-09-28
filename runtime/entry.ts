@@ -1,7 +1,7 @@
 // Compiled entry (D1): install the Bun compatibility layer (D3), then run dsh from the on-disk app tree
 // next to this executable (`bundles/<v>/dsh-native` + `bundles/<v>/app`).
 import { existsSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { dshArgv } from "./argv.ts";
 import { officeWiring, SKILL_OFFICE, withOfficeNode } from "./compat/addons.ts";
 import { degradedPlugin, HMR_DEGRADATION } from "./compat/degradations.ts";
@@ -20,6 +20,16 @@ if (existsSync(guard) && holdSessionClaim(guard) === "busy") {
 }
 const appDir = realpathSync(join(bundleDir, "app"));
 const binJs = join(appDir, "lib", "bin.js");
+
+// D5: the bundle's pnpm and node shims come first on PATH for dsh and everything it starts (the plugin
+// manager's `pnpm`, lifecycle scripts' `node`, `#!/usr/bin/env node` MCP servers). An explicit
+// plugin-manager pnpmCommand still wins because dsh passes it directly.
+const shimDir = join(bundleDir, "bin");
+if (existsSync(shimDir)) {
+	const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+	const rest = (process.env[pathKey] ?? "").split(delimiter).filter((p) => p && p !== shimDir);
+	process.env[pathKey] = [shimDir, ...rest].join(delimiter);
+}
 
 const office = officeWiring(bundleDir);
 if (office.kind === "enabled" && office.warning) process.stderr.write(`${office.warning}\n`);
