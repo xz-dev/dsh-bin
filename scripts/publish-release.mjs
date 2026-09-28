@@ -70,6 +70,10 @@ export async function publishRelease(manifestPath, env = process.env, fetchImpl 
 		if (r.target_commitish !== commit) fail(`release ${manifest.tag} targets ${r.target_commitish}, expected ${commit}`);
 	};
 
+	// Refuse before any mutation when the repository would publish a mutable release. A 403/404 (token
+	// cannot read the setting) falls through to the post-publish `immutable` poll.
+	const setting = await fetchImpl(`${api}/immutable-releases`, { headers: headers() });
+	if (setting.ok && (await setting.json()).enabled === false) fail(`release immutability is disabled for ${repository}; refusing to publish ${manifest.tag}`);
 	let release = await findRelease();
 	if (release && !release.draft) {
 		assertIdentity(release);
