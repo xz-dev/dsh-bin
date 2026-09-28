@@ -1,0 +1,23 @@
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "optimization mode") orelse .ReleaseSmall;
+    const version = b.option([]const u8, "version", "bundle version this launcher starts") orelse "0.0.0-dev";
+    const channel = b.option([]const u8, "channel", "release or live") orelse "release";
+
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", version);
+    options.addOption([]const u8, "channel", channel);
+
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .strip = optimize != .Debug,
+        .single_threaded = true,
+    });
+    module.addOptions("build_options", options);
+    const exe = b.addExecutable(.{ .name = "dsh", .root_module = module });
+    b.installArtifact(exe);
+}
