@@ -106,13 +106,16 @@ export function buildApp(src, pnpmDir, out) {
 
 	rmSync(out, { recursive: true, force: true });
 	pnpm(
-		"--filter", "@deepseek-ai/dsh", "deploy", "--legacy", "--prod",
-		"--config.allow-unused-patches=true", "--config.node-linker=hoisted",
-		"--config.auto-install-peers=false", "--config.link-workspace-packages=true", out,
+		// Non-legacy deploy honours the frozen upstream lockfile (legacy re-resolves and drifts
+		// third-party versions). Scripts stay off: the only reviewed workspace postinstall restores
+		// node-pty's macOS spawn-helper mode, which the bundle assembly handles itself.
+		"--filter", "@deepseek-ai/dsh", "deploy", "--prod", "--frozen-lockfile", "--ignore-scripts",
+		"--config.inject-workspace-packages=true", "--config.allow-unused-patches=true",
+		"--config.node-linker=hoisted", out,
 	);
 	materializeLinks(join(out, "node_modules"));
 	const restored = restoreClosure(src, out);
-	if (restored.length) console.error(`build-app: restored ${restored.length} workspace packages omitted by legacy deploy`);
+	if (restored.length) console.error(`build-app: restored ${restored.length} workspace packages omitted by deploy`);
 	for (const f of ["pnpm-lock.yaml", "pnpm-workspace.yaml", "README.md", "README.zh.md", "README.i18n.yaml"]) rmSync(join(out, f), { force: true });
 	if (findSymlink(out)) throw new Error("deployed tree still contains a symlink");
 	return out;
