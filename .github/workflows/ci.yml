@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions: { contents: read }
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15, windows-2022]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "1.4.2" }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "0.15.2" }
+      # Unit, runtime, launcher and the golden update contract (runs against the compiled entry).
+      # Runtime cases that need a built upstream app skip themselves when work/app is absent.
+      - run: bun test ./test/unit ./test/runtime ./test/launcher ./test/update-contract

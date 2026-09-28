@@ -1,0 +1,56 @@
+name: upstream-poll
+
+# Upstream tracking (release-distribution spec): the fixed cron was chosen once at random and is
+# committed as a literal; no delay is added at run time. The index on the `releases` branch is the
+# only state, so delayed, dropped, re-run and manual polls are all idempotent.
+on:
+  schedule:
+    - cron: "29 0,6,12,18 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: upstream-poll
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    runs-on: ubuntu-24.04
+    permissions: { contents: read }
+    outputs:
+      builds: ${{ steps.diff.outputs.builds }}
+      any: ${{ steps.diff.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "1.4.2" }
+      - name: Diff upstream refs against the release index
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          # git protocol and raw.githubusercontent.com only; no REST API. No branch yet = empty index.
+          git ls-remote https://github.com/deepseek-ai/deepseek-harness refs/heads/master 'refs/tags/dsh-v*' > "$RUNNER_TEMP/ls-remote.txt"
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/releases/index.json" -o "$RUNNER_TEMP/index.json" || rm -f "$RUNNER_TEMP/index.json"
+          bun scripts/upstream-diff.mjs "$RUNNER_TEMP/index.json" < "$RUNNER_TEMP/ls-remote.txt" > "$RUNNER_TEMP/diff.json"
+          cat "$RUNNER_TEMP/diff.json"
+          echo "builds=$(jq -c '{include: [.builds[] | {channel, upstream: (.tag // .commit)}]}' "$RUNNER_TEMP/diff.json")" >> "$GITHUB_OUTPUT"
+          echo "any=$(jq -r '.builds | length > 0' "$RUNNER_TEMP/diff.json")" >> "$GITHUB_OUTPUT"
+
+  # One build at a time, releases in version order then live: each build publishes its slot's
+  # office addon first when the slot has none, so later same-slot builds embed it and no slot gets two.
+  build:
+    needs: detect
+    if: needs.detect.outputs.any == 'true'
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect.outputs.builds) }}
+    permissions: { contents: write, id-token: write, attestations: write }
+    uses: ./.github/workflows/build.yml
+    with:
+      channel: ${{ matrix.channel }}
+      upstream: ${{ matrix.upstream }}
+      publish: true

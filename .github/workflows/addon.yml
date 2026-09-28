@@ -1,0 +1,64 @@
+name: addon
+
+# Office addon release (8.8): kit closure from the frozen upstream deploy, engine tarballs checked
+# against the lockfile sha512, 5 platform zips, immutable release + `addons.office` index entry.
+# Called by `build` before a bundle whose slot has no addon; also manual (dry run by default).
+on:
+  workflow_dispatch:
+    inputs:
+      commit: { description: "upstream commit whose slot needs an addon", required: true, type: string }
+      publish: { description: "publish the release", required: false, type: boolean, default: false }
+  workflow_call:
+    inputs:
+      commit: { required: true, type: string }
+      publish: { required: false, type: boolean, default: false }
+
+permissions: {}
+
+jobs:
+  addon:
+    runs-on: ubuntu-24.04
+    concurrency: { group: releases-index, cancel-in-progress: false }
+    permissions: { contents: write, id-token: write, attestations: write }
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "1.4.2" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "24" }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "0.15.2" }
+      - name: Build the addon assets
+        id: build
+        shell: bash
+        env: { COMMIT: "${{ inputs.commit }}" }
+        run: |
+          set -euo pipefail
+          t="$RUNNER_TEMP"
+          bun scripts/build-target.mjs linux-x64-modern live "$COMMIT" "$t/bundle" --run "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT" --work "$t/work" --git-dir "$t/upstream.git"
+          slot=$(bun scripts/addon-slot.mjs "$t/upstream.git" "$COMMIT")
+          test "$slot" != null
+          identity=$(bun -e "import {addonDistribution} from './scripts/versioning.mjs'; const s=$slot; const d=addonDistribution({kitVersion:s.kitVersion,run:$GITHUB_RUN_NUMBER,attempt:$GITHUB_RUN_ATTEMPT,launcherCommit:'$GITHUB_SHA'}); console.log(JSON.stringify({version:d.version,tag:d.tag,slot:s}))")
+          bun scripts/build-addon.mjs "$t/bundle/addon-tree" "$t/work/src" "$t/addon" "$identity"
+      - uses: actions/upload-artifact@v4
+        with: { name: "addon-office", path: "${{ runner.temp }}/addon/", if-no-files-found: error, retention-days: 14 }
+      - id: attest
+        if: inputs.publish && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            ${{ runner.temp }}/addon/*.zip
+            ${{ runner.temp }}/addon/addon-manifest.json
+      - name: Publish (immutable, make_latest=false) and index
+        if: inputs.publish && github.ref == 'refs/heads/main'
+        shell: bash
+        env: { GITHUB_TOKEN: "${{ github.token }}", BUNDLE: "${{ steps.attest.outputs.bundle-path }}" }
+        run: |
+          set -euo pipefail
+          empty="$RUNNER_TEMP/empty-gh"; mkdir -p "$empty"
+          for f in "$RUNNER_TEMP"/addon/*.zip; do
+            GH_CONFIG_DIR="$empty" GH_TOKEN='' GITHUB_TOKEN='' gh attestation verify "$f" --bundle "$BUNDLE" --repo "$GITHUB_REPOSITORY" --deny-self-hosted-runners
+          done
+          bun scripts/publish-release.mjs "$RUNNER_TEMP/addon/addon-manifest.json"
+          scripts/publish-index.sh addon "$RUNNER_TEMP/addon/addon-manifest.json"

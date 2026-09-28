@@ -1,0 +1,188 @@
+name: build
+
+# One distribution build (8.1–8.4): 12 targets on native runners → acceptance + packaged E2E with no
+# Node on PATH → one immutable GitHub Release (make_latest=false) → append to the releases index →
+# Scoop bucket. `publish: false` is the dry run (builds and tests everything, publishes nothing).
+on:
+  workflow_dispatch:
+    inputs:
+      channel: { description: "live or release", required: true, type: choice, options: [live, release] }
+      upstream: { description: "dsh-v* tag (release) or master / commit (live)", required: true, type: string }
+      publish: { description: "publish the release", required: false, type: boolean, default: false }
+  workflow_call:
+    inputs:
+      channel: { required: true, type: string }
+      upstream: { required: true, type: string }
+      publish: { required: false, type: boolean, default: false }
+
+permissions: {}
+
+env:
+  BUN_VERSION: "1.4.2"
+  ZIG_VERSION: "0.15.2"
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    permissions: { contents: read }
+    outputs:
+      matrix: ${{ steps.p.outputs.matrix }}
+      commit: ${{ steps.p.outputs.commit }}
+      slot: ${{ steps.p.outputs.slot }}
+      addon: ${{ steps.p.outputs.addon }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - id: p
+        shell: bash
+        env: { CHANNEL: "${{ inputs.channel }}", UPSTREAM: "${{ inputs.upstream }}" }
+        run: |
+          set -euo pipefail
+          case "$CHANNEL:$UPSTREAM" in release:dsh-v*|live:master|live:*) ;; *) echo "bad channel/upstream: $CHANNEL $UPSTREAM" >&2; exit 1 ;; esac
+          if [[ "$UPSTREAM" =~ ^[0-9a-f]{40}$ ]]; then commit=$UPSTREAM; else commit=$(bun scripts/fetch-upstream.mjs "$UPSTREAM" | jq -r .commit); fi
+          slot=$(bun scripts/addon-slot.mjs "$RUNNER_TEMP/upstream.git" "$commit")
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/releases/index.json" -o "$RUNNER_TEMP/index.json" || echo '{"schemaVersion":1,"channels":{"release":[],"live":[]},"addons":{"office":[]}}' > "$RUNNER_TEMP/index.json"
+          addon=$(jq --argjson s "$slot" '$s != null and ([.addons.office[] | select(.slot.commit == $s.commit)] | length == 0)' "$RUNNER_TEMP/index.json")
+          { echo "commit=$commit"; echo "slot=$slot"; echo "addon=$addon"; echo "matrix=$(bun scripts/targets.mjs --matrix)"; } >> "$GITHUB_OUTPUT"
+
+  addon:
+    needs: prepare
+    if: needs.prepare.outputs.addon == 'true'
+    permissions: { contents: write, id-token: write, attestations: write }
+    uses: ./.github/workflows/addon.yml
+    with:
+      commit: ${{ needs.prepare.outputs.commit }}
+      publish: ${{ inputs.publish }}
+
+  build-target:
+    needs: [prepare, addon]
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && needs.addon.result != 'failure' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "24" }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - name: Build ${{ matrix.id }}
+        shell: bash
+        env: { CHANNEL: "${{ inputs.channel }}", COMMIT: "${{ needs.prepare.outputs.commit }}", UPSTREAM: "${{ inputs.upstream }}", IMAGE: "${{ matrix.containerImage }}" }
+        run: |
+          set -euo pipefail
+          # Fresh index snapshot: includes this slot's addon when the addon job just published it.
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/releases/index.json" -o "$RUNNER_TEMP/index.json" || rm -f "$RUNNER_TEMP/index.json"
+          ref=$COMMIT; [[ "$CHANNEL" == release ]] && ref=$UPSTREAM
+          args=('${{ matrix.id }}' "$CHANNEL" "$ref" "$RUNNER_TEMP/out" --run "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT" --index "$RUNNER_TEMP/index.json" --work "$RUNNER_TEMP/work" --git-dir "$RUNNER_TEMP/upstream.git")
+          if [[ -z "$IMAGE" ]]; then
+            bun scripts/build-target.mjs "${args[@]}"
+          else
+            # musl: build inside the pinned native musl userspace (same images as xz-dev/pi). The
+            # workspace and RUNNER_TEMP are mounted at identical paths, so arguments need no rewriting.
+            zig=$(dirname "$(command -v zig)")
+            docker run --rm -v "$PWD:$PWD" -v "$RUNNER_TEMP:$RUNNER_TEMP" -v "$zig:/opt/zig:ro" -w "$PWD" -e GITHUB_REPOSITORY "$IMAGE" sh -euc \
+              'apk add --no-cache bash git curl nodejs npm python3 build-base linux-headers >/dev/null; PATH=/opt/zig:$PATH bun scripts/build-target.mjs "$@"' sh "${args[@]}"
+          fi
+          rm -rf "$RUNNER_TEMP/out/addon-tree" "$RUNNER_TEMP/out"/.scratch-*
+      - uses: actions/upload-artifact@v4
+        with: { name: "target-${{ matrix.id }}", path: "${{ runner.temp }}/out/", if-no-files-found: error, retention-days: 14 }
+
+  accept:
+    needs: [prepare, build-target]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: "target-${{ matrix.id }}", path: "${{ runner.temp }}/cand" }
+      - name: Fixture index with the previous published version and the candidate
+        shell: bash
+        env: { CHANNEL: "${{ inputs.channel }}" }
+        run: |
+          set -euo pipefail
+          c="$RUNNER_TEMP/cand"
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/releases/index.json" -o "$c/index.json" || echo '{"schemaVersion":1,"channels":{"release":[],"live":[]},"addons":{"office":[]}}' > "$c/index.json"
+          # Exact-tag downloads (not the API): the previous published asset for this target, and this
+          # platform's addon assets.
+          prev=$(jq -r --arg ch "$CHANNEL" --arg t '${{ matrix.id }}' '[.channels[$ch][] | select(.assets[$t])] | max_by(.seq) // empty | "\(.tag)/\(.assets[$t].name)"' "$c/index.json")
+          if [[ -n "$prev" ]]; then mkdir -p "$c/$(dirname "$prev")"; curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$prev" -o "$c/$prev"; fi
+          platform=$(bun -e "import {addonPlatform} from './runtime/update/addon-resolve.ts'; console.log(addonPlatform('${{ matrix.id }}'))")
+          for a in $(jq -r --arg p "$platform" '.addons.office[] | select(.assets[$p]) | "\(.tag)/\(.assets[$p].name)"' "$c/index.json"); do mkdir -p "$c/$(dirname "$a")"; curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$a" -o "$c/$a"; done
+          for m in "$c"/dsh-*.json; do bun scripts/index.mjs append-bundle "$c/index.json" "$m"; done
+      - name: Packaged E2E (no Node on PATH)
+        if: ${{ !matrix.containerImage }}
+        shell: bash
+        run: bun scripts/e2e.mjs "$RUNNER_TEMP/cand/index.json" "$RUNNER_TEMP/cand"
+      - name: Packaged E2E in the pinned musl userspace
+        if: matrix.containerImage
+        shell: bash
+        env: { IMAGE: "${{ matrix.containerImage }}" }
+        run: docker run --rm -v "$PWD:$PWD:ro" -v "$RUNNER_TEMP/cand:$RUNNER_TEMP/cand" -w "$PWD" "$IMAGE" sh -euc 'apk add --no-cache git >/dev/null; bun scripts/e2e.mjs "$1/index.json" "$1"' sh "$RUNNER_TEMP/cand"
+
+  aggregate:
+    needs: [prepare, accept]
+    runs-on: ubuntu-24.04
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - uses: actions/download-artifact@v4
+        with: { pattern: "target-*", path: "${{ runner.temp }}/release", merge-multiple: true }
+      - run: bun scripts/aggregate-release.mjs "$RUNNER_TEMP/release" --expect-targets 12
+      - uses: actions/upload-artifact@v4
+        with: { name: "release", path: "${{ runner.temp }}/release/", if-no-files-found: error, retention-days: 14 }
+
+  publish:
+    needs: aggregate
+    if: inputs.publish && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    concurrency: { group: releases-index, cancel-in-progress: false }
+    permissions: { contents: write, id-token: write, attestations: write }
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: "release", path: "${{ runner.temp }}/release" }
+      - id: attest
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release/*.zip
+            ${{ runner.temp }}/release/release-manifest.json
+            ${{ runner.temp }}/release/SHA256SUMS
+      - name: Verify attestations with empty gh credentials
+        shell: bash
+        env: { BUNDLE: "${{ steps.attest.outputs.bundle-path }}" }
+        run: |
+          set -euo pipefail
+          empty="$RUNNER_TEMP/empty-gh"; mkdir -p "$empty"
+          for f in "$RUNNER_TEMP"/release/*.zip "$RUNNER_TEMP/release/release-manifest.json" "$RUNNER_TEMP/release/SHA256SUMS"; do
+            GH_CONFIG_DIR="$empty" GH_TOKEN='' GITHUB_TOKEN='' gh attestation verify "$f" --bundle "$BUNDLE" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/build.yml" --deny-self-hosted-runners
+          done
+      - name: Publish immutable release (make_latest=false)
+        env: { GITHUB_TOKEN: "${{ github.token }}" }
+        run: bun scripts/publish-release.mjs "$RUNNER_TEMP/release/release-manifest.json"
+      - name: Append to the releases index
+        env: { GITHUB_TOKEN: "${{ github.token }}" }
+        run: scripts/publish-index.sh bundle "$RUNNER_TEMP/release/release-manifest.json"
+      - name: Update the Scoop bucket
+        env: { GITHUB_TOKEN: "${{ github.token }}" }
+        run: scripts/publish-scoop-bucket.sh
