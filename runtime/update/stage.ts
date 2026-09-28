@@ -5,11 +5,13 @@ import { join } from "node:path";
 import type { AssetRef } from "../layout.ts";
 import { extractZip, type ZipEntry } from "../zip.ts";
 import { UserError } from "./context.ts";
+import { crashPoint } from "./fsops.ts";
 import { downloadAsset } from "./index-client.ts";
 
 export async function fetchAndExtract(tag: string, asset: AssetRef, staging: string, log: (line: string) => void) {
 	const zip = join(staging, "asset.zip");
 	await downloadAsset(tag, asset, zip, log);
+	crashPoint("after-download");
 	const tree = join(staging, "tree");
 	let entries: ZipEntry[];
 	try {
@@ -17,6 +19,7 @@ export async function fetchAndExtract(tag: string, asset: AssetRef, staging: str
 	} catch (error) {
 		throw new UserError(`invalid archive ${asset.name}: ${(error as Error).message}`);
 	}
+	crashPoint("after-extract");
 	return { tree, entries };
 }
 

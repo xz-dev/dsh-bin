@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { USAGE_GUARD } from "../layout.ts";
 import { makeReadOnly, makeWritable } from "../readonly.ts";
 import { acquireClaim } from "../usage-claim.ts";
+import { exchange } from "./exchange.ts";
 import { UserError } from "./context.ts";
 
 export const LOCK_NAME = "update.lock";
@@ -15,6 +16,17 @@ export const TRASH_PREFIX = ".trash-";
 export const OLD_LAUNCHER = /^\.dsh(?:\.exe)?\.old-[0-9a-f]+$/;
 
 export const token = () => randomBytes(6).toString("hex");
+
+/**
+ * Crash injection for the contract tests (`DSH_BIN_TEST=1 DSH_BIN_TEST_CRASH=<point>`): exit immediately,
+ * without cleanup, as a SIGKILL would. Inert in real installations.
+ */
+export function crashPoint(point: string) {
+	if (process.env.DSH_BIN_TEST === "1" && process.env.DSH_BIN_TEST_CRASH === point) {
+		process.stderr.write(`dsh: test crash at ${point}\n`);
+		process.kill(process.pid, "SIGKILL");
+	}
+}
 
 /**
  * Run `fn` holding `<root>/update.lock`, a directory created with mkdir (atomic on every platform).
@@ -194,6 +206,66 @@ export function placeReadOnly(src: string, dest: string, platform = process.plat
 	chmodSync(src, statSync(src).mode | 0o700);
 	renameSync(src, dest);
 	chmodSync(dest, statSync(dest).mode & 0o7555);
+}
+
+/**
+ * Put the validated staged tree `src` at `dest`, read-only. When `dest` exists (same-version `--force`), the
+ * old generation is replaced under its exclusive usage claim:
+ * - POSIX with renameat2/renamex_np: one atomic exchange, so `dest` is never missing;
+ * - otherwise (Windows): quarantine, rename, and restore on failure; a crash in between is repaired by
+ *   the next maintenance run's leftover sweep.
+ * Returns "busy" (and changes nothing) when the old generation is in use. `afterPlace` runs while the old
+ * generation can still be restored (e.g. the launcher switch).
+ */
+export function installTree(root: string, src: string, dest: string, afterPlace: () => void = () => {}, platform = process.platform): "ok" | "busy" {
+	crashPoint("before-place");
+	if (!existsSync(dest)) {
+		placeReadOnly(src, dest, platform);
+		crashPoint("after-place");
+		afterPlace();
+		crashPoint("after-launcher");
+		return "ok";
+	}
+	if (platform !== "win32") {
+		const guard = join(dest, USAGE_GUARD);
+		const claim = existsSync(guard) ? acquireClaim(guard, "exclusive") : undefined;
+		if (claim === "busy") return "busy";
+		try {
+			makeReadOnly(src, platform);
+			unsealTop(src, platform);
+			unsealTop(dest, platform);
+			if (exchange(src, dest)) {
+				sealTop(dest, platform);
+				crashPoint("after-place");
+				try {
+					afterPlace();
+					crashPoint("after-launcher");
+				} catch (error) {
+					if (exchange(src, dest)) sealTop(dest, platform);
+					throw error;
+				}
+				discard(src); // now the old generation
+				return "ok";
+			}
+			sealTop(dest, platform);
+		} finally {
+			claim?.release();
+		}
+	}
+	const previous = quarantine(root, dest);
+	if (!previous) return "busy";
+	crashPoint("after-quarantine");
+	try {
+		placeReadOnly(src, dest, platform);
+		crashPoint("after-place");
+		afterPlace();
+		crashPoint("after-launcher");
+	} catch (error) {
+		if (!existsSync(dest)) unquarantine(previous, dest);
+		throw error;
+	}
+	discard(previous);
+	return "ok";
 }
 
 /** Atomically replace `dest` with `data` (write a sibling temp file, then rename over it). */

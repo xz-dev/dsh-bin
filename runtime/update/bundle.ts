@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync }
 import { join } from "node:path";
 import { addonDir, type BundleMeta, BUNDLE_META, type Channel, exeName, readAddonMeta, readAddonsState, readBundleMeta, USAGE_GUARD } from "../layout.ts";
 import { type Context, launcherPath, launcherVersion, launcherVersionOf, UserError } from "./context.ts";
-import { discard, newWorkDir, placeReadOnly, quarantine, removeTree, retire, unquarantine, replaceLauncher, STAGING_PREFIX, writeFileAtomic } from "./fsops.ts";
+import { installTree, newWorkDir, removeTree, retire, replaceLauncher, STAGING_PREFIX, writeFileAtomic } from "./fsops.ts";
 import { type BundleEntry, fetchIndex, isNewer, newestFor, type ReleaseIndex } from "./index-client.ts";
 import { checkRoots, fetchAndExtract, mismatch } from "./stage.ts";
 import { defaultVersion } from "./addon-resolve.ts";
@@ -64,26 +64,12 @@ async function activateBundle(ctx: Context, entry: BundleEntry): Promise<BundleM
 
 		mkdirSync(join(ctx.root, "bundles"), { recursive: true });
 		const dest = join(ctx.root, rel);
-		// An existing generation (same-version --force, or leftovers of a crash between the two renames) is
-		// retired under its exclusive usage claim; a version in use is never replaced.
-		let previous: string | undefined;
-		if (existsSync(dest)) {
-			previous = quarantine(ctx.root, dest);
-			if (!previous) {
-				throw new UserError(`dsh ${entry.version} is in use by another dsh process, so it cannot be replaced now.`, [
-					"Close the other dsh sessions and run the update again.",
-				]);
-			}
+		// An existing generation (same-version --force) is replaced under its exclusive usage claim; a version
+		// in use is never replaced.
+		const placed = installTree(ctx.root, staged, dest, () => replaceLauncher(stagedLauncher, launcherPath(ctx.root, ctx.platform), ctx.platform), ctx.platform);
+		if (placed === "busy") {
+			throw new UserError(`dsh ${entry.version} is in use by another dsh process, so it cannot be replaced now.`, ["Close the other dsh sessions and run the update again."]);
 		}
-		try {
-			placeReadOnly(staged, dest, ctx.platform);
-			replaceLauncher(stagedLauncher, launcherPath(ctx.root, ctx.platform), ctx.platform);
-		} catch (error) {
-			// Put the previous generation back; a crash here instead is repaired by the next run's sweep.
-			if (previous && !existsSync(dest)) unquarantine(previous, dest);
-			throw error;
-		}
-		if (previous) discard(previous);
 		return meta;
 	} finally {
 		try {

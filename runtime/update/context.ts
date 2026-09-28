@@ -1,6 +1,6 @@
 // What every maintenance command needs to know about the running installation.
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { type BundleMeta, type Channel, exeName, installOf, managedBy, readBundleMeta, recordedChannel } from "../layout.ts";
 
 /** An expected failure: printed as `error: <message>` (plus optional hint lines) and exit status `code`. */
@@ -34,8 +34,10 @@ export const NON_BUNDLE_GUIDANCE = [
 /** The install containing `execPath`, or a UserError with bundle-install guidance (spec "Non-bundle installs"). */
 export function resolveContext(execPath = process.execPath, platform = process.platform): Context {
 	const bundleDir = dirname(execPath);
-	const install = installOf(bundleDir);
-	const meta = install ? readBundleMeta(bundleDir) : undefined;
+	const meta = readBundleMeta(bundleDir);
+	// A generation quarantined by an interrupted same-version `--force` (`<root>/.trash-*`, the fallback where
+	// no atomic exchange exists) can still run maintenance commands, so the leftover sweep can restore it.
+	const install = installOf(bundleDir) ?? (basename(bundleDir).startsWith(".trash-") && meta ? { root: dirname(bundleDir), bundleDir, version: meta.version } : undefined);
 	if (!install || !meta || meta.name !== "dsh-bin" || meta.version !== install.version) {
 		throw new UserError(NON_BUNDLE_GUIDANCE[0]!, [NON_BUNDLE_GUIDANCE[1]!]);
 	}

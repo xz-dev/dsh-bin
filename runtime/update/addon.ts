@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { ADDON_META, type AddonName, addonDir, type BundleMeta, readAddonMeta, readAddonsState, slotLabel, USAGE_GUARD } from "../layout.ts";
 import { addonAssetName, addonPlatform, type Candidate, candidates, defaultVersion, findCandidate } from "./addon-resolve.ts";
 import { type Context, UserError } from "./context.ts";
-import { discard, newWorkDir, placeReadOnly, quarantine, removeTree, retire, unquarantine, STAGING_PREFIX, writeFileAtomic } from "./fsops.ts";
+import { installTree, newWorkDir, removeTree, retire, STAGING_PREFIX, writeFileAtomic } from "./fsops.ts";
 import { fetchIndex, type ReleaseIndex } from "./index-client.ts";
 import { checkRoots, fetchAndExtract, mismatch } from "./stage.ts";
 
@@ -107,18 +107,9 @@ async function activateAddon(ctx: Context, name: AddonName, chosen: Candidate, t
 		writeFileSync(join(tree, USAGE_GUARD), "");
 		const dest = addonDir(ctx.root, name, chosen.version);
 		mkdirSync(join(dest, ".."), { recursive: true });
-		let previous: string | undefined;
-		if (existsSync(dest)) {
-			previous = quarantine(ctx.root, dest);
-			if (!previous) throw new UserError(`${name} addon ${chosen.version} is in use by a running dsh session, so it cannot be replaced now.`);
+		if (installTree(ctx.root, tree, dest, undefined, ctx.platform) === "busy") {
+			throw new UserError(`${name} addon ${chosen.version} is in use by a running dsh session, so it cannot be replaced now.`);
 		}
-		try {
-			placeReadOnly(tree, dest, ctx.platform);
-		} catch (error) {
-			if (previous && !existsSync(dest)) unquarantine(previous, dest);
-			throw error;
-		}
-		if (previous) discard(previous);
 	} finally {
 		try {
 			removeTree(staging);
