@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { distribution, parseTag } from "../../scripts/versioning.mjs";
+import { addonDistribution, distribution, parseTag } from "../../scripts/versioning.mjs";
 
 const up = "4878cdabd87d4041bdaff61d04c966883b9fd07a";
 const lc = "abcdef1234567890abcdef1234567890abcdef12";
@@ -23,4 +23,11 @@ test("rejects other tag families and bad input", () => {
 	expect(() => distribution({ channel: "beta", upstreamCommit: up, run: 1, attempt: 1, launcherCommit: lc })).toThrow();
 	expect(() => distribution({ channel: "live", upstreamCommit: "4878cda", run: 1, attempt: 1, launcherCommit: lc })).toThrow();
 	expect(() => distribution({ channel: "live", upstreamCommit: up, run: 0, attempt: 1, launcherCommit: lc })).toThrow();
+});
+
+test("addon tag", () => {
+	const d = addonDistribution({ kitVersion: "0.1.2", run: 9, attempt: 1, launcherCommit: lc });
+	expect(d.tag).toBe("dsh-addon-office-v0.1.2-xz.9.1.gabcdef12");
+	expect(parseTag(d.tag)).toMatchObject({ channel: "addon", addon: "office", version: "0.1.2-xz.9.1.gabcdef12" });
+	expect(() => addonDistribution({ kitVersion: "x", run: 1, attempt: 1, launcherCommit: lc })).toThrow();
 });

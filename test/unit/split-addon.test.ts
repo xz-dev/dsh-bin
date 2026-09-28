@@ -50,3 +50,16 @@ test("splitOfficeAddon fails when the kit is absent", () => {
 	splitOfficeAddon(app, addon);
 	expect(() => splitOfficeAddon(app, addon)).toThrow(/not in the deployed tree/);
 });
+
+test("splitOfficeAddon records the release identity and slot in addon.json", () => {
+	const { app, addon } = fixture();
+	const slot = { commit: "a".repeat(40), kitVersion: "0.1.2" };
+	splitOfficeAddon(app, addon, { version: "0.1.2-xz.1.1.gabcdef12", tag: "dsh-addon-office-v0.1.2-xz.1.1.gabcdef12", slot });
+	expect(JSON.parse(readFileSync(join(addon, "addon.json"), "utf8"))).toMatchObject({
+		name: "office",
+		version: "0.1.2-xz.1.1.gabcdef12",
+		tag: "dsh-addon-office-v0.1.2-xz.1.1.gabcdef12",
+		slot,
+		kitVersion: "0.1.2",
+	});
+});

@@ -1,6 +1,6 @@
 // Split the optional office addon (LibreOffice Kit, D2/D7b) out of a deployed app tree.
 // The kit is the only approved registry-sourced @deepseek-ai code and never ships in the main archive.
-// usage: bun scripts/split-addon.mjs <app-dir> <addon-dir>
+// usage: bun scripts/split-addon.mjs <app-dir> <addon-dir> ['{"version","tag","slot"}']
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 
@@ -39,7 +39,7 @@ function closure(root, roots, skip = () => false) {
  * Copy the kit's full closure into `<addon>/node_modules` (self-contained, relative layout kept)
  * and remove from `app` every package only the kit needs. Returns the addon metadata.
  */
-export function splitOfficeAddon(app, addon) {
+export function splitOfficeAddon(app, addon, identity = {}) {
 	const kitDir = join(app, "node_modules", KIT);
 	if (!existsSync(kitDir)) throw new Error(`${KIT} is not in the deployed tree`);
 	const kitVersion = manifest(kitDir).version;
@@ -53,14 +53,16 @@ export function splitOfficeAddon(app, addon) {
 		packages.push(`${manifest(dir).name}@${manifest(dir).version}`);
 	}
 	for (const dir of kitClosure) if (!mainClosure.has(dir)) rmSync(dir, { recursive: true, force: true });
-	const meta = { name: "office", kitVersion, packages: packages.sort() };
+	// identity: {version, tag, slot} of the addon release this tree becomes (D7b); the startup slot check
+	// and the updater read them from addon.json.
+	const meta = { name: "office", ...identity, kitVersion, packages: packages.sort() };
 	mkdirSync(addon, { recursive: true });
 	writeFileSync(join(addon, "addon.json"), `${JSON.stringify(meta, null, 2)}\n`);
 	return meta;
 }
 
 if (import.meta.main) {
-	const [app, addon] = process.argv.slice(2);
-	if (!app || !addon) throw new Error("usage: split-addon.mjs <app-dir> <addon-dir>");
-	console.log(JSON.stringify(splitOfficeAddon(app, addon), null, 2));
+	const [app, addon, identity] = process.argv.slice(2);
+	if (!app || !addon) throw new Error("usage: split-addon.mjs <app-dir> <addon-dir> [identity-json]");
+	console.log(JSON.stringify(splitOfficeAddon(app, addon, identity ? JSON.parse(identity) : {}), null, 2));
 }
