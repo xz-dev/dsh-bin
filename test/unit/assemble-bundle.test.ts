@@ -141,7 +141,8 @@ describe("assemble (6.1)", () => {
 		writeFileSync(f.native, macho(0x0100000c));
 		writeFileSync(f.launcher, macho(0x0100000c));
 		const r = assembleBundle(spec(f, "darwin-arm64"));
-		expect(statSync(join(r.bundle, "app/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper")).mode & 0o111).toBe(0o111);
+		// darwin bundles are assembled on macOS runners; Windows has no exec bits to check.
+		if (process.platform !== "win32") expect(statSync(join(r.bundle, "app/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper")).mode & 0o111).toBe(0o111);
 		expect(existsSync(join(r.bundle, "app/node_modules/node-pty/prebuilds/darwin-x64"))).toBe(false);
 
 		const w = fixture();

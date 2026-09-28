@@ -32,7 +32,7 @@ jobs:
       - name: Build the addon assets
         id: build
         shell: bash
-        env: { COMMIT: "${{ inputs.commit }}" }
+        env: { COMMIT: "${{ inputs.commit }}", GH_TOKEN: "${{ github.token }}" }
         run: |
           set -euo pipefail
           t="$RUNNER_TEMP"

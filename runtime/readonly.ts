@@ -26,8 +26,10 @@ export function makeReadOnly(dir: string, platform = process.platform): void {
 	const strip = (path: string) => chmodSync(path, lstatSync(path).mode & 0o7555);
 	if (platform === "win32") {
 		walk(dir, (path, isDir) => isDir || strip(path));
-		// Deny creating files/subdirectories and deleting children for Everyone (S-1-1-0), inherited by files.
-		icacls([dir, "/deny", "*S-1-1-0:(OI)(CI)(W,D,DC)", "/q"]);
+		// Deny writing, creating, deleting and re-attributing for Everyone (S-1-1-0), inherited by the tree.
+		// Specific rights only: the generic `W` also carries SYNCHRONIZE and READ_CONTROL, and denying those
+		// breaks reading, listing and opening the claim file.
+		icacls([dir, "/deny", "*S-1-1-0:(OI)(CI)(WD,AD,WEA,WA,D,DC)", "/q"]);
 		return;
 	}
 	walk(dir, (path) => strip(path));

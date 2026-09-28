@@ -65,7 +65,8 @@ describe.skipIf(isRoot)("read-only bundle (6.3)", () => {
 		const { b } = bundle();
 		makeReadOnly(b);
 		const check = (p: string) => {
-			expect(lstatSync(p).mode & 0o222).toBe(0);
+			// Windows: directories carry no read-only attribute; the deny-write ACL protects them (next tests).
+			if (process.platform !== "win32" || !lstatSync(p).isDirectory()) expect(lstatSync(p).mode & 0o222).toBe(0);
 			if (lstatSync(p).isDirectory()) for (const n of readdirSync(p)) check(join(p, n));
 		};
 		check(b);

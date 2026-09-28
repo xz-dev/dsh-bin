@@ -75,7 +75,7 @@ jobs:
         with: { version: "${{ env.ZIG_VERSION }}" }
       - name: Build ${{ matrix.id }}
         shell: bash
-        env: { CHANNEL: "${{ inputs.channel }}", COMMIT: "${{ needs.prepare.outputs.commit }}", UPSTREAM: "${{ inputs.upstream }}", IMAGE: "${{ matrix.containerImage }}" }
+        env: { CHANNEL: "${{ inputs.channel }}", COMMIT: "${{ needs.prepare.outputs.commit }}", UPSTREAM: "${{ inputs.upstream }}", IMAGE: "${{ matrix.containerImage }}", GH_TOKEN: "${{ github.token }}" }
         run: |
           set -euo pipefail
           # Fresh index snapshot: includes this slot's addon when the addon job just published it.
@@ -88,8 +88,8 @@ jobs:
             # musl: build inside the pinned native musl userspace (same images as xz-dev/pi). The
             # workspace and RUNNER_TEMP are mounted at identical paths, so arguments need no rewriting.
             zig=$(dirname "$(command -v zig)")
-            docker run --rm -v "$PWD:$PWD" -v "$RUNNER_TEMP:$RUNNER_TEMP" -v "$zig:/opt/zig:ro" -w "$PWD" -e GITHUB_REPOSITORY "$IMAGE" sh -euc \
-              'apk add --no-cache bash git curl nodejs npm python3 build-base linux-headers >/dev/null; PATH=/opt/zig:$PATH bun scripts/build-target.mjs "$@"' sh "${args[@]}"
+            docker run --rm -v "$PWD:$PWD" -v "$RUNNER_TEMP:$RUNNER_TEMP" -v "$zig:/opt/zig:ro" -w "$PWD" -e GITHUB_REPOSITORY -e GH_TOKEN "$IMAGE" sh -euc \
+              'apk add --no-cache bash git curl nodejs npm python3 build-base linux-headers github-cli >/dev/null; PATH=/opt/zig:$PATH bun scripts/build-target.mjs "$@"' sh "${args[@]}"
           fi
           rm -rf "$RUNNER_TEMP/out/addon-tree" "$RUNNER_TEMP/out"/.scratch-*
       - uses: actions/upload-artifact@v4

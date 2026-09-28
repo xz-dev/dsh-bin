@@ -60,9 +60,12 @@ describe("deterministic archive (6.2)", () => {
 		const out = join(tmp(), "x");
 		extractZip(zip, out);
 		expect(readFileSync(join(out, "bundles/V1/bundle.json"), "utf8")).toBe(readFileSync(join(root, "bundles/V1/bundle.json"), "utf8"));
-		expect(statSync(join(out, "dsh")).mode & 0o777).toBe(0o755);
-		expect(statSync(join(out, "bundles/V1/bin/pnpm")).mode & 0o777).toBe(0o755);
-		expect(statSync(join(out, "bundles/V1/bundle.json")).mode & 0o777).toBe(0o644);
+		// Windows has no POSIX mode bits; the archives for POSIX targets are built on POSIX runners.
+		if (process.platform !== "win32") {
+			expect(statSync(join(out, "dsh")).mode & 0o777).toBe(0o755);
+			expect(statSync(join(out, "bundles/V1/bin/pnpm")).mode & 0o777).toBe(0o755);
+			expect(statSync(join(out, "bundles/V1/bundle.json")).mode & 0o777).toBe(0o644);
+		}
 		expect(existsSync(join(out, "bundles/V1/.usage.lock"))).toBe(true);
 	});
 
@@ -129,6 +132,7 @@ describe("validating reader (7.5 unsafe entries)", () => {
 		expect(() => writeZip(join(tmp(), "w.zip"), [{ name: "../x", mode: 0o644 }])).toThrow();
 		const root = tmp();
 		tree(root);
+		if (process.platform === "win32") return; // symlink creation needs privileges on Windows
 		Bun.spawnSync(["ln", "-s", "dsh", join(root, "alias")]);
 		expect(() => archive(root, join(tmp(), "s.zip"))).toThrow("symlink");
 	});

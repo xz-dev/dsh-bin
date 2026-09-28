@@ -15,7 +15,7 @@ beforeAll(() => {
 	const prefix = mkdtempSync(join(tmpdir(), "dsh-launcher-build-"));
 	execFileSync("zig", ["build", "-Dversion=1.2.3-xz.1.1.gabcdef12", "-Dchannel=live", "--prefix", prefix], { cwd: LAUNCHER_DIR, stdio: "inherit" });
 	built = join(prefix, "bin", "dsh");
-});
+}, 300_000);
 
 /** An install root with the launcher and a fake runtime that dumps argv, env and holds-claim state. */
 function install(runtime = "") {
