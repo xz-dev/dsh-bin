@@ -86,3 +86,22 @@ test.skipIf(!hasZig)("5.3: the running bundle holds the shared claim until it ex
 	expect(claim).not.toBe("busy");
 	if (claim !== "busy") claim.release();
 });
+
+test.skipIf(!hasZig)("7.6: the launcher embeds a byte-readable version marker", async () => {
+	const { launcherVersionOf } = await import("../../runtime/update/context.ts");
+	expect(launcherVersionOf(readFileSync(built))).toBe("1.2.3-xz.1.1.gabcdef12");
+});
+
+test.skipIf(!hasZig)("7.2: maintenance commands run without the shared claim; everything else holds it", async () => {
+	const { root, bundle } = install('echo started > "$DSH_BUNDLE_ROOT/started"; exec sleep 30');
+	for (const [args, held] of [[["update", "--force"], false], [["list"], false], [["install", "--addon", "office"], false], [["--profile", "update"], true]] as const) {
+		const proc = Bun.spawn([join(root, "dsh"), ...args], { stdout: "ignore", stderr: "inherit" });
+		for (let i = 0; i < 100 && !(await Bun.file(join(root, "started")).exists()); i++) await Bun.sleep(20);
+		const claim = acquireClaim(join(bundle, ".usage.lock"), "exclusive");
+		expect(claim === "busy").toBe(held);
+		if (claim !== "busy") claim.release();
+		proc.kill("SIGKILL");
+		await proc.exited;
+		execFileSync("rm", ["-f", join(root, "started")]);
+	}
+});

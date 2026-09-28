@@ -13,6 +13,28 @@ const is_windows = builtin.os.tag == .windows;
 const native_name = if (is_windows) "dsh-native.exe" else "dsh-native";
 const guard_name = ".usage.lock";
 
+/// Version marker the updater reads from the root launcher's bytes without executing it (`dsh update --clean`
+/// keeps the launcher's version). NUL-terminated; kept alive by `doNotOptimizeAway` in main.
+pub const marker = "DSH_BIN_LAUNCHER_VERSION=" ++ version ++ "\x00";
+
+/// Maintenance commands handled by the runtime before any bundle use. They take no usage claim, so
+/// `dsh update --force` can take the exclusive claim on the version it runs from.
+const maintenance_cmds = [_][]const u8{ "update", "install", "uninstall", "list" };
+
+fn isMaintenance() bool {
+    if (is_windows) {
+        var it = std.process.argsWithAllocator(std.heap.page_allocator) catch return false;
+        _ = it.next();
+        const first = it.next() orelse return false;
+        for (maintenance_cmds) |cmd| if (std.mem.eql(u8, first, cmd)) return true;
+        return false;
+    }
+    if (std.os.argv.len < 2) return false;
+    const first = std.mem.span(std.os.argv[1]);
+    for (maintenance_cmds) |cmd| if (std.mem.eql(u8, first, cmd)) return true;
+    return false;
+}
+
 /// Variables the runtime must not inherit: dsh-tui's standalone self-update markers and Bun's
 /// "act as bun" switch (the runtime sets that itself only for its embedded pnpm).
 pub const cleared_vars = [_][]const u8{ "DSH_TUI_STANDALONE", "DSH_TUI_STANDALONE_BINARY", "BUN_BE_BUN" };
@@ -93,7 +115,7 @@ fn posixClaim(guard: []const u8) void {
 fn runPosix(allocator: std.mem.Allocator, paths: Paths) noreturn {
     std.posix.access(paths.native, std.posix.X_OK) catch
         fatal("bundle runtime not found: {s} (this launcher runs only version {s}; reinstall dsh-bin)", .{ paths.native, version });
-    posixClaim(paths.guard);
+    if (!isMaintenance()) posixClaim(paths.guard);
 
     var env = runtimeEnv(allocator, paths) catch fatal("out of memory", .{});
     const envp = std.process.createNullDelimitedEnvMap(allocator, &env) catch fatal("out of memory", .{});
@@ -146,7 +168,7 @@ fn commandTail() [*:0]const u16 {
 fn runWindows(allocator: std.mem.Allocator, paths: Paths) noreturn {
     std.fs.accessAbsolute(paths.native, .{}) catch
         fatal("bundle runtime not found: {s} (this launcher runs only version {s}; reinstall dsh-bin)", .{ paths.native, version });
-    windowsClaim(paths.guard);
+    if (!isMaintenance()) windowsClaim(paths.guard);
 
     var env = runtimeEnv(allocator, paths) catch fatal("out of memory", .{});
     const env_block = std.process.createWindowsEnvBlock(allocator, &env) catch fatal("out of memory", .{});
@@ -189,6 +211,7 @@ fn runWindows(allocator: std.mem.Allocator, paths: Paths) noreturn {
 }
 
 pub fn main() void {
+    std.mem.doNotOptimizeAway(marker.ptr);
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const allocator = arena.allocator();
     const paths = resolvePaths(allocator) catch |err| fatal("cannot resolve the launcher path: {s}", .{@errorName(err)});
