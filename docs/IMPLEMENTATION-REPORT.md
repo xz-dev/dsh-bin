@@ -246,13 +246,28 @@ This is upstream's plugin compatibility rule, not a dsh-bin fault:
 I put the rc.2 launcher back in place; the rc.2 bundle was still installed. Your tui boots again.
 
 On a copy of `~/.dsh`, `dsh plugin --profile tui update` under the 0.2.0 bundle took 12 s with no
-Node, and exit 0. The earlier "900 s timeout" happened only because the copy sat on a different
-filesystem than your pnpm store. It still reports 14 of your profile plugins as incompatible:
+Node, and exit 0. The earlier 900 s timeout did not reproduce. That run used a copy on a different
+filesystem from your pnpm store, with a `storeDir` override, which is the likely cause; it is not
+proven. The update still reports 14 of your profile plugins as incompatible:
 - 13 are `dsh-tui` 0.11.1 and your own `xz-dev/dsh-*` plugins, which pin `0.1.7-rc.2`;
 - the 14th, `dsh-session-search-pro`, pins `^0.1.0-rc.6`.
 
-No newer versions of them exist yet. Until those plugins publish 0.2.0-compatible versions, stay
-on the release that matches them. `dsh update` will offer rc.1 each time until then.
+`@deepseek-harness-tui/dsh-tui` 0.11.2 already accepts 0.2.0-rc.1. The 12 `xz-dev/dsh-*` plugins
+are yours, so you can widen their exact `0.1.7-rc.2` peer pins. Only `dsh-session-search-pro`
+depends on another author, or on an exact-version exemption (`dsh plugin allow-version`). Until then,
+stay on rc.2; `dsh update` will offer rc.1 each time.
+
+After every self-update that activates a new bundle, `dsh update` now warns about these cases (your
+decision: warn, never block):
+- It uses upstream's own `evaluatePluginCompatibility`, loaded from the new bundle, over every
+  profile's direct dependencies, and honours `compatibility.json` exemptions.
+- For each plugin startup will disable, it prints the newest version the new dsh accepts, and the
+  command to install it. It looks this up read-only: npm registry metadata for registry specs, and
+  the default-branch `package.json` for `github:` specs. Nothing is installed from these lookups.
+- If the check cannot run, it prints that; it is never read as "all compatible".
+
+Verified on a copy of your profiles: a patched rc.2 root updated to rc.1 from a fixture in 4 s and
+printed the 14 plugins, with dsh-tui → 0.11.2 suggested.
 
 ## Startup performance (your decision, 2026-09-29)
 
