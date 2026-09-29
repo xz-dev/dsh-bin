@@ -148,12 +148,13 @@ jobs:
       - name: Packaged E2E (no Node on PATH)
         if: ${{ !matrix.containerImage }}
         shell: bash
-        run: bun scripts/e2e.mjs "$RUNNER_TEMP/cand/index.json" "$RUNNER_TEMP/cand" --target '${{ matrix.id }}'
+        env: { CHANNEL: "${{ inputs.channel }}" }
+        run: bun scripts/e2e.mjs "$RUNNER_TEMP/cand/index.json" "$RUNNER_TEMP/cand" --target '${{ matrix.id }}' --channel "$CHANNEL"
       - name: Packaged E2E in the pinned musl userspace
         if: matrix.containerImage
         shell: bash
-        env: { IMAGE: "${{ matrix.containerImage }}" }
-        run: docker run --rm -v "$PWD:$PWD:ro" -v "$RUNNER_TEMP/cand:$RUNNER_TEMP/cand" -w "$PWD" "$IMAGE" sh -euc 'apk add --no-cache git >/dev/null; bun scripts/e2e.mjs "$1/index.json" "$1" --target "$2"' sh "$RUNNER_TEMP/cand" '${{ matrix.id }}'
+        env: { IMAGE: "${{ matrix.containerImage }}", CHANNEL: "${{ inputs.channel }}" }
+        run: docker run --rm -v "$PWD:$PWD:ro" -v "$RUNNER_TEMP/cand:$RUNNER_TEMP/cand" -w "$PWD" "$IMAGE" sh -euc 'apk add --no-cache git >/dev/null; bun scripts/e2e.mjs "$1/index.json" "$1" --target "$2" --channel "$3"' sh "$RUNNER_TEMP/cand" '${{ matrix.id }}' "$CHANNEL"
 
   aggregate:
     needs: [prepare, accept]

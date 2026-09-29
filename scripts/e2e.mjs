@@ -70,12 +70,14 @@ function noJsPath(dir) {
  * `corruptAddon`: self-test of the addon check. After install, break the installed addon's first package
  * entry point (a published addon whose hashes match but whose content is broken), so acceptance must fail.
  */
-export async function e2e({ index: indexPath, assets, work, keep = false, log = console.log, targetId = hostTargetId(), corruptAddon = false }) {
+export async function e2e({ index: indexPath, assets, work, keep = false, log = console.log, targetId = hostTargetId(), corruptAddon = false, channel }) {
 	// The matrix target, not the host default: baseline and modern x64 share a runner.
 	const t = target(targetId);
 	if (hostTargetId().replace(/-(baseline|modern)$/, "") !== t.id.replace(/-(baseline|modern)$/, "")) throw new Error(`e2e for ${t.id} must run on its native host (this is ${hostTargetId()})`);
 	const idx = JSON.parse(readFileSync(indexPath, "utf8"));
-	const channel = idx.channels.release.some((e) => e.assets[t.id]) ? "release" : "live";
+	// The candidate's channel: guessing from the index breaks as soon as both channels have entries.
+	channel ??= idx.channels.release.some((e) => e.assets[t.id]) ? "release" : "live";
+	if (channel !== "release" && channel !== "live") throw new Error(`unknown channel ${channel}`);
 	const list = idx.channels[channel].filter((e) => e.assets[t.id]).sort((a, b) => a.seq - b.seq);
 	if (!list.length) throw new Error(`e2e needs a ${channel} bundle for ${t.id} in the index`);
 	// First publication of a channel: there is no previous version, so the update step is skipped and
@@ -146,8 +148,12 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 		r = await run(["update", "--help"]);
 		check(r.code === 0 && r.out.includes("dsh update --clean"), "update --help");
 		const other = channel === "release" ? "live" : "release";
-		r = await run(["update", "--channel", other]);
-		check(idx.channels[other].some((e) => e.assets[t.id]) ? r.code === 0 : r.code === 1 && r.out.includes(other), `--channel ${other}`);
+		// Switching needs the other channel's asset in the fixture; the switch itself is covered by the
+		// update contract, so only the refusal for an empty channel is checked here.
+		if (!idx.channels[other].some((e) => e.assets[t.id])) {
+			r = await run(["update", "--channel", other]);
+			check(r.code === 1 && r.out.includes(other), `--channel ${other}`);
+		}
 
 		// 8.9: every addon in this bundle's slot is installed, proven enabled at boot, uninstalled and
 		// proven degraded again. A headless task without credentials activates every plugin, then stops.
@@ -237,7 +243,7 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 
 if (import.meta.main) {
 	const [index, assets, ...rest] = process.argv.slice(2);
-	if (!index || !assets) throw new Error("usage: e2e.mjs <index.json> <assets-dir> [--work dir] [--target id] [--keep] [--corrupt-addon]");
+	if (!index || !assets) throw new Error("usage: e2e.mjs <index.json> <assets-dir> [--work dir] [--target id] [--channel c] [--keep] [--corrupt-addon]");
 	const opt = (k) => (rest.includes(k) ? rest[rest.indexOf(k) + 1] : undefined);
-	await e2e({ index: resolve(index), assets: resolve(assets), work: opt("--work") ? resolve(opt("--work")) : undefined, keep: rest.includes("--keep"), targetId: opt("--target"), corruptAddon: rest.includes("--corrupt-addon") });
+	await e2e({ index: resolve(index), assets: resolve(assets), work: opt("--work") ? resolve(opt("--work")) : undefined, keep: rest.includes("--keep"), targetId: opt("--target"), corruptAddon: rest.includes("--corrupt-addon"), channel: opt("--channel") });
 }
