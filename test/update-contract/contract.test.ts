@@ -29,7 +29,7 @@ import {
 	type World,
 } from "./harness.ts";
 import { buildWorld, SLOT_A2, V } from "./worlds.ts";
-import { createSnapshot } from "../../runtime/snapshot/store.ts";
+import { claimSnapshot, createSnapshot, listSnapshots, snapshotDir } from "../../runtime/snapshot/store.ts";
 
 let world: World;
 let evilEntry: any;
@@ -120,6 +120,157 @@ const snap = (root: string, version: string, seq: number, alias?: string) =>
 	createSnapshot(homeOf(root), { version, order: { upstream: { commitTime: orderTime(seq) }, run: seq, attempt: 1 }, reason: "user", alias, source: () => null }).snapshot.id;
 /** The selection file is left exactly as it was. */
 const selectionKept = (before: unknown) => (root: string) => expect(selectionOf(root)).toEqual(before);
+
+// ── dsh snapshot (plugin-snapshots "Snapshot commands") ────────────────────────────────────────────────────────────
+const snapIds = (root: string) => listSnapshots(homeOf(root)).map((s) => s.id);
+const snapMeta = (root: string, id: string) => listSnapshots(homeOf(root)).find((s) => s.id === id);
+/** A file in a snapshot's tui runtime, standing for an installed plugin. */
+const plugin = (root: string, id: string, name: string) => {
+	const dir = join(snapshotDir(homeOf(root), id), "profiles", "tui", "node_modules", name);
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "package.json"), `{"name":"${name}"}`);
+};
+const hasPlugin = (root: string, id: string, name: string) => existsSync(join(snapshotDir(homeOf(root), id), "profiles", "tui", "node_modules", name, "package.json"));
+const holdSnapshot = (root: string, id: string) => {
+	const c = claimSnapshot(homeOf(root), id);
+	if (typeof c === "string") throw new Error(`claim ${c}`);
+	return () => c.release();
+};
+
+const snapshotCases: Case[] = [
+	{
+		name: "snapshot: migrate a runtime to another version with --use … snapshot new --target",
+		root: { version: V.R1, extra: [V.R2] },
+		arrange: (root) => {
+			snap(root, V.R1, 1);
+			snap(root, V.R1, 1);
+			plugin(root, `${V.R1}@2`, "dsh-caveman");
+			snap(root, V.R2, 2);
+		},
+		steps: [
+			{
+				argv: ["--use", "0.1.7-rc.2-xz.2", "snapshot", "new", "--target", "0.1.7-rc.2-xz.1@2"],
+				code: 0,
+				stdout: [`Created plugin snapshot ${V.R2}@2 (copy of ${V.R1}@2).`],
+				requests: [],
+				unchanged: true,
+				check: (root) => {
+					expect(snapMeta(root, `${V.R2}@2`)).toMatchObject({ source: `${V.R1}@2`, reason: "user" });
+					expect(hasPlugin(root, `${V.R2}@2`, "dsh-caveman")).toBe(true);
+				},
+			},
+			// It is now R2's newest: the next plain start of R2 uses it.
+			{ argv: ["select", "--use", V.R2], code: 0, stdout: [`snapshot: ${V.R2}@2 (newest)`] },
+		],
+	},
+	{
+		name: "snapshot: new copies the effective version's newest; --empty, --name; numbers are never reused",
+		root: { version: V.R1 },
+		arrange: (root) => {
+			snap(root, V.R1, 1);
+			plugin(root, `${V.R1}@1`, "dsh-caveman");
+		},
+		steps: [
+			{ argv: ["snapshot", "new", "--name", "before-caveman"], code: 0, stdout: [`Created plugin snapshot ${V.R1}@2 (copy of ${V.R1}@1).`], check: (root) => expect(hasPlugin(root, `${V.R1}@2`, "dsh-caveman")).toBe(true) },
+			{ argv: ["snapshot", "new", "--empty"], code: 0, stdout: [`Created plugin snapshot ${V.R1}@3 (empty).`], check: (root) => expect(hasPlugin(root, `${V.R1}@3`, "dsh-caveman")).toBe(false) },
+			{ argv: ["snapshot", "remove", `${V.R1}@3`], code: 0, stdout: [`Removed snapshot ${V.R1}@3.`] },
+			{ argv: ["snapshot", "new"], code: 0, stdout: [`Created plugin snapshot ${V.R1}@4 (copy of ${V.R1}@2).`] },
+			// The alias names the same snapshot under a version prefix.
+			{ argv: ["select", "--use", "latest", "--snapshot", "0.1.7-rc.2-xz.1@before-caveman"], code: 0, stdout: [`Selected --use latest --snapshot ${V.R1}@2.`] },
+			{
+				argv: ["snapshot", "list", "--json"],
+				code: 0,
+				check: (_root, r) =>
+					expect(json(r).snapshots).toEqual([
+						expect.objectContaining({ id: `${V.R1}@1`, alias: null, source: "empty", reason: "user", newest: false, selected: false, inUse: false, bundleInstalled: true }),
+						expect.objectContaining({ id: `${V.R1}@2`, alias: "before-caveman", source: `${V.R1}@1`, newest: false, selected: true }),
+						expect.objectContaining({ id: `${V.R1}@4`, alias: null, source: `${V.R1}@2`, newest: true, selected: false }),
+					]),
+			},
+		],
+	},
+	{
+		name: "snapshot: removing the broken newest falls back to the previous one; removing the middle closes the gap",
+		root: { version: V.R1 },
+		arrange: (root) => {
+			snap(root, V.R1, 1, "before-caveman");
+			snap(root, V.R1, 1);
+			snap(root, V.R1, 1);
+			plugin(root, `${V.R1}@3`, "broken-plugin");
+		},
+		steps: [
+			{ argv: ["snapshot", "remove", `${V.R1}@3`], code: 0, stdout: [`Removed snapshot ${V.R1}@3.`], check: (root) => expect(snapIds(root)).toEqual([`${V.R1}@1`, `${V.R1}@2`]) },
+			{ argv: ["snapshot", "remove", `${V.R1}@2`], code: 0, check: (root) => expect(snapIds(root)).toEqual([`${V.R1}@1`]) },
+			{ argv: ["select"], code: 0, stdout: [`snapshot: ${V.R1}@1 (newest)`] },
+			{ argv: ["snapshot", "list"], code: 0, stdout: [`${V.R1}@1 (before-caveman)`, "[newest]"] },
+		],
+	},
+	{
+		name: "snapshot remove: in use or named by the selection is refused; several ids are all or none",
+		root: { version: V.R1 },
+		arrange: (root) => {
+			snap(root, V.R1, 1);
+			snap(root, V.R1, 1);
+			snap(root, V.R1, 1);
+			writeSel(root, { schema: 1, use: "latest", snapshot: `${V.R1}@3`, addons: {} });
+			return holdSnapshot(root, `${V.R1}@1`);
+		},
+		steps: [
+			{ argv: ["snapshot", "remove", `${V.R1}@1`], code: 1, stderr: [`snapshot ${V.R1}@1 is in use`], unchanged: true, check: (root) => expect(snapIds(root)).toHaveLength(3) },
+			{ argv: ["snapshot", "remove", `${V.R1}@2`, `${V.R1}@1`], code: 1, stderr: ["in use", "nothing was removed"], check: (root) => expect(snapIds(root)).toHaveLength(3) },
+			{ argv: ["snapshot", "remove", `${V.R1}@3`], code: 1, stderr: [`snapshot ${V.R1}@3 is named by the selection`, "dsh select"], check: (root) => expect(snapIds(root)).toHaveLength(3) },
+			{ argv: ["snapshot", "list"], code: 0, stdout: [`${V.R1}@1  `, "[in use]", "[newest, selected]"] },
+		],
+	},
+	{
+		name: "snapshot: argument errors and unknown ids exit 1 and change nothing",
+		root: { version: V.R1 },
+		arrange: (root) => void snap(root, V.R1, 1, "a"),
+		steps: [
+			{ argv: ["snapshot", "new", "--target", `${V.R1}@1`, "--empty"], code: 1, stderr: ["--target cannot be combined with --empty"] },
+			{ argv: ["snapshot", "new", "--target", `${V.R1}@9`], code: 1, stderr: [`snapshot ${V.R1}@9 does not exist`] },
+			{ argv: ["snapshot", "new", "--name", "a"], code: 1, stderr: [`snapshot name a is already used by ${V.R1}@1`] },
+			{ argv: ["snapshot", "new", "--name", "12"], code: 1, stderr: ["cannot be all digits"] },
+			{ argv: ["snapshot", "new", "--json"], code: 1, stderr: ['Unknown option --json for "snapshot new"'] },
+			{ argv: ["snapshot", "new", "--bogus"], code: 1, stderr: ["Unknown option --bogus"] },
+			{ argv: ["snapshot", "remove", `${V.R1}@9`], code: 1, stderr: [`snapshot ${V.R1}@9 does not exist`] },
+			{ argv: ["snapshot", "remove"], code: 1, stderr: ["requires at least one snapshot id"] },
+			{ argv: ["snapshot", "prune"], code: 1, stderr: ["Unknown snapshot action prune"] },
+			{ argv: ["snapshot"], code: 1, stderr: ["requires an action"], check: (root) => expect(snapIds(root)).toEqual([`${V.R1}@1`]) },
+		],
+	},
+	{
+		name: "snapshot new with no source names --empty; list marks a snapshot whose bundle is not installed",
+		root: { version: V.R1 },
+		arrange: (root) => void snap(root, V.L1, 0),
+		steps: [
+			{ argv: ["snapshot", "new"], code: 1, stderr: [`dsh ${V.R1} has no snapshot to copy`, "dsh snapshot new --empty"], check: (root) => expect(snapIds(root)).toEqual([`${V.L1}@1`]) },
+			{ argv: ["snapshot", "list"], code: 0, stdout: [`${V.L1}@1`, "bundle not installed"] },
+			{ argv: ["snapshot", "list", "--json"], code: 0, check: (_root, r) => expect(json(r).snapshots[0]).toMatchObject({ id: `${V.L1}@1`, bundleInstalled: false, newest: true }) },
+			// A snapshot of an uninstalled version still starts on an installed one.
+			{ argv: ["select", "--use", V.R1, "--snapshot", `${V.L1}@1`], code: 0, stdout: [`snapshot: ${V.L1}@1`] },
+		],
+	},
+	{
+		name: "snapshot commands work in a managed install; --use is refused there",
+		root: { version: V.R1, managed: "portage" },
+		arrange: (root) => void snap(root, V.R1, 1),
+		steps: [
+			{ argv: ["snapshot", "new"], code: 0, stdout: [`Created plugin snapshot ${V.R1}@2 (copy of ${V.R1}@1).`] },
+			{ argv: ["snapshot", "remove", `${V.R1}@1`], code: 0 },
+			{ argv: ["snapshot", "list"], code: 0, stdout: [`${V.R1}@2`] },
+			{ argv: ["--use", V.R1, "snapshot", "new"], code: 1, stderr: ["--use is not available", "managed by portage"], check: (root) => expect(snapIds(root)).toEqual([`${V.R1}@2`]) },
+		],
+	},
+	{
+		name: "snapshot list with no snapshots",
+		root: { version: V.R1 },
+		steps: [
+			{ argv: ["snapshot", "list"], code: 0, stdout: ["No snapshots yet"], requests: [], unchanged: true },
+			{ argv: ["snapshot", "list", "--json"], code: 0, check: (_root, r) => expect(json(r)).toEqual({ snapshots: [] }) },
+		],
+	},
+];
 
 const selectCases: Case[] = [
 	{
@@ -1030,7 +1181,7 @@ const cases: Case[] = [
 const allowed = () => new Set([INDEX, ...[...world.assets.keys()].map((k) => `/download/${k}`)]);
 
 describe("update contract", () => {
-	for (const c of [...cases, ...selectCases]) {
+	for (const c of [...cases, ...selectCases, ...snapshotCases]) {
 		test(c.name, async () => {
 			const root = installRoot(world, c.root.version, { channelFile: c.root.channelFile, managed: c.root.managed });
 			roots.push(root);

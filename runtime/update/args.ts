@@ -4,7 +4,7 @@
 // in pi's order (unknown option, missing value, bad value, unexpected argument, conflicts).
 import { ADDON_NAMES, type AddonName, type Channel, CHANNELS } from "../layout.ts";
 
-export const MAINTENANCE_COMMANDS = ["update", "install", "uninstall", "list", "select"] as const;
+export const MAINTENANCE_COMMANDS = ["update", "install", "uninstall", "list", "select", "snapshot"] as const;
 export type MaintenanceCommand = (typeof MAINTENANCE_COMMANDS)[number];
 
 export type UpdateTarget = { type: "self" } | { type: "all" } | { type: "addon"; name: AddonName };
@@ -15,7 +15,10 @@ export type ParsedCommand =
 	| { command: "install"; help: false; addon: AddonName; version?: string; force: boolean }
 	| { command: "uninstall"; help: false; addon: AddonName }
 	| { command: "list"; help: false; addon?: AddonName; channel?: Channel; json: boolean }
-	| { command: "select"; help: false; use?: string; snapshot?: string; addons: { name: AddonName; version: string }[] };
+	| { command: "select"; help: false; use?: string; snapshot?: string; addons: { name: AddonName; version: string }[] }
+	| { command: "snapshot"; help: false; action: "new"; target?: string; name?: string; empty: boolean }
+	| { command: "snapshot"; help: false; action: "remove"; ids: string[] }
+	| { command: "snapshot"; help: false; action: "list"; json: boolean };
 export type ParseError = { command: MaintenanceCommand; error: string; usage: string };
 export type ParseResult = ParsedCommand | ParseError;
 
@@ -29,7 +32,11 @@ export const USAGE: Record<MaintenanceCommand, string> = {
 	uninstall: "dsh uninstall --addon <name>",
 	list: "dsh list [--addon <name>] [--channel <live|release>] [--json]",
 	select: "dsh select [--use <version|latest> [--snapshot <id>] [--addon <name>:<version>]...]",
+	snapshot: "dsh snapshot new [--target <id> | --empty] [--name <alias>] | dsh snapshot remove <id>... | dsh snapshot list [--json]",
 };
+
+/** Options of each `dsh snapshot` action. */
+const SNAPSHOT_OPTIONS: Record<string, string[]> = { new: ["--target", "--name", "--empty"], remove: [], list: ["--json"] };
 
 /** Options each command accepts: flags, and options that take a value. */
 const GRAMMAR: Record<MaintenanceCommand, { flags: string[]; values: string[] }> = {
@@ -38,6 +45,7 @@ const GRAMMAR: Record<MaintenanceCommand, { flags: string[]; values: string[] }>
 	uninstall: { flags: [], values: ["--addon"] },
 	list: { flags: ["--json"], values: ["--addon", "--channel"] },
 	select: { flags: [], values: ["--use", "--snapshot", "--addon"] },
+	snapshot: { flags: ["--empty", "--json"], values: ["--target", "--name"] },
 };
 
 /** Options that may be repeated. */
@@ -68,6 +76,8 @@ export const MAINTENANCE_HELP = [
 	"      show installed and installable dsh and addon versions",
 	`  ${USAGE.select}`,
 	"      choose the version, snapshot and addons a plain `dsh` uses; no options: print the selection",
+	`  ${USAGE.snapshot}`,
+	"      copy, remove or list plugin-runtime snapshots",
 	"",
 ].join("\n");
 
@@ -127,6 +137,25 @@ export function parseMaintenance(argv: readonly string[]): ParseResult | undefin
 	if (missing === "--channel") return fail(`Missing value for --channel; ${VALID_CHANNELS}.`);
 	if (missing) return fail(`Missing value for ${missing}.`);
 
+	if (cmd === "snapshot") {
+		const [action, ...ids] = positionals;
+		if (action === undefined) return fail("dsh snapshot requires an action: new, remove or list");
+		const allowed = SNAPSHOT_OPTIONS[action];
+		if (!allowed) return fail(`Unknown snapshot action ${action}; valid actions: new, remove, list.`);
+		const given = [...flags, ...values.keys()].find((o) => !allowed.includes(o));
+		if (given) return fail(`Unknown option ${given} for "snapshot ${action}".`);
+		if (conflict) return fail(conflict);
+		if (action === "remove") {
+			if (!ids.length) return fail("dsh snapshot remove requires at least one snapshot id");
+			return { command: "snapshot", help: false, action, ids };
+		}
+		if (ids.length) return fail(`Unexpected argument ${ids[0]}.`);
+		if (action === "list") return { command: "snapshot", help: false, action, json: flags.has("--json") };
+		const target = values.get("--target");
+		const name = values.get("--name");
+		if (target && flags.has("--empty")) return fail("--target cannot be combined with --empty");
+		return { command: "snapshot", help: false, action: "new", empty: flags.has("--empty"), ...(target ? { target } : {}), ...(name ? { name } : {}) };
+	}
 	const channel = values.get("--channel");
 	if (channel !== undefined && !(CHANNELS as readonly string[]).includes(channel)) return fail(`Invalid channel ${channel}; ${VALID_CHANNELS}.`);
 	if (cmd === "select") {

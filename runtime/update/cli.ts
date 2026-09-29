@@ -1,6 +1,7 @@
 // Maintenance command dispatch (self-update spec "Launcher owns the update command"). Runs before any
 // usage claim, app resolution or compat layer, so it works whatever the upstream app contains.
-import { type ParsedCommand, parseMaintenance, USAGE } from "./args.ts";
+import { isMaintenance, type ParsedCommand, parseMaintenance, USAGE } from "./args.ts";
+import { parseLeading, writeLaunch } from "../snapshot/launch.ts";
 import { addonHints, clean, referencedHome, updateSelf } from "./bundle.ts";
 import { installAddon, uninstallAddon } from "./addon.ts";
 import { readAddonsState } from "../layout.ts";
@@ -8,6 +9,7 @@ import { activeMeta, type Context, resolveContext, UserError } from "./context.t
 import { sweepLeftovers, withUpdateLock } from "./fsops.ts";
 import { list } from "./list.ts";
 import { select } from "./select.ts";
+import { snapshot } from "./snapshot.ts";
 
 const HELP: Record<string, string[]> = {
 	update: [
@@ -34,6 +36,16 @@ const HELP: Record<string, string[]> = {
 		"  --addon <name>:<version>      installed addon version (default: the newest in-slot one)",
 		"Omitted options go back to their default. Managed installs accept only --snapshot.",
 	],
+	snapshot: [
+		`Usage: ${USAGE.snapshot}`,
+		"",
+		"Plugin-runtime snapshots <version>@<n>; a launch uses its version's newest one unless one is named.",
+		"  new [--target <id>] [--name <alias>]   copy <id> (default: the newest of the effective version) into a new",
+		"                                         snapshot of the effective version (`dsh --use <v> snapshot new`)",
+		"  new --empty [--name <alias>]           a new empty snapshot",
+		"  remove <id>...                         remove snapshots (not one in use or named by `dsh select`)",
+		"  list [--json]                          every snapshot, with the newest, selected and in-use ones marked",
+	],
 };
 
 function refuseManaged(ctx: Context) {
@@ -45,6 +57,7 @@ async function run(cmd: ParsedCommand, ctx: Context) {
 	if (cmd.help) return;
 	if (cmd.command === "list") return list(ctx, cmd);
 	if (cmd.command === "select") return select(ctx, cmd);
+	if (cmd.command === "snapshot") return snapshot(ctx, cmd);
 	refuseManaged(ctx);
 	await withUpdateLock(ctx.root, async () => {
 		// Staging/trash leftovers of an interrupted run are removed first (when no longer claimed).
@@ -78,6 +91,14 @@ async function run(cmd: ParsedCommand, ctx: Context) {
 
 /** Run a maintenance command; resolves to the process exit status. */
 export async function main(argv: readonly string[], execPath = process.execPath): Promise<number> {
+	if (!isMaintenance(argv)) {
+		// A direct start with leading options: strip and record them as the launcher would. Any installed
+		// version can be the effective one (under the launcher, maintenance runs on the newest bundle).
+		const p = parseLeading(argv);
+		if ("error" in p) return report(new UserError(p.error));
+		writeLaunch({ version: null, source: p.use ? "use" : p.snapshot ? "snapshot" : null, use: p.use, snapshot: p.snapshot, addons: p.addons, selection: null });
+		argv = p.rest;
+	}
 	const parsed = parseMaintenance(argv);
 	if (!parsed) return 2;
 	if ("error" in parsed) {
@@ -92,11 +113,15 @@ export async function main(argv: readonly string[], execPath = process.execPath)
 		await run(parsed, resolveContext(execPath));
 		return 0;
 	} catch (error) {
-		if (error instanceof UserError) {
-			process.stderr.write(`error: ${error.message}\n${error.hints.map((h) => `${h}\n`).join("")}`);
-			return error.code;
-		}
-		process.stderr.write(`error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
-		return 1;
+		return report(error);
 	}
+}
+
+function report(error: unknown): number {
+	if (error instanceof UserError) {
+		process.stderr.write(`error: ${error.message}\n${error.hints.map((h) => `${h}\n`).join("")}`);
+		return error.code;
+	}
+	process.stderr.write(`error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
+	return 1;
 }

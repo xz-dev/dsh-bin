@@ -264,30 +264,64 @@ export function claimSnapshot(home: string, id: string): Claim | "busy" | "missi
 	}
 }
 
+/** Whether a process holds the snapshot's usage claim (a probe: the exclusive claim is released at once). */
+export function snapshotInUse(home: string, id: string): boolean {
+	try {
+		const claim = acquireClaim(join(snapshotDir(home, id), USAGE_GUARD), "exclusive");
+		if (claim === "busy") return true;
+		claim.release();
+	} catch {
+		// No guard: nothing can hold it.
+	}
+	return false;
+}
+
 /**
  * Remove a snapshot under the lock and its exclusive usage claim: rename it to `.trash-*`, then delete it,
  * so a crash never leaves a half-removed snapshot. `"busy"` (nothing changed) when a process uses it.
  */
 export function removeSnapshot(home: string, id: string, platform = process.platform): "removed" | "busy" {
+	const r = removeSnapshots(home, [id], platform);
+	return r === "removed" ? r : "busy";
+}
+
+/**
+ * Remove several snapshots, all or none: under the lock, take every exclusive usage claim, then move each
+ * into `.trash-*`; if one is in use, the ones already moved go back. Returns the ids in use when refused.
+ */
+export function removeSnapshots(home: string, ids: readonly string[], platform = process.platform): "removed" | { busy: string[] } {
 	const root = snapshotsDir(home);
 	return withStoreLock(home, () => {
-		const dir = snapshotDir(home, id);
-		const claim = acquireClaim(join(dir, USAGE_GUARD), "exclusive");
-		if (claim === "busy") return "busy";
-		// Windows refuses to rename a directory with an open handle inside, our own claim included: release
-		// it, and let the rename refuse a snapshot that came into use meanwhile (as the bundle quarantine).
-		if (platform === "win32") claim.release();
-		const trash = join(root, `${TRASH_PREFIX}${token()}`);
+		const claims: Claim[] = [];
+		const moved: { dir: string; trash: string }[] = [];
 		try {
-			renameDir(dir, trash, platform);
-		} catch (error) {
-			if (isShareViolation(error)) return "busy";
-			throw error;
+			const busy: string[] = [];
+			for (const id of ids) {
+				const claim = acquireClaim(join(snapshotDir(home, id), USAGE_GUARD), "exclusive");
+				if (claim === "busy") busy.push(id);
+				else claims.push(claim);
+			}
+			if (busy.length) return { busy };
+			// Windows refuses to rename a directory with an open handle inside, our own claim included: release
+			// them, and let the rename refuse a snapshot that came into use meanwhile (as the bundle quarantine).
+			if (platform === "win32") for (const c of claims.splice(0)) c.release();
+			for (const id of ids) {
+				const dir = snapshotDir(home, id);
+				const trash = join(root, `${TRASH_PREFIX}${token()}`);
+				try {
+					renameDir(dir, trash, platform);
+				} catch (error) {
+					if (!isShareViolation(error)) throw error;
+					for (const m of moved.reverse()) renameDir(m.trash, m.dir, platform);
+					return { busy: [id] };
+				}
+				moved.push({ dir, trash });
+			}
 		} finally {
-			claim.release();
+			for (const c of claims) c.release();
 		}
 		crashPoint("snapshot-trashed");
-		discard(trash);
+		for (const m of moved) discard(m.trash);
 		return "removed";
 	});
 }

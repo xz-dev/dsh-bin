@@ -12,7 +12,8 @@ export const selectionPath = (home: string) => join(home, "dsh-bin", "selection.
 
 export type ReadSelection = { kind: "none" } | { kind: "ok"; selection: Selection } | { kind: "invalid"; reason: string };
 
-export function readSelection(home: string): ReadSelection {
+/** `managed`: a missing `use` is accepted (a managed install ignores it; launcher `parseSelection` agrees). */
+export function readSelection(home: string, managed = false): ReadSelection {
 	const path = selectionPath(home);
 	if (!existsSync(path)) return { kind: "none" };
 	let v: any;
@@ -23,12 +24,13 @@ export function readSelection(home: string): ReadSelection {
 	}
 	if (!v || typeof v !== "object" || Array.isArray(v)) return { kind: "invalid", reason: "not a JSON object" };
 	if (v.schema !== 1) return { kind: "invalid", reason: "unsupported schema" };
-	if (typeof v.use !== "string" || !v.use) return { kind: "invalid", reason: "no version" };
+	const use = typeof v.use === "string" && v.use ? v.use : managed && v.use === undefined ? "latest" : undefined;
+	if (!use) return { kind: "invalid", reason: "no version" };
 	const addons: Record<string, string> = {};
 	if (v.addons && typeof v.addons === "object" && !Array.isArray(v.addons)) {
 		for (const [k, x] of Object.entries(v.addons)) if (typeof x === "string") addons[k] = x;
 	}
-	return { kind: "ok", selection: { schema: 1, use: v.use, snapshot: typeof v.snapshot === "string" ? v.snapshot : null, addons } };
+	return { kind: "ok", selection: { schema: 1, use, snapshot: typeof v.snapshot === "string" ? v.snapshot : null, addons } };
 }
 
 /** Replace the selection atomically (temp file and rename). */

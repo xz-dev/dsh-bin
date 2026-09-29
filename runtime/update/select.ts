@@ -4,6 +4,7 @@
 import { type AddonName, ADDON_NAMES, type BundleMeta, defaultAddon, dshHome, installedAddons, installedBundles, latestOf, matchVersion } from "../layout.ts";
 import { DEFAULT_SELECTION, readSelection, type Selection, selectionPath, writeSelection } from "../selection.ts";
 import { listSnapshots, newestOf, requireSnapshot } from "../snapshot/store.ts";
+import { readLaunch } from "../snapshot/launch.ts";
 import { type Context, UserError } from "./context.ts";
 
 export type SelectOptions = { use?: string; snapshot?: string; addons: { name: AddonName; version: string }[] };
@@ -19,9 +20,50 @@ export function requireBundle(bundles: readonly BundleMeta[], query: string): Bu
 	return bundles.find((b) => b.version === m.version)!;
 }
 
+/**
+ * The effective version of a maintenance command (version-selection "Leading launch options"): what the
+ * launcher resolved from the leading options and the selection (`DSH_BIN_LAUNCH`), or, for a process
+ * started directly, the selection resolved by the launcher's rules. A UserError when it does not resolve.
+ */
+export function effectiveBundle(ctx: Context, env: NodeJS.ProcessEnv = process.env): BundleMeta {
+	const bundles = installedBundles(ctx.root);
+	const launch = readLaunch(env);
+	if (ctx.managed) {
+		const option = launch?.use ? "--use" : launch?.addons.length ? "--addon" : undefined;
+		if (option) throw new UserError(`${option} is not available: the dsh version and addons are managed by ${ctx.managed}`);
+		const newest = latestOf(bundles, null);
+		if (!newest) throw new UserError("no dsh version is installed");
+		return newest;
+	}
+	if (launch) {
+		const found = launch.version ? bundles.find((b) => b.version === launch.version) : undefined;
+		if (found) return found;
+	}
+	if (launch?.use) return requireBundle(bundles, launch.use);
+	if (launch?.snapshot) {
+		const at = launch.snapshot.lastIndexOf("@");
+		if (at <= 0) throw new UserError(`invalid snapshot id ${launch.snapshot}: expected <version>@<n|name>`);
+		return requireBundle(bundles, launch.snapshot.slice(0, at));
+	}
+	const stored = readSelection(dshHome());
+	if (stored.kind === "invalid") throw new UserError(`cannot read the selection ${selectionPath(dshHome())} (${stored.reason})`, ["Run `dsh select --use latest` to reset it."]);
+	const use = stored.kind === "ok" ? stored.selection.use : "latest";
+	if (use !== "latest") {
+		try {
+			return requireBundle(bundles, use);
+		} catch (error) {
+			if (error instanceof UserError) throw new UserError(`the selected ${error.message}`, [...error.hints, "Run `dsh select --use latest` to follow the newest installed version."]);
+			throw error;
+		}
+	}
+	const latest = latestOf(bundles, ctx.channel);
+	if (!latest) throw new UserError(`no dsh version of the ${ctx.channel} channel is installed`, ["Run `dsh update` to install one."]);
+	return latest;
+}
+
 export function select(ctx: Context, opts: SelectOptions) {
 	const home = dshHome();
-	const stored = readSelection(home);
+	const stored = readSelection(home, !!ctx.managed);
 	if (stored.kind === "invalid" && (opts.use === undefined || ctx.managed)) {
 		// Only `--use` can replace an unreadable selection (a managed install never writes `use`).
 		throw new UserError(`cannot read the selection ${selectionPath(home)} (${stored.reason})`, ctx.managed ? [] : ["Run `dsh select --use latest` to reset it."]);
