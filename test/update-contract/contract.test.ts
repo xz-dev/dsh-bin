@@ -12,6 +12,7 @@ import {
 	addBundle,
 	compiledNative,
 	dsh,
+	EXE,
 	installRoot,
 	launch,
 	type RunResult,
@@ -68,7 +69,7 @@ type Case = { name: string; root: Root; arrange?: (root: string) => (() => void)
 const bundles = (root: string) => readdirSync(join(root, "bundles")).sort();
 const addonsState = (root: string) => (existsSync(join(root, "addons.json")) ? JSON.parse(readFileSync(join(root, "addons.json"), "utf8")) : {});
 const channelFile = (root: string) => (existsSync(join(root, "channel")) ? readFileSync(join(root, "channel"), "utf8").trim() : undefined);
-const launcherOf = (root: string) => /DSH_BIN_LAUNCHER_VERSION=(\S+)/.exec(readFileSync(join(root, "dsh"), "utf8"))?.[1];
+const launcherOf = (root: string) => /DSH_BIN_LAUNCHER_VERSION=(\S+)/.exec(readFileSync(join(root, `dsh${EXE}`), "utf8"))?.[1];
 const leftovers = (root: string) => readdirSync(root).filter((n) => n.startsWith(".staging-") || n.startsWith(".trash-") || n === "update.lock");
 const isReadOnly = (dir: string) => {
 	try {

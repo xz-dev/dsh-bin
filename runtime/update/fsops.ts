@@ -71,18 +71,21 @@ export function newWorkDir(root: string, prefix: string): string {
  * Move a read-only tree to a `.trash-*` quarantine in the install root under its exclusive usage claim.
  * Returns the quarantine path, or undefined (and changes nothing) when the tree is in use.
  */
-export function quarantine(root: string, dir: string): string | undefined {
+export function quarantine(root: string, dir: string, platform = process.platform): string | undefined {
 	const guard = join(dir, USAGE_GUARD);
 	const claim = existsSync(guard) ? acquireClaim(guard, "exclusive") : undefined;
 	if (claim === "busy") return undefined;
+	// Windows refuses to move a directory while any handle inside it is open, our own claim included, and
+	// every dsh process using a tree holds its guard open. So the claim only checks for current users; the
+	// rename itself then refuses a tree that came into use meanwhile (measured on windows-2022).
+	if (platform === "win32") claim?.release();
 	const trash = join(root, `${TRASH_PREFIX}${token()}`);
 	try {
-		unsealTop(dir);
-		renameSync(dir, trash);
+		unsealTop(dir, platform);
+		renameDir(dir, trash, platform);
 	} catch (error) {
-		// Windows cannot move a directory whose executable is running (no claim, e.g. `dsh update --force`
-		// run from the version it replaces): treat it as in use.
-		if (["EBUSY", "EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "")) {
+		// In use, or a user holds a file inside it open: leave it in place.
+		if (isShareViolation(error)) {
 			sealTop(dir);
 			return undefined;
 		}
@@ -91,6 +94,24 @@ export function quarantine(root: string, dir: string): string | undefined {
 		claim?.release();
 	}
 	return trash;
+}
+
+const isShareViolation = (error: unknown) => ["EBUSY", "EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "");
+
+/**
+ * Rename a directory. Windows retries briefly: scanners and indexers hold short-lived handles inside new
+ * trees, and a handle held by a dsh session outlasts the retries and surfaces as in use.
+ */
+function renameDir(src: string, dest: string, platform: string) {
+	for (let attempt = 0; ; attempt++) {
+		try {
+			renameSync(src, dest);
+			return;
+		} catch (error) {
+			if (platform !== "win32" || attempt >= 9 || !isShareViolation(error)) throw error;
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+		}
+	}
 }
 
 /** Put a quarantined tree back (activation failed after `quarantine`). */
@@ -252,7 +273,7 @@ export function installTree(root: string, src: string, dest: string, afterPlace:
 			claim?.release();
 		}
 	}
-	const previous = quarantine(root, dest);
+	const previous = quarantine(root, dest, platform);
 	if (!previous) return "busy";
 	crashPoint("after-quarantine");
 	try {

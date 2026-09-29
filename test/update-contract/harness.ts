@@ -15,7 +15,7 @@ import { extractZip, type ZipInput, writeZip } from "../../runtime/zip.ts";
 
 export const ROOT = resolve(import.meta.dir, "../..");
 export const TARGET: string = hostTargetId();
-const EXE = process.platform === "win32" ? ".exe" : "";
+export const EXE = process.platform === "win32" ? ".exe" : "";
 export const ADDON_PLATFORM = addonPlatform(TARGET);
 
 export const SLOT_A: Slot = { commit: "a".repeat(40), kitVersion: "0.1.2" };
@@ -244,7 +244,7 @@ export async function dsh(root: string, version: string, args: string[], origin:
 
 /** Run the root launcher script (shell fixture launcher). */
 export async function launch(root: string, args: string[], origin: string): Promise<RunResult> {
-	const proc = Bun.spawn(["sh", join(root, "dsh"), ...args], { env: { PATH: process.env.PATH ?? "", DSH_BIN_TEST: "1", DSH_BIN_TEST_ORIGIN: origin, HOME: root }, stdout: "pipe", stderr: "pipe" });
+	const proc = Bun.spawn(["sh", join(root, `dsh${EXE}`), ...args], { env: { PATH: process.env.PATH ?? "", DSH_BIN_TEST: "1", DSH_BIN_TEST_ORIGIN: origin, HOME: root }, stdout: "pipe", stderr: "pipe" });
 	const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
 	return { code, stdout, stderr };
 }

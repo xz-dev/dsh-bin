@@ -89,7 +89,7 @@ jobs:
             # workspace and RUNNER_TEMP are mounted at identical paths, so arguments need no rewriting.
             zig=$(dirname "$(command -v zig)")
             docker run --rm -v "$PWD:$PWD" -v "$RUNNER_TEMP:$RUNNER_TEMP" -v "$zig:/opt/zig:ro" -w "$PWD" -e GITHUB_REPOSITORY -e GH_TOKEN "$IMAGE" sh -euc \
-              'apk add --no-cache bash git curl nodejs npm python3 build-base linux-headers github-cli >/dev/null; PATH=/opt/zig:$PATH bun scripts/build-target.mjs "$@"' sh "${args[@]}"
+              'apk add --no-cache bash git curl nodejs nodejs-dev npm python3 build-base linux-headers github-cli >/dev/null; ln -sf /usr/bin/gcc /usr/local/bin/musl-gcc; PATH=/opt/zig:$PATH bun scripts/build-target.mjs "$@"' sh "${args[@]}"
           fi
           rm -rf "$RUNNER_TEMP/out/addon-tree" "$RUNNER_TEMP/out"/.scratch-*
       - uses: actions/upload-artifact@v4

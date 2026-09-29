@@ -3,7 +3,6 @@
 // usage: bun scripts/build-launcher.mjs <version> <channel> <out-dir> [target-id...]
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, renameSync, rmSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { TARGETS, target as targetById } from "./targets.mjs";
 
@@ -42,7 +41,10 @@ export function assertTargetBinary(path, t) {
 
 /** Build the launcher for target `t` into `<out>/<t.id>/<t.launcher>`; returns the output path. */
 export function buildLauncher(t, { version, channel, out }) {
-	const prefix = mkdtempSync(join(tmpdir(), "dsh-launcher-"));
+	// Zig installs into a prefix next to the output, so the final rename never crosses devices
+	// (on Windows runners the temp dir is on C: and the workspace on D:).
+	mkdirSync(out, { recursive: true });
+	const prefix = mkdtempSync(join(out, ".launcher-"));
 	try {
 		execFileSync("zig", ["build", `-Dtarget=${t.zigTarget}`, `-Dversion=${version}`, `-Dchannel=${channel}`, "--prefix", prefix], {
 			cwd: LAUNCHER_DIR,
