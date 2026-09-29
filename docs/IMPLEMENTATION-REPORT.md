@@ -399,3 +399,56 @@ Publishing works like xz-dev/pi, with no manual step:
 - The first automatic poll came from the push of the automation commit. It planned
   `dsh-v0.1.7-rc.2`, then `dsh-v0.2.0-rc.1`, then live `4878cdab`, run one at a time. Each build
   publishes its slot's office addon first when the slot has none.
+
+## Plugin snapshots, spike 1.1: profile path split (dsh-bin-select-snapshots S1, 2026-09-29)
+
+`scripts/transform-app.mjs` rewrites the profile paths of the built app. Upstream is not forked.
+It scans first-party code only (`lib/` and `node_modules/@deepseek-ai/`); third-party code has
+look-alike `join(dir, file)` calls. The build fails if the set of sites changes. Re-running the
+transform is a no-op.
+
+Sites, identical in rc.2 (`0.1.7-rc.2`) and rc.1 (`0.2.0-rc.1`):
+
+| File | Sites |
+|---|---|
+| `@deepseek-ai/dsh-app-boot/lib/index.js` | `resolveProfileDir` (dir), `createRuntimeResolution` profiles tree (root), 4 file joins: `initProfile` patch, `loadProfile` patch, patch backup, `cordis.yml` include walk |
+| `@deepseek-ai/dsh-plugin-manager/lib/index.js` and `lib/types/index.js` | 1 file join each: `join(this.profile.dir, file)` config read |
+| `lib/profile-boot-*.js` | 3 `cordis.yml` joins (write ×2, root config) |
+| `lib/dump-config-*.js` | 1 `cordis.yml` join |
+
+- With `DSH_BIN_SNAPSHOT_DIR=$DSH_HOME/snapshots/<id>` set, the profile directory is
+  `<snapshot>/profiles/<name>`.
+- `sharedProfileFile` maps only `cordis.patch.yml` to `$DSH_HOME/profiles/<name>/`; it creates that
+  directory when it is missing. The shared root is derived from the snapshot dir, so there is no
+  second variable.
+- With the variable unset, every path is upstream's.
+
+**Finding: `cordis.yml` cannot be shared (your decision: share only the patch).** Upstream sets the
+Loader's `baseUrl`, the module-resolution root for every plugin entry, to the directory of
+`cordis.yml`. With `cordis.yml` in `$DSH_HOME/profiles/tui`, all 24 profile plugins failed with
+`failed to import`. `cordis.yml` holds no user state, because upstream rewrites it to `[]` on every
+boot. It now stays in the snapshot. The proposal, design S1, the plugin-snapshots and
+plugin-runtime specs, and task 1.1 were revised to match.
+
+Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a digest of each tree
+(`profiles/` and every snapshot, `node_modules` included) taken before and after.
+
+| Check | rc.2 (`snapshots/rc2@1`, your real tui runtime) | rc.1 (`snapshots/rc1@2`, tui from the web template) |
+|---|---|---|
+| tui boots from the snapshot | yes; only the declared hmr degradation | yes; hmr and office (addon not installed) degradations only |
+| `--dump-config` shows the shared patch | yes (7 layers labelled `$DSH_HOME/profiles/tui/cordis.patch.yml`) | yes |
+| `plugin --profile tui add github:xz-dev/dsh-caveman` | only `rc2@1` changed (`remove` also checked) | only `rc1@2` changed (after `allow-version`, since dsh-caveman pins rc.2 peers) |
+| plugin-manager toggle (`setPluginEnabled`, via a probe plugin) | wrote `dsh-caveman: disabled` to the shared patch; the snapshot was unchanged | same |
+
+- rc.1 could not use your real tui runtime: dsh-tui 0.11.1 and several plugins pin rc.2 peers, and
+  upstream rc.1 refuses them. rc.1 therefore used a fresh tui made from the web template. Creating
+  it also showed that a new profile gets its runtime and `cordis.yml` in the snapshot and its patch
+  in the shared directory.
+- **Finding for task 7.2: relative `file:` specs break when a runtime moves.** Your tui
+  `package.json` and lockfile reference `file:../../artifacts/vectorize-io-hindsight-coding-agents-0.7.0.tgz`.
+  pnpm resolves such paths from the profile directory, and a snapshot runtime is two levels deeper,
+  so the moved copy failed with ENOENT until the paths were rewritten to `../../../../artifacts/`.
+  - Between snapshots the depth is the same, so snapshot-to-snapshot copies are not affected.
+  - Your migration (7.2) must re-add such plugins, or rewrite the paths, or use an absolute path.
+- Not a spike regression: `dsh -p` gets no model reply within 240 s on either the snapshot or your
+  untouched install. This is still the open item "a model reply through `dsh -p`".
