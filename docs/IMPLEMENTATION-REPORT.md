@@ -801,4 +801,5 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   session's addon claim.
 - Known drift, owned by later tasks: the Scoop manifest still persists and writes `addons.json` (6.2),
   and `scripts/e2e.mjs` still reads it (6.1).
-- Full suite: 349 pass / 0 fail; `zig build test` passes.
+- Full suite: 349 pass / 0 fail; `zig build test` passes. CI run 36594662537 at 60ab9c9 (side branch
+  `select-snapshots`) passed on ubuntu-24.04, macos-15 and windows-2022, including the addon claim.
