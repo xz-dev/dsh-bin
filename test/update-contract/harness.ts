@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { AddonRelease, AddonTable, BundleMeta, Channel, Slot } from "../../runtime/layout.ts";
 import { makeReadOnly, makeWritable } from "../../runtime/readonly.ts";
 import { addonPlatform } from "../../runtime/update/addon-resolve.ts";
@@ -231,7 +231,7 @@ export type RunResult = { code: number; stdout: string; stderr: string };
 
 /** Run `dsh <args>` through the given bundle's compiled entry (what the root launcher execs). */
 export async function dsh(root: string, version: string, args: string[], origin: string, extraEnv: Record<string, string> = {}, exe?: string): Promise<RunResult> {
-	const home = join(root, "..", `${root.split("/").pop()}-home`);
+	const home = join(root, "..", `${basename(root)}-home`);
 	mkdirSync(home, { recursive: true });
 	const proc = Bun.spawn([exe ?? join(root, "bundles", version, `dsh-native${EXE}`), ...args], {
 		env: { PATH: process.env.PATH ?? "", HOME: home, DSH_HOME: join(home, ".dsh"), DSH_BIN_TEST: "1", DSH_BIN_TEST_ORIGIN: origin, ...extraEnv },
