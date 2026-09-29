@@ -3,9 +3,9 @@
 // launcher, assembly, deterministic archive. The build workflow runs exactly this per matrix entry.
 // usage: bun scripts/build-target.mjs <target-id> <channel> <upstream-ref|commit> <out-dir>
 //          --run N --attempt N --index index.json [--work dir] [--git-dir upstream.git]
-//   Writes <out>/<tag>-<asset>, <out>/<tag>.json (release manifest) and, for the linux-x64-modern
+//   Writes <out>/<tag>-<asset>, <out>/<tag>.<target>.json (release manifest) and, for the linux-x64-modern
 //   builder, <out>/addon-tree/ (input of build-addon.mjs).
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { addonSlot, ensureHistory } from "./addon-slot.mjs";
 import { buildApp } from "./build-app.mjs";
@@ -37,6 +37,8 @@ export async function buildTarget({ targetId, channel, ref, out, run, attempt, i
 	splitOfficeAddon(app, addon);
 	const r = localBuild({ out, channel, run, attempt, index, upstreamCommit: upstream.commit, upstreamVersion: upstreamVersion ?? readVersion(src), slot, work, targetId: t.id, warm: true });
 	rmSync(r.root, { recursive: true, force: true });
+	// The per-target release manifest, named per target: aggregate merges all 12 artifacts into one dir.
+	writeFileSync(join(out, `${r.tag}.${t.id}.json`), `${JSON.stringify(r.manifest, null, 2)}\n`);
 	if (t.id === "linux-x64-modern" && slot) cpSync(addon, join(out, "addon-tree"), { recursive: true });
 	return { ...r, slot };
 }

@@ -126,16 +126,18 @@ jobs:
           if [[ -n "$prev" ]]; then mkdir -p "$c/$(dirname "$prev")"; curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$prev" -o "$c/$prev"; fi
           platform=$(bun -e "import {addonPlatform} from './runtime/update/addon-resolve.ts'; console.log(addonPlatform('${{ matrix.id }}'))")
           for a in $(jq -r --arg p "$platform" '.addons.office[] | select(.assets[$p]) | "\(.tag)/\(.assets[$p].name)"' "$c/index.json"); do mkdir -p "$c/$(dirname "$a")"; curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$a" -o "$c/$a"; done
-          for m in "$c"/dsh-*.json; do bun scripts/index.mjs append-bundle "$c/index.json" "$m"; done
+          shopt -s nullglob; manifests=("$c"/dsh-*.json); shopt -u nullglob
+          if (( ${#manifests[@]} != 1 )); then echo "::error::expected one release manifest in the target artifact, found ${#manifests[@]}"; exit 1; fi
+          bun scripts/index.mjs append-bundle "$c/index.json" "${manifests[0]}"
       - name: Packaged E2E (no Node on PATH)
         if: ${{ !matrix.containerImage }}
         shell: bash
-        run: bun scripts/e2e.mjs "$RUNNER_TEMP/cand/index.json" "$RUNNER_TEMP/cand"
+        run: bun scripts/e2e.mjs "$RUNNER_TEMP/cand/index.json" "$RUNNER_TEMP/cand" --target '${{ matrix.id }}'
       - name: Packaged E2E in the pinned musl userspace
         if: matrix.containerImage
         shell: bash
         env: { IMAGE: "${{ matrix.containerImage }}" }
-        run: docker run --rm -v "$PWD:$PWD:ro" -v "$RUNNER_TEMP/cand:$RUNNER_TEMP/cand" -w "$PWD" "$IMAGE" sh -euc 'apk add --no-cache git >/dev/null; bun scripts/e2e.mjs "$1/index.json" "$1"' sh "$RUNNER_TEMP/cand"
+        run: docker run --rm -v "$PWD:$PWD:ro" -v "$RUNNER_TEMP/cand:$RUNNER_TEMP/cand" -w "$PWD" "$IMAGE" sh -euc 'apk add --no-cache git >/dev/null; bun scripts/e2e.mjs "$1/index.json" "$1" --target "$2"' sh "$RUNNER_TEMP/cand" '${{ matrix.id }}'
 
   aggregate:
     needs: [prepare, accept]
