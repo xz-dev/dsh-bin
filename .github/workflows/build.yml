@@ -30,6 +30,9 @@ jobs:
       commit: ${{ steps.p.outputs.commit }}
       slot: ${{ steps.p.outputs.slot }}
       addon: ${{ steps.p.outputs.addon }}
+      # Artifact-name prefix: upstream-poll calls this workflow several times in one run, and artifact
+      # names are run-scoped, so every build's artifacts carry its own channel and commit.
+      key: ${{ steps.p.outputs.key }}
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
@@ -45,7 +48,7 @@ jobs:
           slot=$(bun scripts/addon-slot.mjs "$RUNNER_TEMP/upstream.git" "$commit")
           curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/releases/index.json" -o "$RUNNER_TEMP/index.json" || echo '{"schemaVersion":1,"channels":{"release":[],"live":[]},"addons":{"office":[]}}' > "$RUNNER_TEMP/index.json"
           addon=$(jq --argjson s "$slot" '$s != null and ([.addons.office[] | select(.slot.commit == $s.commit)] | length == 0)' "$RUNNER_TEMP/index.json")
-          { echo "commit=$commit"; echo "slot=$slot"; echo "addon=$addon"; echo "matrix=$(bun scripts/targets.mjs --matrix)"; } >> "$GITHUB_OUTPUT"
+          { echo "commit=$commit"; echo "key=$CHANNEL-$commit"; echo "slot=$slot"; echo "addon=$addon"; echo "matrix=$(bun scripts/targets.mjs --matrix)"; } >> "$GITHUB_OUTPUT"
 
   addon:
     needs: prepare
@@ -94,7 +97,7 @@ jobs:
           fi
           rm -rf "$RUNNER_TEMP/out/addon-tree" "$RUNNER_TEMP/out"/.scratch-*
       - uses: actions/upload-artifact@v4
-        with: { name: "target-${{ matrix.id }}", path: "${{ runner.temp }}/out/", if-no-files-found: error, retention-days: 14 }
+        with: { name: "${{ needs.prepare.outputs.key }}-target-${{ matrix.id }}", path: "${{ runner.temp }}/out/", if-no-files-found: error, retention-days: 14, overwrite: true }
 
   # Jobs downstream of the optional `addon` job need explicit conditions: the implicit success() fails
   # when any ancestor was skipped, which would silently skip the whole release when the slot has an addon.
@@ -112,7 +115,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with: { bun-version: "${{ env.BUN_VERSION }}" }
       - uses: actions/download-artifact@v4
-        with: { name: "target-${{ matrix.id }}", path: "${{ runner.temp }}/cand" }
+        with: { name: "${{ needs.prepare.outputs.key }}-target-${{ matrix.id }}", path: "${{ runner.temp }}/cand" }
       - name: Fixture index with the previous published version and the candidate
         shell: bash
         env: { CHANNEL: "${{ inputs.channel }}" }
@@ -150,13 +153,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with: { bun-version: "${{ env.BUN_VERSION }}" }
       - uses: actions/download-artifact@v4
-        with: { pattern: "target-*", path: "${{ runner.temp }}/release", merge-multiple: true }
+        with: { pattern: "${{ needs.prepare.outputs.key }}-target-*", path: "${{ runner.temp }}/release", merge-multiple: true }
       - run: bun scripts/aggregate-release.mjs "$RUNNER_TEMP/release" --expect-targets 12
       - uses: actions/upload-artifact@v4
-        with: { name: "release", path: "${{ runner.temp }}/release/", if-no-files-found: error, retention-days: 14 }
+        with: { name: "${{ needs.prepare.outputs.key }}-release", path: "${{ runner.temp }}/release/", if-no-files-found: error, retention-days: 14, overwrite: true }
 
   publish:
-    needs: aggregate
+    needs: [prepare, aggregate]
     if: ${{ !cancelled() && needs.aggregate.result == 'success' && inputs.publish && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     concurrency: { group: releases-index, cancel-in-progress: false }
@@ -167,7 +170,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with: { bun-version: "${{ env.BUN_VERSION }}" }
       - uses: actions/download-artifact@v4
-        with: { name: "release", path: "${{ runner.temp }}/release" }
+        with: { name: "${{ needs.prepare.outputs.key }}-release", path: "${{ runner.temp }}/release" }
       - id: attest
         uses: actions/attest-build-provenance@v3
         with:

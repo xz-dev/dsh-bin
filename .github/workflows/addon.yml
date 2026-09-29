@@ -42,7 +42,7 @@ jobs:
           identity=$(bun -e "import {addonDistribution} from './scripts/versioning.mjs'; const s=$slot; const d=addonDistribution({kitVersion:s.kitVersion,run:$GITHUB_RUN_NUMBER,attempt:$GITHUB_RUN_ATTEMPT,launcherCommit:'$GITHUB_SHA'}); console.log(JSON.stringify({version:d.version,tag:d.tag,slot:s}))")
           bun scripts/build-addon.mjs "$t/bundle/addon-tree" "$t/work/src" "$t/addon" "$identity"
       - uses: actions/upload-artifact@v4
-        with: { name: "addon-office", path: "${{ runner.temp }}/addon/", if-no-files-found: error, retention-days: 14 }
+        with: { name: "addon-office-${{ inputs.commit }}", path: "${{ runner.temp }}/addon/", if-no-files-found: error, retention-days: 14, overwrite: true }
       - id: attest
         if: inputs.publish && github.ref == 'refs/heads/main'
         uses: actions/attest-build-provenance@v3
