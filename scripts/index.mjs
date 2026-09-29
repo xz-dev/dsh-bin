@@ -76,7 +76,9 @@ export const serialize = (index) => `${JSON.stringify(parseIndex(JSON.stringify(
 
 if (import.meta.main) {
 	const [cmd, path, manifestPath, ...rest] = process.argv.slice(2);
-	const at = rest.includes("--published-at") ? rest[rest.indexOf("--published-at") + 1] : undefined;
+	// DSH_BIN_PUBLISHED_AT: a candidate addon's entry is appended at build, acceptance and publication
+	// time; one fixed timestamp keeps those entries (and the embedded table) identical.
+	const at = rest.includes("--published-at") ? rest[rest.indexOf("--published-at") + 1] : process.env.DSH_BIN_PUBLISHED_AT || undefined;
 	if (cmd === "check" && path) {
 		readIndex(path);
 		console.log(`${path}: valid`);

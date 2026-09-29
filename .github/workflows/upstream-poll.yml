@@ -46,8 +46,9 @@ jobs:
           echo "builds=$(jq -c '{include: [.builds[] | {channel, upstream: (.tag // .commit)}]}' "$RUNNER_TEMP/diff.json")" >> "$GITHUB_OUTPUT"
           echo "any=$(jq -r '.builds | length > 0' "$RUNNER_TEMP/diff.json")" >> "$GITHUB_OUTPUT"
 
-  # One build at a time, releases in version order then live: each build publishes its slot's
-  # office addon first when the slot has none, so later same-slot builds embed it and no slot gets two.
+  # One build at a time, releases in version order then live: a build whose slot has no office addon
+  # builds a candidate, accepts it on every target and publishes it before the bundle, so later same-slot
+  # builds embed it and no slot gets two.
   build:
     needs: detect
     if: needs.detect.outputs.any == 'true'

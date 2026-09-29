@@ -7,11 +7,36 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { degradationDetail, OFFICE_PACKAGES, officeDegradations } from "../runtime/compat/degradations.ts";
+import { ADDON_NAMES } from "../runtime/layout.ts";
 import { makeReadOnly, makeWritable } from "../runtime/readonly.ts";
 import { extractZip } from "../runtime/zip.ts";
 import { hostTargetId, target } from "./targets.mjs";
 
 const MARKER = /DSH_BIN_LAUNCHER_VERSION=([^\0\n]+)/;
+
+/**
+ * Per addon: the plugins it provides and the declared degradation they show when it is not installed.
+ * Every name in ADDON_NAMES must have a probe, so a new addon cannot ship untested (8.9).
+ */
+export const ADDON_PROBES = {
+	office: { packages: OFFICE_PACKAGES, missing: officeDegradations("the office addon is not installed; run `dsh install --addon office`") },
+};
+
+/** `id (package): detail` lines of dsh's "did not activate" startup warning. */
+export function inactiveLines(output) {
+	const lines = output.split(/\r?\n/);
+	const start = lines.findIndex((l) => / did not activate$/.test(l));
+	if (start < 0) return [];
+	const out = [];
+	for (const line of lines.slice(start + 1)) {
+		if (!/^\S+ \(@?[^)]+\): /.test(line)) break;
+		out.push(line);
+	}
+	return out;
+}
+
+const pluginId = (pkg) => pkg.replace(/^@deepseek-ai\/dsh-/, "");
 
 /** Serve `index.json` and `/download/<tag>/<name>` from `assets`, recording every request path. */
 export function serveFixture(indexPath, assets) {
@@ -41,7 +66,11 @@ function noJsPath(dir) {
 	return dir;
 }
 
-export async function e2e({ index: indexPath, assets, work, keep = false, log = console.log, targetId = hostTargetId() }) {
+/**
+ * `corruptAddon`: self-test of the addon check. After install, break the installed addon's first package
+ * entry point (a published addon whose hashes match but whose content is broken), so acceptance must fail.
+ */
+export async function e2e({ index: indexPath, assets, work, keep = false, log = console.log, targetId = hostTargetId(), corruptAddon = false }) {
 	// The matrix target, not the host default: baseline and modern x64 share a runner.
 	const t = target(targetId);
 	if (hostTargetId().replace(/-(baseline|modern)$/, "") !== t.id.replace(/-(baseline|modern)$/, "")) throw new Error(`e2e for ${t.id} must run on its native host (this is ${hostTargetId()})`);
@@ -120,6 +149,47 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 		r = await run(["update", "--channel", other]);
 		check(idx.channels[other].some((e) => e.assets[t.id]) ? r.code === 0 : r.code === 1 && r.out.includes(other), `--channel ${other}`);
 
+		// 8.9: every addon in this bundle's slot is installed, proven enabled at boot, uninstalled and
+		// proven degraded again. A headless task without credentials activates every plugin, then stops.
+		const missingProbe = ADDON_NAMES.filter((n) => !ADDON_PROBES[n]);
+		check(!missingProbe.length, `no acceptance probe for addon(s) ${missingProbe.join(", ")}`);
+		const bootInactive = async (name) => {
+			const dshHome = join(home, `addon-${name}-dsh`);
+			const dir = join(dshHome, "profiles", "probe");
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "probe", private: true, dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless"] } } }));
+			writeFileSync(join(dir, "cordis.patch.yml"), `- insert:\n${ADDON_PROBES[name].packages.map((p) => `    - id: ${pluginId(p)}\n      name: '${p}'\n`).join("")}`);
+			const b = await run(["--profile", "probe", "hi"], { DSH_HOME: dshHome });
+			check(b.code === 1 && b.out.includes("MISSING_CREDENTIAL"), `${name} probe boot must reach the credential check`);
+			const ids = new Set(ADDON_PROBES[name].packages.map(pluginId));
+			return inactiveLines(b.out).filter((l) => ids.has(l.split(" ")[0])).sort();
+		};
+		for (const name of ADDON_NAMES) {
+			const table = v2.addons?.[name];
+			if (!table?.slot) continue;
+			check(!!table.pinned, `${name}: bundle ${v2.version} has slot ${table.slot.commit} but no addon`);
+			const v = table.pinned;
+			r = await run(["install", "--addon", name]);
+			check(r.code === 0 && existsSync(join(root, "addons", name, v)), `${name}: install`);
+			if (corruptAddon) {
+				const dir = join(root, "addons", name, v);
+				makeWritable(dir);
+				const scope = join(dir, "node_modules", "@deepseek-ai");
+				const pkg = join(scope, readdirSync(scope).sort()[0]);
+				const main = JSON.parse(readFileSync(join(pkg, "package.json"), "utf8"));
+				const entry = typeof main.exports === "string" ? main.exports : (main.exports?.["."]?.import ?? main.exports?.["."]?.default ?? main.exports?.["."] ?? main.main ?? "index.js");
+				writeFileSync(join(pkg, typeof entry === "string" ? entry : "index.js"), "throw new Error('corrupted by e2e --corrupt-addon');\n");
+				log(`e2e: corrupted ${pkg}`);
+			}
+			const enabled = await bootInactive(name);
+			check(!enabled.length, `${name}: installed addon must be enabled at boot, but: ${enabled.join(" | ")}`);
+			r = await run(["uninstall", "--addon", name]);
+			check(r.code === 0 && !JSON.parse(readFileSync(join(root, "addons.json"), "utf8"))[name], `${name}: uninstall`);
+			const expected = ADDON_PROBES[name].missing.map((d) => `${pluginId(d.packageName)} (${d.packageName}): ${degradationDetail(d)}`).sort();
+			const degraded = await bootInactive(name);
+			check(JSON.stringify(degraded) === JSON.stringify(expected), `${name}: uninstalled addon must show the declared degradation, got: ${degraded.join(" | ")}`);
+		}
+
 		const office = idx.addons?.office?.length && v2.addons?.office?.pinned;
 		if (office) {
 			r = await run(["install", "--addon", "office"]);
@@ -167,7 +237,7 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 
 if (import.meta.main) {
 	const [index, assets, ...rest] = process.argv.slice(2);
-	if (!index || !assets) throw new Error("usage: e2e.mjs <index.json> <assets-dir> [--work dir] [--target id] [--keep]");
+	if (!index || !assets) throw new Error("usage: e2e.mjs <index.json> <assets-dir> [--work dir] [--target id] [--keep] [--corrupt-addon]");
 	const opt = (k) => (rest.includes(k) ? rest[rest.indexOf(k) + 1] : undefined);
-	await e2e({ index: resolve(index), assets: resolve(assets), work: opt("--work") ? resolve(opt("--work")) : undefined, keep: rest.includes("--keep"), targetId: opt("--target") });
+	await e2e({ index: resolve(index), assets: resolve(assets), work: opt("--work") ? resolve(opt("--work")) : undefined, keep: rest.includes("--keep"), targetId: opt("--target"), corruptAddon: rest.includes("--corrupt-addon") });
 }
