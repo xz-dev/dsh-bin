@@ -1,6 +1,6 @@
 // `dsh list` (self-update spec "Listing versions"): read-only. No lock, no download, no file change; the
 // only network request is the release index, and its failure degrades to local and embedded data.
-import { ADDON_NAMES, type AddonName, type Channel, CHANNELS, readAddonMeta, readAddonsState, addonDir, slotLabel } from "../layout.ts";
+import { ADDON_NAMES, type AddonName, type Channel, CHANNELS, installedAddons, sameSlot, slotLabel } from "../layout.ts";
 import { candidates, defaultVersion } from "./addon-resolve.ts";
 import { activeMeta, type Context } from "./context.ts";
 import { fetchIndex, isNewer, newestFor, type ReleaseIndex } from "./index-client.ts";
@@ -18,7 +18,6 @@ export async function list(ctx: Context, opts: ListOptions) {
 	const managedHint = ctx.managed ? `Upgrade dsh through ${ctx.managed} instead.` : undefined;
 	const meta = activeMeta(ctx);
 	const target = meta.target;
-	const state = readAddonsState(ctx.root);
 
 	const channels = (opts.channel ? [opts.channel] : [ctx.channel, ...CHANNELS.filter((c) => c !== ctx.channel)]).map((channel) => {
 		const newest = index ? newestFor(index, channel, target) : undefined;
@@ -30,13 +29,9 @@ export async function list(ctx: Context, opts: ListOptions) {
 
 	const addons = ADDON_NAMES.filter((n) => !opts.addon || n === opts.addon).map((name) => {
 		const table = meta.addons?.[name] ?? { slot: null, pinned: null, known: [] };
-		const rec = state[name];
-		const def = defaultVersion(table, meta.channel, index);
-		const installedMeta = rec ? readAddonMeta(addonDir(ctx.root, name, rec.version)) : undefined;
-		const installedInSlot = rec ? !!installedMeta && !!table.slot && installedMeta.slot.commit === table.slot.commit : null;
-		let hint: string | null = null;
-		if (!rec && def) hint = managedHint ?? `dsh install --addon ${name}`;
-		else if (rec && def && rec.version !== def) hint = managedHint ?? `dsh install --addon ${name}`;
+		const installed = installedAddons(ctx.root, name).map((a) => ({ version: a.version, slot: a.slot, inSlot: sameSlot(a.slot, table.slot) }));
+		const def = defaultVersion(table, index);
+		const hint = def && !installed.some((a) => a.version === def) ? (managedHint ?? `dsh install --addon ${name}`) : null;
 		const versions = opts.addon
 			? candidates(table, index).map((c) => ({
 					version: c.version,
@@ -45,7 +40,7 @@ export async function list(ctx: Context, opts: ListOptions) {
 					inSlot: c.inSlot,
 					source: c.source,
 					conflict: c.conflict,
-					installed: rec?.version === c.version,
+					installed: installed.some((a) => a.version === c.version),
 					default: def === c.version,
 					pinned: table.pinned === c.version,
 				}))
@@ -55,7 +50,7 @@ export async function list(ctx: Context, opts: ListOptions) {
 			slot: table.slot,
 			pinned: table.pinned,
 			default: def,
-			installed: rec ? { version: rec.version, forced: rec.forced, inSlot: installedInSlot } : null,
+			installed,
 			hint,
 			...(versions ? { versions } : {}),
 		};
@@ -78,9 +73,7 @@ export async function list(ctx: Context, opts: ListOptions) {
 	printTable(ctx, rows);
 	for (const a of addons) {
 		ctx.out("");
-		const installed = a.installed
-			? `${a.installed.version}${a.installed.forced ? " (forced)" : ""}${a.installed.inSlot === false ? " out of slot" : ""}`
-			: "not installed";
+		const installed = a.installed.length ? a.installed.map((i) => `${i.version}${i.inSlot ? "" : " (out of slot)"}`).join(", ") : "not installed";
 		printTable(ctx, [
 			[`addon ${a.name}`, installed, `default ${a.default ?? "none"}`, `slot ${slotLabel(a.slot)}`],
 			...(a.hint ? [["", "", "", a.hint]] : []),

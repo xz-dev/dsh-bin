@@ -15,7 +15,6 @@ import {
 	installedBundles,
 	latestOf,
 	readAddonMeta,
-	readAddonsState,
 	readBundleMeta,
 	USAGE_GUARD,
 } from "../layout.ts";
@@ -122,18 +121,17 @@ export async function activateBundle(ctx: Context, entry: BundleEntry): Promise<
 }
 
 /**
- * Home of a quarantined tree that must survive a crash: an installed bundle caught mid-replacement
- * (same-version `--force`), unless `dsh uninstall` removed it, or the enabled addon version. Used by the
- * leftover sweep, which restores it only when its home is missing.
+ * Home of a quarantined tree that must survive a crash: an installed bundle or addon version caught
+ * mid-replacement (`--force`), unless `dsh uninstall` removed it. Used by the leftover sweep, which restores
+ * it only when its home is missing.
  */
 export function referencedHome(ctx: Context): (trash: string) => string | undefined {
-	const enabled = readAddonsState(ctx.root);
 	return (trash) => {
-		const meta = readBundleMeta(trash);
 		if (existsSync(join(trash, UNINSTALLED_MARK))) return undefined;
+		const meta = readBundleMeta(trash);
 		if (meta?.name === "dsh-bin") return join(ctx.root, "bundles", meta.version);
 		const addon = readAddonMeta(trash);
-		if (addon && enabled[addon.name]?.version === addon.version) return addonDir(ctx.root, addon.name, addon.version);
+		if (addon && (ADDON_NAMES as readonly string[]).includes(addon.name)) return addonDir(ctx.root, addon.name, addon.version);
 		return undefined;
 	};
 }

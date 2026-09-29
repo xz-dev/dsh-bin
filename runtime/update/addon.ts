@@ -1,50 +1,36 @@
-// `dsh install --addon`, `dsh uninstall --addon`, `dsh update --addon` (self-update spec "Optional addons",
-// "Addon slots"). Same discovery, verification, locking and activation rules as bundle updates.
-// An addon archive holds `addon.json` and `node_modules/` at its root; it is activated read-only into
-// `addons/<name>/<version>/`, with a `.usage.lock` that sessions using it hold shared.
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+// `dsh install --addon <name>[:<version>]` and `dsh uninstall --addon <name>[:<version>]` (self-update spec
+// "Optional addons", "Addon slots"). Same discovery, verification, locking and activation rules as bundles.
+// Several versions of an addon live side by side in `addons/<name>/<version>/`; which one a launch uses is
+// decided by the selection (version-selection), never recorded here. An addon archive holds `addon.json`
+// and `node_modules/`; it is activated read-only with a `.usage.lock` that sessions using it hold shared.
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ADDON_META, type AddonName, addonDir, type BundleMeta, readAddonMeta, readAddonsState, slotLabel, USAGE_GUARD } from "../layout.ts";
+import { ADDON_META, type AddonName, addonDir, type BundleMeta, dshHome, readAddonMeta, slotLabel, USAGE_GUARD } from "../layout.ts";
+import { readSelection } from "../selection.ts";
 import { addonAssetName, addonPlatform, type Candidate, candidates, defaultVersion, findCandidate } from "./addon-resolve.ts";
+import { UNINSTALLED_MARK } from "./bundle.ts";
 import { type Context, UserError } from "./context.ts";
-import { installTree, newWorkDir, removeTree, retire, STAGING_PREFIX, writeFileAtomic } from "./fsops.ts";
+import { discard, installTree, newWorkDir, quarantine, removeTree, STAGING_PREFIX, unquarantine } from "./fsops.ts";
 import { fetchIndex, type ReleaseIndex } from "./index-client.ts";
 import { checkRoots, fetchAndExtract, mismatch } from "./stage.ts";
 
-export type AddonRequest = { name: AddonName; version?: string; force: boolean; mode: "install" | "update" };
+export type AddonRequest = { name: AddonName; version?: string; force: boolean };
 
-/** Online index for addon resolution. A live bundle's default falls back to `pinned` when it is unreachable. */
-export async function indexOrUndefined(ctx: Context, needed: boolean): Promise<ReleaseIndex | undefined> {
+/** Online index for addon resolution; the default falls back to `pinned` when it is unreachable. */
+export async function indexOrUndefined(ctx: Context): Promise<ReleaseIndex | undefined> {
 	try {
 		return await fetchIndex();
 	} catch (error) {
-		if (needed) throw error;
 		ctx.err(`warning: ${(error as Error).message}; using the addon table embedded in this dsh`);
 		return undefined;
 	}
 }
 
-function writeState(ctx: Context, name: AddonName, value: { version: string; forced: boolean } | undefined) {
-	const state = readAddonsState(ctx.root);
-	if (value) state[name] = value;
-	else delete state[name];
-	writeFileAtomic(join(ctx.root, "addons.json"), `${JSON.stringify(state, null, 2)}\n`);
-}
-
-/**
- * Install or update an addon for the bundle described by `meta` (the active bundle). Caller holds
- * `update.lock`. `index` may be passed in when the caller already fetched it (`--all`).
- */
-export async function installAddon(ctx: Context, meta: BundleMeta, req: AddonRequest, index?: ReleaseIndex | null) {
+/** Install one addon version for the bundle described by `meta` (the effective version). Caller holds `update.lock`. */
+export async function installAddon(ctx: Context, meta: BundleMeta, req: AddonRequest) {
 	const table = meta.addons?.[req.name];
 	if (!table) throw new UserError(`dsh ${meta.version} has no ${req.name} addon table.`);
-	const enabled = readAddonsState(ctx.root)[req.name];
-	if (req.mode === "update" && !enabled) {
-		throw new UserError(`the ${req.name} addon is not installed.`, [`Install it with \`dsh install --addon ${req.name}\`.`]);
-	}
-	// The index is optional only when the embedded table can answer: no --version beyond it, and for live
-	// bundles the pinned fallback. Its failure is reported when the chosen version cannot be resolved offline.
-	const idx = index === undefined ? await indexOrUndefined(ctx, false) : (index ?? undefined);
+	const idx = await indexOrUndefined(ctx);
 	const list = candidates(table, idx);
 	let chosen: Candidate | undefined;
 	if (req.version) {
@@ -55,7 +41,7 @@ export async function installAddon(ctx: Context, meta: BundleMeta, req: AddonReq
 			]);
 		}
 	} else {
-		const def = defaultVersion(table, meta.channel, idx);
+		const def = defaultVersion(table, idx);
 		if (!def) throw new UserError(`dsh ${meta.version} has no default ${req.name} addon version (slot ${slotLabel(table.slot)}).`);
 		chosen = findCandidate(list, def);
 		if (!chosen) throw new UserError(`the default ${req.name} addon ${def} is not in the embedded table or the release index.`);
@@ -63,27 +49,24 @@ export async function installAddon(ctx: Context, meta: BundleMeta, req: AddonReq
 	if (chosen.conflict) {
 		throw new UserError(`${req.name} addon ${chosen.version}: the embedded table and the release index disagree on its SHA-256; refusing to install.`);
 	}
-	if (!chosen.inSlot && !(req.force && req.version)) {
+	if (!chosen.inSlot && !req.force) {
 		throw new UserError(
 			`${req.name} addon ${chosen.version} is out of slot: it belongs to slot ${slotLabel(chosen.slot)}, but dsh ${meta.version} uses slot ${slotLabel(table.slot)}.`,
 			[`Add --force to install it anyway (unsupported).`],
 		);
 	}
-	const forced = !chosen.inSlot;
-	const dir = addonDir(ctx.root, req.name, chosen.version);
-	const present = existsSync(join(dir, ADDON_META));
-	if (present && enabled?.version === chosen.version && !req.force) {
-		if (enabled.forced !== forced) writeState(ctx, req.name, { version: chosen.version, forced });
+	const present = existsSync(join(addonDir(ctx.root, req.name, chosen.version), ADDON_META));
+	if (present && !req.force) {
 		ctx.out(`The ${req.name} addon ${chosen.version} is already installed.`);
-		return { changed: false, version: chosen.version };
+		return;
 	}
-	if (!present || req.force) await activateAddon(ctx, req.name, chosen, meta.target);
-	writeState(ctx, req.name, { version: chosen.version, forced });
-	const from = enabled && enabled.version !== chosen.version ? ` (was ${enabled.version})` : "";
-	ctx.out(`Installed the ${req.name} addon ${chosen.version}${forced ? " (forced, out of slot)" : ""}${from}.`);
-	if (forced) ctx.err(`warning: ${req.name} addon ${chosen.version} is out of slot for dsh ${meta.version}; it is unsupported.`);
-	ctx.out("New dsh sessions will use it.");
-	return { changed: true, version: chosen.version };
+	await activateAddon(ctx, req.name, chosen, meta.target);
+	ctx.out(`Installed the ${req.name} addon ${chosen.version}${chosen.inSlot ? "" : " (out of slot)"}.`);
+	if (chosen.inSlot) ctx.out(`New sessions of dsh versions in slot ${slotLabel(table.slot)} use it by default.`);
+	else {
+		ctx.err(`warning: ${req.name} addon ${chosen.version} is out of slot for dsh ${meta.version}; it is unsupported.`);
+		ctx.out(`Launches use it only when named: \`dsh --addon ${req.name}:${chosen.version}\` or \`dsh select --use <version> --addon ${req.name}:${chosen.version}\`.`);
+	}
 }
 
 async function activateAddon(ctx: Context, name: AddonName, chosen: Candidate, target: string) {
@@ -104,6 +87,9 @@ async function activateAddon(ctx: Context, name: AddonName, chosen: Candidate, t
 		if (meta.tag !== chosen.tag) mismatch(what, "tag", chosen.tag, meta.tag);
 		if (meta.slot?.commit !== chosen.slot.commit) mismatch(what, "slot", chosen.slot.commit, meta.slot?.commit);
 		if (!existsSync(join(tree, "node_modules"))) throw new UserError(`invalid addon archive ${asset.name}: missing node_modules/`);
+		// The index sequence orders installed versions for the default (version-selection); it is assigned at
+		// publication, so the archive cannot carry it.
+		if (chosen.seq !== undefined) writeFileSync(join(tree, ADDON_META), `${JSON.stringify({ ...meta, seq: chosen.seq }, null, 2)}\n`);
 		writeFileSync(join(tree, USAGE_GUARD), "");
 		const dest = addonDir(ctx.root, name, chosen.version);
 		mkdirSync(join(dest, ".."), { recursive: true });
@@ -119,16 +105,41 @@ async function activateAddon(ctx: Context, name: AddonName, chosen: Candidate, t
 	}
 }
 
-/** `dsh uninstall --addon <name>` (caller holds `update.lock`). */
-export function uninstallAddon(ctx: Context, name: AddonName) {
-	const enabled = readAddonsState(ctx.root)[name];
-	if (!enabled) {
-		ctx.out(`The ${name} addon is not installed.`);
+/**
+ * `dsh uninstall --addon <name>[:<version>]` (caller holds `update.lock`): that version, or every installed
+ * version. All or none: refused (nothing removed) when one is in use or named by the stored selection.
+ */
+export function uninstallAddon(ctx: Context, name: AddonName, version?: string) {
+	const dir = join(ctx.root, "addons", name);
+	const installed = existsSync(dir) ? readdirSync(dir).filter((v) => !v.startsWith(".")) : [];
+	const wanted = version?.replace(new RegExp(`^dsh-addon-${name}-v`), "");
+	const targets = wanted === undefined ? installed : installed.filter((v) => v === wanted);
+	if (!targets.length) {
+		ctx.out(wanted === undefined ? `The ${name} addon is not installed.` : `The ${name} addon ${wanted} is not installed.`);
 		return;
 	}
-	writeState(ctx, name, undefined);
-	const dir = addonDir(ctx.root, name, enabled.version);
-	const removed = existsSync(dir) && retire(ctx.root, dir);
-	ctx.out(`Uninstalled the ${name} addon ${enabled.version}.`);
-	if (existsSync(dir) && !removed) ctx.out("Its files are still used by a running dsh session; `dsh clean --update` removes them later.");
+	const stored = readSelection(dshHome(), !!ctx.managed);
+	const selected = stored.kind === "ok" ? stored.selection.addons[name] : undefined;
+	if (selected && targets.includes(selected)) {
+		throw new UserError(`the ${name} addon ${selected} is named by the selection`, ["Run `dsh select` without that --addon (or with another version) first."]);
+	}
+	const moved: { home: string; trash: string }[] = [];
+	for (const v of targets) {
+		const home = join(dir, v);
+		const trash = quarantine(ctx.root, home, ctx.platform);
+		if (!trash) {
+			for (const m of moved.reverse()) unquarantine(m.trash, m.home);
+			throw new UserError(`the ${name} addon ${v} is in use by a running dsh session; nothing was uninstalled`, ["Close the dsh sessions using it and try again."]);
+		}
+		moved.push({ home, trash });
+	}
+	for (const m of moved) {
+		try {
+			writeFileSync(join(m.trash, UNINSTALLED_MARK), "");
+		} catch {
+			// Without the mark a crash before removal restores it, which loses nothing.
+		}
+		discard(m.trash);
+	}
+	for (const v of targets) ctx.out(`Uninstalled the ${name} addon ${v}.`);
 }

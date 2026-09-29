@@ -56,6 +56,22 @@ export function namedSnapshot(launch: Launch | undefined): string | null {
 	return typeof launch.selection?.snapshot === "string" ? launch.selection.snapshot : null;
 }
 
+/**
+ * The version of addon `name` a launch names (version-selection "Selection resolution", step 3): its
+ * `--addon <name>:<v>`, else the selection's when the version came from the selection. Undefined: the default.
+ */
+export function namedAddon(launch: Launch | undefined, name: string): string | undefined {
+	if (!launch) return undefined;
+	for (const spec of launch.addons) {
+		const colon = spec.indexOf(":");
+		if (colon <= 0 || colon === spec.length - 1) throw new Error(`--addon ${spec}: expected <name>:<version>`);
+		if (spec.slice(0, colon) === name) return spec.slice(colon + 1);
+	}
+	if (launch.source !== "selection") return undefined;
+	const v = (launch.selection?.addons as Record<string, unknown> | undefined)?.[name];
+	return typeof v === "string" ? v : undefined;
+}
+
 export type Leading = { use: string | null; snapshot: string | null; addons: string[]; rest: string[] };
 
 /**

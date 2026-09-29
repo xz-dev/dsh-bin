@@ -1,9 +1,8 @@
 // Install-root layout (design D6/D7b/D9), shared by the compiled entry, the updater and `dsh list`:
 //
-//   <root>/dsh(.exe)                         root launcher; its embedded version is the active bundle
+//   <root>/dsh(.exe)                         root launcher; starts every installed version (design S2)
 //   <root>/bundles/<v>/{dsh-native, app/, pnpm/, bin/, bundle.json, .usage.lock}
-//   <root>/addons/<name>/<addon-version>/{addon.json, node_modules/}
-//   <root>/addons.json                       {<name>: {version, forced}}
+//   <root>/addons/<name>/<addon-version>/{addon.json, node_modules/, .usage.lock}  side by side
 //   <root>/channel                           channel recorded by the last successful activation
 //   <root>/update.lock                       maintenance mutex (directory)
 //   <root>/.<manager>.managed.lock           package-manager ownership marker
@@ -78,7 +77,6 @@ export type BundleMeta = {
 
 /** `addon.json` inside an installed addon version. */
 export type AddonMeta = { name: AddonName; version: string; tag: string; kitVersion: string; slot: Slot; packages: string[]; seq?: number };
-export type AddonsState = Partial<Record<AddonName, { version: string; forced: boolean }>>;
 
 export const BUNDLE_META = "bundle.json";
 export const ADDON_META = "addon.json";
@@ -140,11 +138,6 @@ export function installedAddons(root: string, name: AddonName): AddonMeta[] {
 
 /** Default addon of a bundle (version-selection): the installed in-slot version with the highest sequence. */
 export const defaultAddon = (installed: readonly AddonMeta[], slot: Slot | null | undefined) => installed.filter((a) => sameSlot(a.slot, slot)).at(-1);
-
-export function readAddonsState(root: string): AddonsState {
-	const path = join(root, "addons.json");
-	return existsSync(path) ? readJson<AddonsState>(path) : {};
-}
 
 export function readAddonMeta(dir: string): AddonMeta | undefined {
 	const path = join(dir, ADDON_META);

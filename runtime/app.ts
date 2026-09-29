@@ -11,7 +11,7 @@ import { installRequireBuiltin } from "./compat/require-builtin.ts";
 import { dshHome, isCommitTime, readBundleMeta, USAGE_GUARD } from "./layout.ts";
 import { UserError } from "./update/context.ts";
 import { createdLine } from "./snapshot/auto.ts";
-import { readLaunch, writeLaunch } from "./snapshot/launch.ts";
+import { namedAddon, readLaunch, writeLaunch } from "./snapshot/launch.ts";
 import { applyLeading, resolveSnapshot } from "./snapshot/resolve.ts";
 import { snapshotDir } from "./snapshot/store.ts";
 import type { Claim } from "./usage-claim.ts";
@@ -67,7 +67,22 @@ if (existsSync(shimDir)) {
 	process.env[pathKey] = [shimDir, ...rest].join(delimiter);
 }
 
-const office = officeWiring(bundleDir);
+// The office version this launch uses (the named one, or the in-slot default); a named version that is not
+// installed fails the launch with one diagnostic, never falling back to another version.
+let office: ReturnType<typeof officeWiring>;
+try {
+	let named: string | undefined;
+	try {
+		named = namedAddon(readLaunch(), "office");
+	} catch (error) {
+		throw new UserError((error as Error).message);
+	}
+	office = officeWiring(bundleDir, named);
+} catch (error) {
+	if (!(error instanceof UserError)) throw error;
+	process.stderr.write(`dsh: ${error.message}\n${error.hints.map((h) => `${h}\n`).join("")}`);
+	process.exit(error.code);
+}
 if (office.kind === "enabled" && office.warning) process.stderr.write(`${office.warning}\n`);
 const degradations = [HMR_DEGRADATION, ...(office.kind === "degraded" ? office.degradations : [])];
 const host = installHostPackages(appDir, {

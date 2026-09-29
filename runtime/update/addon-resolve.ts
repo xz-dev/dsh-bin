@@ -1,6 +1,6 @@
 // Addon version resolution (self-update spec "Addon slots"). Pure functions shared by install/update
 // (which act on the result) and `dsh list` (which only shows it).
-import type { AddonRelease, AddonTable, Channel, Slot } from "../layout.ts";
+import type { AddonRelease, AddonTable, Slot } from "../layout.ts";
 import type { ReleaseIndex } from "./index-client.ts";
 
 export type Source = "embedded" | "index" | "both";
@@ -38,11 +38,11 @@ export function candidates(table: AddonTable, index: ReleaseIndex | undefined): 
 }
 
 /**
- * Default addon version for a bundle: `pinned` for release bundles; for live bundles the in-slot index entry
+ * Default addon version to install for a bundle (self-update "Optional addons"): the in-slot index entry
  * with the highest sequence, falling back to `pinned` when the index is unreachable or has none.
  */
-export function defaultVersion(table: AddonTable, channel: Channel, index: ReleaseIndex | undefined): string | null {
-	if (channel === "live" && index && table.slot) {
+export function defaultVersion(table: AddonTable, index: ReleaseIndex | undefined): string | null {
+	if (index && table.slot) {
 		const inSlot = index.addons.office.filter((e) => e.slot.commit === table.slot!.commit);
 		const newest = inSlot.reduce<AddonRelease | undefined>((a, e) => (!a || (e.seq ?? 0) > (a.seq ?? 0) ? e : a), undefined);
 		if (newest) return newest.version;

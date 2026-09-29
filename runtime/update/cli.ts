@@ -97,11 +97,11 @@ async function run(cmd: ParsedCommand, ctx: Context) {
 		switch (cmd.command) {
 			case "install":
 				if ("bundle" in cmd) return installVersion(ctx, { query: cmd.bundle, channel: cmd.channel, force: cmd.force });
-				await installAddon(ctx, addonTarget(ctx), { name: cmd.addon, version: cmd.version, force: cmd.force, mode: "install" });
+				await installAddon(ctx, addonTarget(ctx), { name: cmd.addon, version: cmd.version, force: cmd.force });
 				return;
 			case "uninstall":
 				if ("bundles" in cmd) return uninstallVersions(ctx, cmd.bundles);
-				uninstallAddon(ctx, cmd.addon);
+				uninstallAddon(ctx, cmd.addon, cmd.version);
 				return;
 			case "update": {
 				const self = await updateSelf(ctx, { channel: cmd.channel, force: cmd.force });

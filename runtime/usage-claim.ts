@@ -101,13 +101,13 @@ export function acquireClaim(guardPath: string, mode: ClaimMode): Claim | "busy"
 	return getBackend().acquire(guardPath, mode);
 }
 
-let session: Claim | undefined;
+const held = new Map<string, Claim>();
 
-/** Hold the shared claim on this bundle for the rest of the process lifetime. */
+/** Hold the shared claim on a guard (this bundle, the addon version in use) for the rest of the process lifetime. */
 export function holdSessionClaim(guardPath: string): "acquired" | "busy" {
-	if (session) return "acquired";
+	if (held.has(guardPath)) return "acquired";
 	const claim = acquireClaim(guardPath, "shared");
 	if (claim === "busy") return "busy";
-	session = claim;
+	held.set(guardPath, claim);
 	return "acquired";
 }

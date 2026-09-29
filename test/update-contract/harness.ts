@@ -259,16 +259,15 @@ export function addBundle(world: World, root: string, version: string, launcher 
 	makeReadOnly(join(root, "bundles", version));
 }
 
-/** Install an addon version directly into a root (pre-existing state), with its addons.json record. */
-export function addAddon(world: World, root: string, spec: AddonSpec, enabled?: { forced: boolean }) {
+/** Install an addon version directly into a root (pre-existing state), with its index sequence in addon.json. */
+export function addAddon(world: World, root: string, spec: AddonSpec) {
 	const dir = join(root, "addons", "office", spec.version);
 	mkdirSync(dir, { recursive: true });
 	const zip = join(world.dir, `a-${spec.version}.zip`);
-	writeZip(zip, addonInputs(spec));
+	writeZip(zip, addonInputs(spec, spec.seq ? { seq: spec.seq } : {}));
 	extractZip(zip, dir);
 	writeFileSync(join(dir, ".usage.lock"), "");
 	makeReadOnly(dir);
-	if (enabled) writeFileSync(join(root, "addons.json"), `${JSON.stringify({ office: { version: spec.version, forced: enabled.forced } }, null, 2)}\n`);
 }
 
 /** Retry backoff for test runs (test mode only): failure cases must not wait seconds. */

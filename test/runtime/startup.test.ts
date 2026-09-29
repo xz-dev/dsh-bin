@@ -2,7 +2,7 @@
 // (work/app, or DSH_BIN_TEST_APP). Hermetic: temp DSH_HOME, no API key, PATH without node.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { degradationDetail, HMR_DEGRADATION, officeDegradations } from "../../runtime/compat/degradations.ts";
@@ -54,8 +54,8 @@ const env = (home: string) => {
 	return e;
 };
 
-async function run(args: string[], home: string, until?: RegExp) {
-	const proc = Bun.spawn([native, ...args], { cwd: home, env: env(home), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+async function run(args: string[], home: string, until?: RegExp, extra: Record<string, string> = {}) {
+	const proc = Bun.spawn([native, ...args], { cwd: home, env: { ...env(home), ...extra }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
 	let stderr = "";
 	let stdout = "";
 	const read = async (stream: ReadableStream<Uint8Array>, sink: (s: string) => void) => {
@@ -95,7 +95,17 @@ describe.skipIf(!built)("compiled entry startup", () => {
 		if (root) rmSync(root, { recursive: true, force: true });
 	});
 
+	const installOnly = (versions: string[]) => {
+		for (const v of ["A1", "B1"]) {
+			const dir = join(root, "addons", "office", v);
+			const parked = join(root, "parked", v);
+			mkdirSync(join(root, "parked"), { recursive: true });
+			if (versions.includes(v) && existsSync(parked)) renameSync(parked, dir);
+			if (!versions.includes(v) && existsSync(dir)) renameSync(dir, parked);
+		}
+	};
 	test("3.5: tui startup warnings equal the declared degradation list", async () => {
+		installOnly([]);
 		const home = profile(
 			mkdtempSync(join(root, "home-")),
 			"tui",
@@ -109,33 +119,44 @@ describe.skipIf(!built)("compiled entry startup", () => {
 
 	const OFFICE_PATCH =
 		"- insert:\n    - id: office-to-pdf\n      name: '@deepseek-ai/dsh-office-to-pdf'\n    - id: skill-office\n      name: '@deepseek-ai/dsh-skill-office'\n";
-	const cases: [string, object | undefined, (stderr: string) => void][] = [
-		["in-slot addon is used", { version: "A1", forced: false }, (e) => {
+	// 5.5: the version comes from the launch (`--addon office:<v>` in DSH_BIN_LAUNCH), else the in-slot default.
+	const launch = (addons: string[]) => JSON.stringify({ protocol: 2, version: "V1", source: "use", use: "V1", snapshot: null, addons, selection: null });
+	const cases: [string, string[], string[], (stderr: string, code: number) => void][] = [
+		["the in-slot default is used", ["A1", "B1"], [], (e) => {
 			expect(inactive(e)).toEqual([]);
 			expect(e).not.toContain("out of slot");
 		}],
-		["forced out-of-slot addon is used with one warning", { version: "B1", forced: true }, (e) => {
+		["a named out-of-slot addon is used with one warning", ["A1", "B1"], ["office:B1"], (e) => {
 			expect(inactive(e)).toEqual([]);
-			expect(e.split("\n").filter((l) => l.includes("forced out of slot"))).toHaveLength(1);
+			expect(e.split("\n").filter((l) => l.includes("office addon B1 is out of slot"))).toHaveLength(1);
 		}],
-		["unforced out-of-slot addon degrades office", { version: "B1", forced: false }, (e) => {
+		["only an out-of-slot version installed: office degrades, naming dsh install --addon office", ["B1"], [], (e) => {
 			const reasons = inactive(e);
 			expect(reasons).toHaveLength(2);
-			for (const r of reasons) expect(r).toMatch(/DeclaredDegradation: .*out of slot.*dsh install --addon office/);
+			for (const r of reasons) expect(r).toMatch(/DeclaredDegradation: .*no installed office addon version fits.*dsh install --addon office/);
 		}],
-		["no addon degrades office naming dsh install --addon office", undefined, (e) => {
+		["no addon degrades office naming dsh install --addon office", [], [], (e) => {
 			const office = officeDegradations("the office addon is not installed; run `dsh install --addon office`");
 			expect(inactive(e).sort()).toEqual([line("office-to-pdf", office[0]), line("skill-office", office[1])].sort());
 		}],
 	];
-	for (const [name, state, check] of cases) {
-		test(`3.7: ${name}`, async () => {
-			writeFileSync(join(root, "addons.json"), JSON.stringify(state ? { office: state } : {}));
+	for (const [name, versions, addons, check] of cases) {
+		test(`3.7/5.5: ${name}`, async () => {
+			installOnly(versions);
 			const home = profile(mkdtempSync(join(root, "home-")), "headless", { bundles: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless"] }, OFFICE_PATCH);
-			const { code, stderr } = await run(["--profile", "headless", "hi"], home);
+			const { code, stderr } = await run(["--profile", "headless", "hi"], home, undefined, addons.length ? { DSH_BIN_LAUNCH: launch(addons) } : {});
 			expect(code).toBe(1);
 			expect(stderr).toContain("MISSING_CREDENTIAL");
-			check(stderr);
+			check(stderr, code);
 		}, 60_000);
 	}
+	test("5.5: a named office version that is not installed fails the launch with one diagnostic", async () => {
+		installOnly(["A1"]);
+		const home = profile(mkdtempSync(join(root, "home-")), "headless", { bundles: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless"] }, OFFICE_PATCH);
+		const { code, stderr } = await run(["--profile", "headless", "hi"], home, undefined, { DSH_BIN_LAUNCH: launch(["office:C9"]) });
+		expect(code).toBe(1);
+		expect(stderr).toContain("office addon C9 is not installed");
+		expect(stderr).toContain("dsh install --addon office:C9");
+		expect(stderr).not.toContain("MISSING_CREDENTIAL");
+	}, 60_000);
 });

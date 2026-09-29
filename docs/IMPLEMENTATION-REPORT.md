@@ -725,3 +725,80 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   under the launcher) likely fails the rename and is reported as "in use". Safe, but the message is
   misleading; check it in the 5.4 Windows CI run.
 - Full suite: 353 pass / 0 fail; `zig build test` passes.
+
+### Task 5.4: `dsh update` installs side by side; `dsh clean`
+
+- `dsh update` targets the channel's newest entry. When it is installed, it prints `dsh is already up to
+  date (<v>)` (with `--force` it is reinstalled, printing `Installed dsh <v>`). Otherwise it installs it
+  next to the others and prints `Updated dsh from <previous latest> to <v>`. The selection is never
+  changed; a pinned selection gets the `pinnedWarning` (shared with `install`). The root launcher is
+  replaced only on a newer protocol (`replacesLauncher`), for update and install alike.
+- New-slot hint (`newSlotHints`): an addon installed only for other slots names `dsh install --addon
+  <name>`; nothing is downloaded.
+- Removed options: `--addon`, `--all`, `--version`, `--clean` are unknown options; `--addon`/`--all` add a
+  hint naming `dsh install --addon office`.
+- **`dsh clean` (your decision, 2026-09-29; spec, design and tasks revised with your confirmation):**
+  `dsh clean [--update] [--snapshots] [--transpiler] [--all]`, no option = `--all`. `--update` sweeps
+  install-root staging/trash and partial downloads under `update.lock`; `--snapshots` sweeps the snapshot
+  store's staging/trash under its lock; `--transpiler` clears `$DSH_BUNDLE_CACHE/transpiler`. Installed
+  bundles, addon versions and snapshots are never removed by it. A managed install skips `--update` with a
+  note; the rest runs. The launcher's `maintenance_cmds` gained `clean`.
+- The root launcher's build no longer names the active version: `activeMeta` is the newest installed
+  bundle of the recorded channel; the leftover sweep restores any quarantined bundle without the
+  `.uninstalled` mark (only same-version `--force` and uninstall quarantine bundles now).
+- Stale hints fixed: the office degradation/warning texts, `dsh list` addon hint, addon and download
+  comments now name `dsh install --addon office` / `dsh clean --update`.
+- Contract matrix rewritten for the new surface: side-by-side install (launcher and selection untouched,
+  `select` resolves the new latest), removed-option rejections, new-slot hint and its absence, channel
+  switch installs next to R1, `clean` (all/--snapshots/--transpiler/managed/never removes addons), the
+  lock refusals, and the crash matrix. **Note:** the contract fixture's shell launcher starts one fixed
+  version, so after an update the crash matrix checks what a plain launch starts through `dsh select`'s
+  TypeScript resolution (`startsNow`), not through the Zig launcher. The Zig resolver is covered by the
+  launcher tests (3.1); the two resolvers are kept in agreement by those two test sets.
+- Windows timing flakes: explicit timeouts on "two concurrent updaters" (60 s), the non-bundle guidance
+  case (30 s) and "assemble inventory" (30 s); the matrix cases already had 60 s.
+- Known drift, owned by later tasks: `scripts/e2e.mjs` still calls `update --clean/--addon/--all` and
+  `install --addon --version` (6.1 rewrites it), and the README still documents the old surface (5.7).
+- Full suite: 339 pass / 0 fail; `zig build test` passes. Windows/macOS: CI run 36590942452 on the
+  `select-snapshots` side branch (result below).
+- **CI run 36590942452: failed on all three OSes, both test bugs, fixed in bbbdcf6.**
+  - ubuntu/macOS: the "interrupted copy" store test compared `readdirSync` output unsorted (ext4/APFS
+    order is not alphabetical).
+  - Windows: the contract fixture's shell launcher set `HOME` only; `homedir()` reads `USERPROFILE` on
+    Windows, so the automatic snapshot went to the runner's real home and two launcher cases failed.
+  - Rerun at bbbdcf6: CI run 36593757061 passed on ubuntu-24.04, macos-15 and windows-2022.
+  - Still not verified: uninstalling the version that runs the command on Windows (from 5.3). No
+    contract case does this (the uninstall cases run from another installed version), so CI does not
+    answer it; it stays open for the accept run / e2e (6.1).
+
+### Task 5.5: addons as installed versions
+
+- `dsh install --addon <name>[:<version>]` adds one version to `addons/<name>/<version>/`, side by side
+  with others; it prints "already installed" (no download) unless `--force`, refuses an out-of-slot
+  version without `--force`, and records the index `seq` in `addon.json` (the default's ordering).
+  `install --version` is removed (unknown option). `dsh uninstall --addon <name>[:<version>]` removes that
+  version or every version, all or none, refusing a version in use or named by the selection; removed
+  versions carry the `.uninstalled` mark so the leftover sweep never restores them.
+- `addons.json` and the forced record are gone (`readAddonsState`/`AddonsState` removed).
+- The default addon is the in-slot index entry with the highest `seq`, else `pinned` when the index is
+  unreachable (`defaultVersion(table, index)`; no channel special case). **Behaviour change:** a release
+  bundle no longer installs its pin when the index has a newer in-slot addon (the old "release uses pin"
+  case now expects `Q`, per the "Default follows the index" scenario).
+- Launch (`officeWiring(bundleDir, named)`): the launch's `--addon office:<v>`, else the selection's
+  office when the version came from the selection (`namedAddon` reads the launch record, so a restart keeps
+  it after a selection change), else the newest installed in-slot version; a managed install uses its
+  installed in-slot version. A named version that is not installed fails the launch with one diagnostic
+  (`dsh install --addon office:<v>`); a named out-of-slot version is used with one warning per launch; no
+  in-slot version degrades office with the install hint. The session holds the version's shared usage
+  claim (`holdSessionClaim` now keeps one claim per guard).
+- `dsh list` shows the installed versions (in/out of slot) instead of the record; the full listing rework
+  is 5.6.
+- Tests: contract cases for install (default `Q`, side by side, `name:ver`, tag form, `--force` reinstall),
+  uninstall (one, all, selection-named and in-use refusals, all or none, no restore by `clean`), the slot
+  cases in the `name:ver` form, forced out-of-slot install (plain launches keep the default), and the
+  rejected forms; runtime tests for the in-slot default, the named out-of-slot warning, the out-of-slot-only
+  degradation, the not-installed failure, the restart keeping the launch's office version, and the
+  session's addon claim.
+- Known drift, owned by later tasks: the Scoop manifest still persists and writes `addons.json` (6.2),
+  and `scripts/e2e.mjs` still reads it (6.1).
+- Full suite: 349 pass / 0 fail; `zig build test` passes.

@@ -22,7 +22,8 @@ describe("accepted", () => {
 		expect(p("clean --transpiler --update")).toEqual({ command: "clean", help: false, parts: ["update", "transpiler"] });
 		expect(p("clean --snapshots")).toEqual({ command: "clean", help: false, parts: ["snapshots"] });
 		expect(p("install --addon office")).toEqual({ command: "install", help: false, addon: "office", force: false });
-		expect(p("install --addon office --version dsh-addon-office-v1 --force")).toEqual({ command: "install", help: false, addon: "office", force: true, version: "dsh-addon-office-v1" });
+		expect(p("install --addon office:dsh-addon-office-v1 --force")).toEqual({ command: "install", help: false, addon: "office", force: true, version: "dsh-addon-office-v1" });
+		expect(p("uninstall --addon=office:0.1.2")).toEqual({ command: "uninstall", help: false, addon: "office", version: "0.1.2" });
 		expect(p("uninstall --addon=office")).toEqual({ command: "uninstall", help: false, addon: "office" });
 		expect(p("install 0.1.7-rc.2")).toEqual({ command: "install", help: false, bundle: "0.1.7-rc.2", force: false });
 		expect(p("install dsh-live-abc1234-xz.4.1.g44444444 --channel live --force")).toEqual({ command: "install", help: false, bundle: "dsh-live-abc1234-xz.4.1.g44444444", channel: "live", force: true });
@@ -75,11 +76,13 @@ describe("rejected (first error wins)", () => {
 		["uninstall", "dsh uninstall requires a dsh version or --addon <name> (valid addons: office). Plugins are managed with `dsh plugin --profile <name> …`."],
 		["install 0.1.7 0.1.8", "Unexpected argument 0.1.8."],
 		["install 0.1.7 --addon office", "--addon cannot be combined with a dsh version"],
-		["install 0.1.7 --version 1", "--version requires --addon"],
+		["install 0.1.7 --version 1", 'Unknown option --version for "install".'],
 		["install --addon office --channel live", "--channel requires a dsh version"],
 		["uninstall 0.1.7 --force", 'Unknown option --force for "uninstall".'],
 		["update --channel live --channel release", "--channel can only be provided once"],
-		["install --addon office --version 1 --version 1", "--version can only be provided once"],
+		["install --addon office:1 --addon office:2", "--addon can only be provided once"],
+		["install --addon office:", "--addon office:: expected <name> or <name>:<version>"],
+		["list --addon office:1", "Unknown addon office:1; valid addons: office."],
 		["list --channel live --channel release", "--channel can only be provided once"],
 	])("%s", (argv, message) => {
 		expect(err(argv)).toBe(message);

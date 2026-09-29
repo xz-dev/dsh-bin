@@ -1,17 +1,10 @@
-// D7b startup wiring: decide from the install root whether the enabled office addon is usable by this
-// bundle, and produce the host-package extras (kit packages) or the declared office degradation.
+// D7b startup wiring: resolve the office addon version a launch uses (version-selection "Selection
+// resolution") and produce the host-package extras (kit packages) or the declared office degradation.
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import {
-	addonDir,
-	exeName,
-	installOf,
-	readAddonMeta,
-	readAddonsState,
-	readBundleMeta,
-	sameSlot,
-	slotLabel,
-} from "../layout.ts";
+import { addonDir, defaultAddon, exeName, installedAddons, installOf, managedBy, readAddonMeta, readBundleMeta, sameSlot, slotLabel, USAGE_GUARD } from "../layout.ts";
+import { UserError } from "../update/context.ts";
+import { holdSessionClaim } from "../usage-claim.ts";
 import { type Degradation, OFFICE_PACKAGES, officeDegradations } from "./degradations.ts";
 
 const KIT = /^@deepseek-ai\/libreoffice-kit(?:-.+)?$/;
@@ -32,37 +25,49 @@ function kitPackages(dir: string): Map<string, string> {
 	return found;
 }
 
-export function officeWiring(bundleDir: string): OfficeWiring {
+/**
+ * The office addon of a launch of the bundle in `bundleDir`. `named`: the version the launch names (its
+ * `--addon office:<v>`, or the selection's when the version came from the selection); otherwise the
+ * **default**, the installed in-slot version with the highest index sequence. A managed install uses the one
+ * version its package installed. A named version that is not installed fails the launch (UserError, no
+ * fallback); a named out-of-slot version is used with a warning; no in-slot default degrades office.
+ * The session holds the chosen version's shared usage claim, so it is not removed under it.
+ */
+export function officeWiring(bundleDir: string, named?: string): OfficeWiring {
 	const install = installOf(bundleDir);
-	const enabled = install && readAddonsState(install.root).office;
-	if (!install || !enabled) {
-		return { kind: "degraded", degradations: officeDegradations("the office addon is not installed; run `dsh install --addon office`") };
+	const bundleSlot = readBundleMeta(bundleDir)?.addons?.office?.slot;
+	const installed = install ? installedAddons(install.root, "office") : [];
+	const managed = install && managedBy(install.root, bundleDir);
+	let version: string | undefined;
+	if (named && !managed) {
+		version = named.replace(/^dsh-addon-office-v/, "");
+		if (!installed.some((a) => a.version === version)) {
+			throw new UserError(`office addon ${version} is not installed`, [`Run \`dsh install --addon office:${version}\` to install it.`]);
+		}
+	} else {
+		version = (managed ? installed.filter((a) => sameSlot(a.slot, bundleSlot)).at(-1) : defaultAddon(installed, bundleSlot))?.version;
+		if (!version) {
+			const why = installed.length ? `no installed office addon version fits this dsh (slot ${slotLabel(bundleSlot)})` : "the office addon is not installed";
+			return { kind: "degraded", degradations: officeDegradations(`${why}; run \`dsh install --addon office\``) };
+		}
 	}
-	const dir = addonDir(install.root, "office", enabled.version);
+	const dir = addonDir(install!.root, "office", version);
 	const meta = readAddonMeta(dir);
 	const extra = kitPackages(dir);
 	if (!meta || extra.size === 0) {
-		return {
-			kind: "degraded",
-			degradations: officeDegradations(`the enabled office addon ${enabled.version} is missing or incomplete; run \`dsh install --addon office\``),
-		};
+		return { kind: "degraded", degradations: officeDegradations(`office addon ${version} is incomplete; run \`dsh install --addon office:${version} --force\``) };
 	}
-	const bundleSlot = readBundleMeta(bundleDir)?.addons?.office?.slot;
-	if (sameSlot(meta.slot, bundleSlot)) return { kind: "enabled", version: enabled.version, dir, extra };
-	if (enabled.forced) {
-		return {
-			kind: "enabled",
-			version: enabled.version,
-			dir,
-			extra,
-			warning: `dsh: warning: office addon ${enabled.version} is forced out of slot (addon slot ${slotLabel(meta.slot)}, bundle slot ${slotLabel(bundleSlot)}); run \`dsh install --addon office\` to install the default`,
-		};
+	const guard = join(dir, USAGE_GUARD);
+	if (existsSync(guard) && holdSessionClaim(guard) === "busy") {
+		return { kind: "degraded", degradations: officeDegradations(`office addon ${version} is being removed; start dsh again`) };
 	}
+	if (sameSlot(meta.slot, bundleSlot)) return { kind: "enabled", version, dir, extra };
 	return {
-		kind: "degraded",
-		degradations: officeDegradations(
-			`office addon ${enabled.version} is out of slot for this bundle (addon slot ${slotLabel(meta.slot)}, bundle slot ${slotLabel(bundleSlot)}); run \`dsh install --addon office\``,
-		),
+		kind: "enabled",
+		version,
+		dir,
+		extra,
+		warning: `dsh: warning: office addon ${version} is out of slot for this dsh (addon slot ${slotLabel(meta.slot)}, bundle slot ${slotLabel(bundleSlot)}); it is unsupported`,
 	};
 }
 

@@ -15,6 +15,7 @@ import {
 	EXE,
 	installRoot,
 	launch,
+	type AddonSpec,
 	type RunResult,
 	removeRoot,
 	type ServeOptions,
@@ -51,7 +52,7 @@ const INDEX = "/index.json";
 /** An unreachable index (HTTP 503) is tried INDEX_ATTEMPTS times. */
 const INDEX_TRIES = [INDEX, INDEX, INDEX];
 
-type Root = { version: string; channelFile?: "release" | "live"; managed?: string; addon?: { version: string; slot: typeof SLOT_A; forced: boolean }; extra?: string[] };
+type Root = { version: string; channelFile?: "release" | "live"; managed?: string; addons?: AddonSpec[]; extra?: string[] };
 
 type Step = {
 	argv: string[];
@@ -73,7 +74,6 @@ type Step = {
 type Case = { name: string; root: Root; arrange?: (root: string) => (() => void) | void; steps: Step[] };
 
 const bundles = (root: string) => readdirSync(join(root, "bundles")).sort();
-const addonsState = (root: string) => (existsSync(join(root, "addons.json")) ? JSON.parse(readFileSync(join(root, "addons.json"), "utf8")) : {});
 const channelFile = (root: string) => (existsSync(join(root, "channel")) ? readFileSync(join(root, "channel"), "utf8").trim() : undefined);
 const launcherOf = (root: string) => /DSH_BIN_LAUNCHER_VERSION=(\S+)/.exec(readFileSync(join(root, `dsh${EXE}`), "utf8"))?.[1];
 const leftovers = (root: string) => readdirSync(root).filter((n) => n.startsWith(".staging-") || n.startsWith(".trash-") || n === "update.lock");
@@ -471,7 +471,7 @@ const selectCases: Case[] = [
 	},
 	{
 		name: "select an installed addon version, out of slot included",
-		root: { version: V.R1, addon: { version: V.B1, slot: SLOT_B, forced: true } },
+		root: { version: V.R1, addons: [{ version: V.B1, seq: 0, slot: SLOT_B }] },
 		steps: [
 			{
 				argv: ["select", "--use", "latest", "--addon", `office:${V.B1}`],
@@ -586,7 +586,7 @@ const cases: Case[] = [
 	})),
 	{
 		name: "new slot hint: the new bundle's slot has no installed office version; nothing is downloaded",
-		root: { version: V.R1, addon: { version: V.P1, slot: SLOT_A, forced: false } },
+		root: { version: V.R1, addons: [{ version: V.P1, seq: 0, slot: SLOT_A }] },
 		steps: [
 			{
 				argv: ["update"],
@@ -599,7 +599,7 @@ const cases: Case[] = [
 	},
 	{
 		name: "no new slot hint when the new bundle's slot has an installed office version",
-		root: { version: V.R1, addon: { version: V.P1, slot: SLOT_A, forced: false } },
+		root: { version: V.R1, addons: [{ version: V.P1, seq: 0, slot: SLOT_A }] },
 		steps: [
 			{
 				argv: ["update", "--channel", "live"],
@@ -1032,7 +1032,7 @@ const cases: Case[] = [
 	},
 	{
 		name: "clean never removes addon versions",
-		root: { version: V.R3, addon: { version: V.B1, slot: SLOT_B, forced: true } },
+		root: { version: V.R3, addons: [{ version: V.B1, seq: 0, slot: SLOT_B }] },
 		arrange: (root) => {
 			addAddon(world, root, { version: V.P1, seq: 1, slot: SLOT_A });
 			addAddon(world, root, { version: V.P3, seq: 4, slot: SLOT_A2 });
@@ -1041,32 +1041,56 @@ const cases: Case[] = [
 	},
 	// ── Optional addons ──────────────────────────────────────────────────────────────────────────────
 	{
-		name: "install office: the release pin, read-only, recorded; then already installed; then uninstall",
+		name: "install office: the in-slot default, read-only, with its index seq; then already installed; no addons.json",
 		root: { version: V.R1 },
 		steps: [
 			{
 				argv: ["install", "--addon", "office"],
 				code: 0,
-				stdout: [`Installed the office addon ${V.P1}`],
-				requests: [INDEX, addonUrl(V.P1)],
+				stdout: [`Installed the office addon ${V.Q}`],
+				requests: [INDEX, addonUrl(V.Q)],
 				check: (root) => {
-					expect(addonsState(root)).toEqual({ office: { version: V.P1, forced: false } });
-					const dir = join(root, "addons", "office", V.P1);
+					const dir = join(root, "addons", "office", V.Q);
 					expect(isReadOnly(dir)).toBe(true);
 					expect(existsSync(join(dir, "node_modules", "@deepseek-ai", "libreoffice-kit", "package.json"))).toBe(true);
+					expect(JSON.parse(readFileSync(join(dir, "addon.json"), "utf8")).seq).toBe(2);
+					expect(existsSync(join(root, "addons.json"))).toBe(false);
 				},
 			},
-			{ argv: ["install", "--addon", "office"], code: 0, stdout: [`The office addon ${V.P1} is already installed.`], requests: [INDEX], unchanged: true },
-			{
-				argv: ["uninstall", "--addon", "office"],
-				code: 0,
-				stdout: [`Uninstalled the office addon ${V.P1}.`],
-				requests: [],
-				check: (root) => {
-					expect(addonsState(root)).toEqual({});
-					expect(readdirSync(join(root, "addons", "office"))).toEqual([]);
-				},
-			},
+			{ argv: ["install", "--addon", "office"], code: 0, stdout: [`The office addon ${V.Q} is already installed.`], requests: [INDEX], unchanged: true },
+			// Another version side by side; selecting it never downloads.
+			{ argv: ["install", "--addon", `office:${V.P1}`], code: 0, stdout: [`Installed the office addon ${V.P1}`], requests: [INDEX, addonUrl(V.P1)] },
+			{ argv: ["select"], code: 0, stdout: [`office:   ${V.Q} (default)`], requests: [] },
+			{ argv: ["select", "--use", "latest", "--addon", `office:${V.P1}`], code: 0, requests: [] },
+			{ argv: ["install", "--addon", `office:${addonTag(V.P1)}`, "--force"], code: 0, stdout: [`Installed the office addon ${V.P1}`], requests: [INDEX, addonUrl(V.P1)] },
+		],
+	},
+	{
+		name: "uninstall office: one version, or every version; refused while selected or in use, all or none",
+		root: { version: V.R1, addons: [{ version: V.P1, seq: 1, slot: SLOT_A }, { version: V.Q, seq: 2, slot: SLOT_A }, { version: V.B1, seq: 3, slot: SLOT_B }] },
+		arrange: (root) => {
+			writeSel(root, { schema: 1, use: "latest", snapshot: null, addons: { office: V.P1 } });
+			const c = acquireClaim(join(root, "addons", "office", V.B1, ".usage.lock"), "shared");
+			if (c === "busy") throw new Error("busy");
+			return () => c.release();
+		},
+		steps: [
+			{ argv: ["uninstall", "--addon", `office:${V.P1}`], code: 1, stderr: [`the office addon ${V.P1} is named by the selection`, "dsh select"], requests: [], unchanged: true },
+			{ argv: ["uninstall", "--addon", `office:${V.B1}`], code: 1, stderr: [`the office addon ${V.B1} is in use`, "nothing was uninstalled"], unchanged: true },
+			{ argv: ["uninstall", "--addon", `office:${V.Q}`], code: 0, stdout: [`Uninstalled the office addon ${V.Q}.`], requests: [], check: (root) => expect(readdirSync(join(root, "addons", "office")).sort()).toEqual([V.B1, V.P1].sort()) },
+			{ argv: ["uninstall", "--addon", `office:${V.Q}`], code: 0, stdout: [`The office addon ${V.Q} is not installed.`], unchanged: true },
+			{ argv: ["select", "--use", "latest"], code: 0 },
+			{ argv: ["uninstall", "--addon", "office"], code: 1, stderr: ["in use", "nothing was uninstalled"], unchanged: true, check: (root) => expect(readdirSync(join(root, "addons", "office")).sort()).toEqual([V.B1, V.P1].sort()) },
+			// A later sweep never brings an uninstalled version back.
+			{ argv: ["clean", "--update"], code: 0, check: (root) => expect(readdirSync(join(root, "addons", "office")).sort()).toEqual([V.B1, V.P1].sort()) },
+		],
+	},
+	{
+		name: "uninstall every office version",
+		root: { version: V.R1, addons: [{ version: V.P1, seq: 1, slot: SLOT_A }, { version: V.B1, seq: 3, slot: SLOT_B }] },
+		steps: [
+			{ argv: ["uninstall", "--addon", "office"], code: 0, stdout: [`Uninstalled the office addon ${V.P1}.`, `Uninstalled the office addon ${V.B1}.`], requests: [], check: (root) => expect(readdirSync(join(root, "addons", "office"))).toEqual([]) },
+			{ argv: ["uninstall", "--addon", "office"], code: 0, stdout: ["The office addon is not installed."], unchanged: true },
 		],
 	},
 	// ── Addon slots ──────────────────────────────────────────────────────────────────────────────────
@@ -1075,33 +1099,34 @@ const cases: Case[] = [
 		root: { version: V.R1 },
 		steps: [
 			{
-				argv: ["install", "--addon", "office", "--version", V.B1],
+				argv: ["install", "--addon", `office:${V.B1}`],
 				code: 1,
 				stderr: [`is out of slot`, SLOT_A.commit.slice(0, 12), SLOT_B.commit.slice(0, 12), "--force"],
 				requests: [INDEX],
 				unchanged: true,
 			},
 			{
-				argv: ["install", "--addon", "office", "--version", addonTag(V.B1), "--force"],
+				argv: ["install", "--addon", `office:${addonTag(V.B1)}`, "--force"],
 				code: 0,
-				stdout: [`Installed the office addon ${V.B1} (forced, out of slot)`],
+				stdout: [`Installed the office addon ${V.B1} (out of slot)`, `dsh --addon office:${V.B1}`],
 				stderr: ["out of slot"],
 				requests: [INDEX, addonUrl(V.B1)],
-				check: (root) => expect(addonsState(root)).toEqual({ office: { version: V.B1, forced: true } }),
 			},
+			// Plain launches keep the in-slot default (none installed: office degrades); it is used only when named.
+			{ argv: ["select"], code: 0, stdout: ["office:   none installed for this version"], requests: [] },
 			{
 				argv: ["list", "--json"],
 				code: 0,
 				requests: [INDEX],
 				unchanged: true,
-				check: (_root, r) => expect(json(r).addons[0]).toMatchObject({ installed: { version: V.B1, forced: true, inSlot: false }, default: V.P1, hint: "dsh install --addon office" }),
+				check: (_root, r) => expect(json(r).addons[0]).toMatchObject({ installed: [{ version: V.B1, inSlot: false }], default: V.Q, hint: "dsh install --addon office" }),
 			},
 		],
 	},
 	{
-		name: "release bundle uses its pin even when a newer in-slot addon exists",
+		name: "default follows the index: the newest in-slot addon, not a newer one of another slot",
 		root: { version: V.R1 },
-		steps: [{ argv: ["install", "--addon", "office"], code: 0, stdout: [`Installed the office addon ${V.P1}`], requests: [INDEX, addonUrl(V.P1)] }],
+		steps: [{ argv: ["install", "--addon", "office"], code: 0, stdout: [`Installed the office addon ${V.Q}`], requests: [INDEX, addonUrl(V.Q)] }],
 	},
 	{
 		name: "live bundle follows its slot's newest addon",
@@ -1109,8 +1134,8 @@ const cases: Case[] = [
 		steps: [{ argv: ["install", "--addon", "office"], code: 0, stdout: [`Installed the office addon ${V.Q}`], requests: [INDEX, addonUrl(V.Q)] }],
 	},
 	{
-		name: "live bundle falls back to its pin when the index is unreachable",
-		root: { version: V.L1 },
+		name: "the default falls back to the pin when the index is unreachable",
+		root: { version: V.R1 },
 		steps: [
 			{
 				argv: ["install", "--addon", "office"],
@@ -1125,14 +1150,14 @@ const cases: Case[] = [
 	{
 		name: "kit switch-back opens a new slot: an addon from the first 0.1.2 slot is out of slot",
 		root: { version: V.R3 },
-		steps: [{ argv: ["install", "--addon", "office", "--version", V.P1], code: 1, stderr: ["is out of slot", "kit 0.1.2", "--force"], requests: [INDEX], unchanged: true }],
+		steps: [{ argv: ["install", "--addon", `office:${V.P1}`], code: 1, stderr: ["is out of slot", "kit 0.1.2", "--force"], requests: [INDEX], unchanged: true }],
 	},
 	{
 		name: "a pinned addon removed from the index installs from the embedded table",
 		root: { version: V.R1 },
 		steps: [
 			{
-				argv: ["install", "--addon", "office"],
+				argv: ["install", "--addon", `office:${V.P1}`],
 				serve: { index: (i: any) => ({ ...i, addons: { office: i.addons.office.filter((e: any) => e.version !== V.P1) } }) },
 				code: 0,
 				stdout: [`Installed the office addon ${V.P1}`],
@@ -1145,7 +1170,7 @@ const cases: Case[] = [
 		root: { version: V.R1 },
 		steps: [
 			{
-				argv: ["install", "--addon", "office"],
+				argv: ["install", "--addon", `office:${V.P1}`],
 				serve: { index: (i: any) => (i.addons.office.find((e: any) => e.version === V.P1).assets[ADDON_PLATFORM].sha256 = "0".repeat(64), i) },
 				code: 1,
 				stderr: ["disagree on its SHA-256"],
@@ -1157,8 +1182,20 @@ const cases: Case[] = [
 	{
 		name: "an unknown addon version exits 1",
 		root: { version: V.R1 },
-		steps: [{ argv: ["install", "--addon", "office", "--version", "9.9.9"], code: 1, stderr: ["9.9.9 is not in the embedded table or the release index"], requests: [INDEX], unchanged: true }],
+		steps: [{ argv: ["install", "--addon", "office:9.9.9"], code: 1, stderr: ["9.9.9 is not in the embedded table or the release index"], requests: [INDEX], unchanged: true }],
 	},
+	...(
+		[
+			[["install", "--addon", "office", "--version", V.P1], 'Unknown option --version for "install".'],
+			[["install", "--addon", "office:"], "--addon office:: expected <name> or <name>:<version>"],
+			[["install", V.R1, "--addon", "office"], "--addon cannot be combined with a dsh version"],
+			[["uninstall", "--addon", "word:1"], "Unknown addon word; valid addons: office."],
+		] as const
+	).map<Case>(([argv, message]) => ({
+		name: `addon form rejected: dsh ${argv.join(" ")}`,
+		root: { version: V.R1 },
+		steps: [{ argv: [...argv], code: 1, stderr: [message], requests: [], unchanged: true }],
+	})),
 	// ── Channel-managed installations ────────────────────────────────────────────────────────────────
 	...(
 		[
@@ -1200,7 +1237,7 @@ const cases: Case[] = [
 						{ channel: "release", current: true, newest: V.R3, newer: true, hint: "dsh update" },
 						{ channel: "live", current: false, newest: V.L1, newer: true, hint: "dsh update --channel live" },
 					]);
-					expect(d.addons[0]).toMatchObject({ name: "office", installed: null, default: V.P1, pinned: V.P1, hint: "dsh install --addon office" });
+					expect(d.addons[0]).toMatchObject({ name: "office", installed: [], default: V.Q, pinned: V.P1, hint: "dsh install --addon office" });
 					expect(d.index).toEqual({ ok: true });
 				},
 			},
@@ -1246,8 +1283,8 @@ const cases: Case[] = [
 				requests: [INDEX],
 				check: (_r, r) => {
 					const rows = Object.fromEntries(json(r).addons[0].versions.map((v: any) => [v.version, v]));
-					expect(rows[V.P1]).toMatchObject({ inSlot: true, default: true, pinned: true, source: "both", conflict: false });
-					expect(rows[V.Q]).toMatchObject({ inSlot: true, default: false, source: "index" });
+					expect(rows[V.P1]).toMatchObject({ inSlot: true, default: false, pinned: true, source: "both", conflict: false });
+					expect(rows[V.Q]).toMatchObject({ inSlot: true, default: true, source: "index" });
 					expect(rows[V.B1]).toMatchObject({ inSlot: false, source: "index" });
 					expect(rows[V.P3]).toMatchObject({ inSlot: false });
 				},
@@ -1293,7 +1330,7 @@ describe("update contract", () => {
 			const root = installRoot(world, c.root.version, { channelFile: c.root.channelFile, managed: c.root.managed });
 			roots.push(root);
 			for (const v of c.root.extra ?? []) addBundle(world, root, v);
-			if (c.root.addon) addAddon(world, root, { version: c.root.addon.version, seq: 0, slot: c.root.addon.slot }, { forced: c.root.addon.forced });
+			for (const a of c.root.addons ?? []) addAddon(world, root, a);
 			const release = c.arrange?.(root);
 			try {
 				for (const [i, step] of c.steps.entries()) {

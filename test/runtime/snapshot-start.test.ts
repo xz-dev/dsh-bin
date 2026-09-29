@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createSnapshot, removeSnapshot, snapshotDir } from "../../runtime/snapshot/store.ts";
 import { writeShims } from "../../scripts/shims.mjs";
+import { acquireClaim } from "../../runtime/usage-claim.ts";
 
 const ROOT = resolve(import.meta.dir, "../..");
 const EXE = process.platform === "win32" ? ".exe" : "";
@@ -133,6 +134,15 @@ test("a restart keeps the snapshot after a selection change; the node shim inher
 	createSnapshot(dshHome, { version: V2.version, order: V2, reason: "user", source: () => null });
 	const selPath = join(dshHome, "dsh-bin", "selection.json");
 	mkdirSync(join(dshHome, "dsh-bin"), { recursive: true });
+	// Two office versions side by side (out of slot: the stub bundle declares none, so each launch warns naming
+	// the version it resolved).
+	for (const v of ["0.1.1", "0.1.2"]) {
+		const kit = join(root, "addons", "office", v, "node_modules", "@deepseek-ai", "libreoffice-kit");
+		mkdirSync(kit, { recursive: true });
+		writeFileSync(join(kit, "package.json"), JSON.stringify({ name: "@deepseek-ai/libreoffice-kit", version: v, main: "index.js" }));
+		writeFileSync(join(kit, "index.js"), "module.exports = {};\n");
+		writeFileSync(join(root, "addons", "office", v, "addon.json"), JSON.stringify({ name: "office", version: v, tag: `dsh-addon-office-v${v}`, kitVersion: v, slot: { commit: "c".repeat(40), kitVersion: v }, packages: [] }));
+	}
 	const selection = { schema: 1, use: V2.version, snapshot: `${V2.version}@1`, addons: { office: "0.1.1" } };
 	writeFileSync(selPath, JSON.stringify(selection));
 	const env = { STUB_REPORT: "1", STUB_RESTART_WRITE: selPath, STUB_RESTART_DATA: JSON.stringify({ ...selection, use: "latest", snapshot: `${V2.version}@2`, addons: { office: "0.1.2" } }), PATH: `/usr/bin:/bin` };
@@ -142,6 +152,11 @@ test("a restart keeps the snapshot after a selection change; the node shim inher
 	expect(reports).toHaveLength(2);
 	const dir = snapshotDir(dshHome, `${V2.version}@1`);
 	for (const rep of reports) expect(rep).toEqual({ args: ["--profile", "tui"], dir, resolved: `${V2.version}@1`, version: V2.version, addons: { office: "0.1.1" }, shim: dir });
+	// Both launches resolved office 0.1.1 from the launch record, not 0.1.2 from the rewritten selection.
+	const warned = r.stderr.split("\n").filter((l) => l.includes("office addon") && l.includes("out of slot"));
+	expect(warned).toHaveLength(2);
+	for (const l of warned) expect(l).toContain("office addon 0.1.1 ");
+	for (const v of ["0.1.1", "0.1.2"]) rmSync(join(root, "addons", "office", v), { recursive: true, force: true });
 }, 60_000);
 
 test("a running session holds the snapshot's claim; removal is refused until it exits", async () => {
@@ -166,6 +181,39 @@ test("a running session holds the snapshot's claim; removal is refused until it 
 		r = removeSnapshot(dshHome, s.id);
 	}
 	expect(r).toBe("removed");
+}, 60_000);
+
+test("a running session holds its office version's claim; uninstalling it is refused until it exits", async () => {
+	const home = mkdtempSync(join(root, "home-"));
+	const dir = join(root, "addons", "office", "0.1.1");
+	const kit = join(dir, "node_modules", "@deepseek-ai", "libreoffice-kit");
+	mkdirSync(kit, { recursive: true });
+	writeFileSync(join(kit, "package.json"), JSON.stringify({ name: "@deepseek-ai/libreoffice-kit", version: "0.1.1", main: "index.js" }));
+	writeFileSync(join(kit, "index.js"), "module.exports = {};\n");
+	writeFileSync(join(dir, "addon.json"), JSON.stringify({ name: "office", version: "0.1.1", tag: "dsh-addon-office-v0.1.1", kitVersion: "0.1.1", slot: { commit: "c".repeat(40), kitVersion: "0.1.1" }, packages: [] }));
+	writeFileSync(join(dir, ".usage.lock"), "");
+	const env = { PATH: process.env.PATH ?? "", HOME: home, DSH_HOME: join(home, ".dsh"), STUB_HOLD: "1", DSH_BIN_LAUNCH: JSON.stringify({ protocol: 2, version: V2.version, source: "use", use: V2.version, snapshot: null, addons: ["office:0.1.1"], selection: null }) };
+	const proc = Bun.spawn([native], { env, stdin: "ignore", stdout: "pipe", stderr: "inherit" });
+	const reader = proc.stdout.getReader();
+	let out = "";
+	while (!out.includes("HELD")) {
+		const { value, done } = await reader.read();
+		if (done) break;
+		out += new TextDecoder().decode(value);
+	}
+	expect(out).toContain("HELD");
+	const guard = join(dir, ".usage.lock");
+	expect(acquireClaim(guard, "exclusive")).toBe("busy");
+	proc.kill("SIGKILL");
+	await proc.exited;
+	let c = acquireClaim(guard, "exclusive");
+	for (let i = 0; i < 30 && c === "busy"; i++) {
+		await Bun.sleep(100);
+		c = acquireClaim(guard, "exclusive");
+	}
+	expect(c).not.toBe("busy");
+	if (c !== "busy") c.release();
+	rmSync(join(root, "addons"), { recursive: true, force: true });
 }, 60_000);
 
 test("direct start: leading options are stripped; another version is refused", async () => {
