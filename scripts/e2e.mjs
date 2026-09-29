@@ -82,6 +82,13 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 
 		let r = await run(["--version"]);
 		check(r.code === 0, "--version failed");
+		// Headless boot of a shipped profile (plugins mounted, no Node on PATH); the first start seeds the
+		// bundle's prebuilt transpiler cache into the launcher-chosen user cache.
+		const cache = join(home, "xdg-cache");
+		r = await run(["--profile", "e2e", "--from-default-profile", "headless", "--help"], { XDG_CACHE_HOME: cache, LOCALAPPDATA: cache, DSH_HOME: join(home, "boot-dsh") });
+		check(r.code === 0 && /Answer one task/.test(r.out), "headless profile boot");
+		const seeded = [join(cache, "dsh-bin", "transpiler"), join(cache, "dsh-bin", "cache", "transpiler"), join(home, "Library", "Caches", "dsh-bin", "transpiler")].find((d) => existsSync(d));
+		check(seeded && readdirSync(seeded).some((n) => n.startsWith(".seeded-")) && readdirSync(seeded).length > 100, `transpiler cache seeded (${seeded})`);
 		r = await run(["update", "--models"]);
 		check(r.code === 1 && /Unknown option --models/.test(r.out), "update --models must be rejected");
 		r = await run(["list", "--json"]);

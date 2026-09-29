@@ -35,7 +35,7 @@ export async function buildTarget({ targetId, channel, ref, out, run, attempt, i
 	transformApp(app);
 	const addon = join(work, "addon-office");
 	splitOfficeAddon(app, addon);
-	const r = localBuild({ out, channel, run, attempt, index, upstreamCommit: upstream.commit, upstreamVersion: upstreamVersion ?? readVersion(src), slot, work, targetId: t.id });
+	const r = localBuild({ out, channel, run, attempt, index, upstreamCommit: upstream.commit, upstreamVersion: upstreamVersion ?? readVersion(src), slot, work, targetId: t.id, warm: true });
 	rmSync(r.root, { recursive: true, force: true });
 	if (t.id === "linux-x64-modern" && slot) cpSync(addon, join(out, "addon-tree"), { recursive: true });
 	return { ...r, slot };

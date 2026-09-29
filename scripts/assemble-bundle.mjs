@@ -15,6 +15,7 @@ import { join, relative, sep } from "node:path";
 import { binaryArch } from "./build-launcher.mjs";
 import { writeShims } from "./shims.mjs";
 import { target as targetById } from "./targets.mjs";
+import { warmTranspilerCache } from "./warm-transpiler-cache.mjs";
 
 const FORMAT = { linux: "elf", darwin: "macho", windows: "pe" };
 const PLATFORM_DIR = /^(linux|darwin|win32|win|windows|freebsd|android|openbsd|sunos|aix)[-_](x64|arm64|ia32|arm|x86_64|aarch64|ppc64|s390x|riscv64|loong64)(?:[-_](gnu|musl|glibc))?$/;
@@ -133,6 +134,8 @@ export function assembleBundle(spec) {
 	}
 	const foreign = foreignBinaries(bundle, t);
 	if (foreign.length) throw new Error(`native files for another target in ${t.id}:\n  ${foreign.join("\n  ")}`);
+	// Prebuilt transpiler cache: needs the bundle's own runtime to run here (native release builds).
+	if (spec.warm) warmTranspilerCache(bundle);
 
 	const index = spec.index ? JSON.parse(readFileSync(spec.index, "utf8")) : { addons: { office: [] } };
 	const required = requiredPaths(t, version);

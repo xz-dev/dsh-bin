@@ -111,9 +111,9 @@ What the first runs found and fixed:
 ## Not verified yet
 
 - **Real publication (8.3, 8.4, 8.6, 8.8, 9.1, 9.4):** needs your go-ahead; see below.
-- **Packaged E2E gaps (8.2):** headless boot and GitHub plugin install are covered by
-  `test/runtime` (3.5/3.7, 4.1) but not yet by `scripts/e2e.mjs`. Add them there if you want the
-  per-target gate to include them.
+- **Packaged E2E gap (8.2):** `scripts/e2e.mjs` now boots the shipped `headless` profile on every
+  target, and that boot seeds the transpiler cache. GitHub plugin install is covered by
+  `test/runtime` (4.1) but not yet by `scripts/e2e.mjs`.
 - **Workflow references:** the workflows use `actions/*@vN` tags, not commit SHAs. Pin them if you
   want SHA pinning like xz-dev/pi.
 
@@ -166,6 +166,55 @@ What the first runs found and fixed:
   - The launcher does not choose a profile. Your current wrapper adds `--profile tui` and sets
     `DSH_TELEMETRY_DISABLED=1`, so keep a small wrapper that does the same and execs
     `~/.local/share/dsh-bin/dsh`.
+
+## Startup performance (your decision, 2026-09-29)
+
+All figures below were measured on Linux x64 (Ryzen AI 9 365). The benchmark boots the shipped
+`headless` profile, with its plugin stack mounted, and prints `--help`. Each figure is the best of
+5–7 runs.
+
+| Case | npm + node | dsh-bin |
+|---|---|---|
+| Profile boot, warm | 361 ms | 304–321 ms |
+| Profile boot, transpiler cache off | – | 387 ms |
+| First start of a fresh install, page cache evicted, empty cache | – | 497–683 ms |
+| First start of a fresh install, page cache evicted, shipped cache seeded | – | 454–515 ms |
+
+- **Transpiler cache.** What the tests found about Bun 1.4.2's transpiler cache:
+  - its `.pile` entries are content-keyed, so they stay valid across install paths and file mtimes;
+  - Bun reads a read-only cache and does not report an error when it cannot write;
+  - `BUN_RUNTIME_TRANSPILER_CACHE_PATH` counts only at process start, so setting it at runtime
+    does nothing.
+
+  Changes, following those findings:
+  - The launcher points the cache at dsh-bin's own user cache instead of Bun's shared
+    `~/.bun/install/cache`. A value you set yourself wins, including `0`. The locations are:
+    - Linux/BSD: `$XDG_CACHE_HOME/dsh-bin/transpiler`, or `~/.cache/dsh-bin/transpiler`;
+    - macOS: `~/Library/Caches/dsh-bin/transpiler`;
+    - Windows: `%LOCALAPPDATA%\dsh-bin\cache\transpiler`.
+    The launcher also exports the cache root as `DSH_BUNDLE_CACHE`.
+  - Each release build warms the cache on its native runner. It boots all five shipped profile
+    templates with `--help` and ships the result as `bundles/<v>/transpiler-cache/`: 347 entries,
+    about 9 MB unpacked and about 4 MB in the zip.
+  - **Deviation from your choice.** You chose "copy at activation"; the copy runs on the first
+    start of each bundle version instead. It copies only the missing entries and writes a
+    `.seeded-<v>` stamp. I moved it because zip, Scoop and portage installs never run
+    `dsh update`, so seeding at activation would miss them. Seeding at first start covers every
+    install path and costs one directory listing on later starts.
+  - `dsh update --clean` also clears `$DSH_BUNDLE_CACHE/transpiler`. It never touches a cache
+    path you set yourself.
+- **Measured gain:** about 90–150 ms on the cold first start of each new version. Warm starts are
+  unchanged. The ~800 ms first start seen earlier comes from reading the 78 MB executable from
+  disk, not from transpiling.
+- **Entry flags.** The compiled entry now uses `--minify --bytecode --format=esm`, as xz-dev/pi
+  does. `--bytecode` is applied only when compiling for the host OS/arch (oven-sh/bun#18416), and
+  every release target builds natively. Measured: within noise, because the entry is only 23
+  modules.
+- **Not possible without forking upstream: the whole app as one bytecode file.** Bun 1.4.2 emits
+  ESM bytecode only into a `--compile` executable. dsh's design loads bundles and user plugins as
+  on-disk packages: dsh-app-boot imports them by name and routes resolution through Node's
+  internal loader. Compiling the app into the executable would break plugin resolution of host
+  packages and the 28 modules that use `import.meta.url` for files.
 
 ## Automatic publication (your decision, 2026-09-29)
 

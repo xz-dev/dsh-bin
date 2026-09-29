@@ -68,10 +68,12 @@ dsh list [--addon <name>] [--channel <live|release>] [--json]
 | `dsh update --all` | Update the binary, then every installed addon to its default version. |
 | `dsh update --addon office [--version <v>]` | Move the addon to its default version, or to `<v>`. |
 | `dsh update --force` | Reinstall the current version. |
-| `dsh update --clean` | Remove bundles and addon versions that are no longer in use. Works offline. |
+| `dsh update --clean` | Remove bundles and addon versions that are no longer in use, and clear dsh-bin's transpiler cache. Works offline. |
 | `dsh install --addon office [--version <v>] [--force]` | Install and enable the office addon. |
 | `dsh uninstall --addon office` | Disable the addon and remove its unused files. |
 | `dsh list [--json]` | Show installed and installable versions. Read-only: no lock, no download. |
+
+Startup cache: the launcher sends Bun's transpiler cache to dsh-bin's own user cache instead of `~/.bun/install/cache`. The locations are `$XDG_CACHE_HOME/dsh-bin/transpiler` (or `~/.cache/dsh-bin/transpiler`), `~/Library/Caches/dsh-bin/transpiler` on macOS, and `%LOCALAPPDATA%\dsh-bin\cache\transpiler` on Windows. A `BUN_RUNTIME_TRANSPILER_CACHE_PATH` you set yourself wins. Each bundle ships a cache prebuilt at build time, and it is copied in on that version's first start, so a new version starts warm.
 
 Updates download one asset by its exact tag, check its SHA-256 against the index, unpack it safely, and activate it atomically: first the bundle, then the root launcher. Running sessions keep their old bundle until they exit. `dsh plugin --profile <name> …` still manages plugins as upstream designed. upstream's own `dsh update` never runs, and the bundle is read-only, so its self-update cannot write.
 

@@ -9,6 +9,7 @@ import { installHostPackages } from "./compat/host-packages.ts";
 import { installNodeModuleCompat } from "./compat/node-module-compat.ts";
 import { installRequireBuiltin } from "./compat/require-builtin.ts";
 import { USAGE_GUARD } from "./layout.ts";
+import { seedTranspilerCache } from "./transpiler-cache.ts";
 import { holdSessionClaim } from "./usage-claim.ts";
 
 const bundleDir = dirname(process.execPath);
@@ -19,6 +20,7 @@ if (existsSync(guard) && holdSessionClaim(guard) === "busy") {
 	process.exit(1);
 }
 const appDir = realpathSync(join(bundleDir, "app"));
+if (process.env.DSH_BUNDLE_VERSION) seedTranspilerCache(bundleDir, process.env.DSH_BUNDLE_VERSION);
 const binJs = join(appDir, "lib", "bin.js");
 
 // D5: the bundle's pnpm and node shims come first on PATH for dsh and everything it starts (the plugin

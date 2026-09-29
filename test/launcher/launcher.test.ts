@@ -68,6 +68,31 @@ test.skipIf(!hasZig)("5.2: environment contract; DSH_HOME and user variables unt
 	for (const name of ["DSH_TUI_STANDALONE", "DSH_TUI_STANDALONE_BINARY", "BUN_BE_BUN"]) expect(seen[name]).toBeUndefined();
 });
 
+const seenEnv = (root: string) =>
+	Object.fromEntries(readFileSync(join(root, "env"), "utf8").trim().split("\n").map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+
+test.skipIf(!hasZig)("transpiler cache: dsh-bin's user cache unless the user set one", () => {
+	const { root } = install();
+	const mac = process.platform === "darwin";
+	spawnSync(join(root, "dsh"), [], { env: { PATH: "/usr/bin:/bin", HOME: "/h", XDG_CACHE_HOME: "/xdg" } });
+	let seen = seenEnv(root);
+	const cache = mac ? "/h/Library/Caches/dsh-bin" : "/xdg/dsh-bin";
+	expect(seen.DSH_BUNDLE_CACHE).toBe(cache);
+	expect(seen.BUN_RUNTIME_TRANSPILER_CACHE_PATH).toBe(`${cache}/transpiler`);
+
+	spawnSync(join(root, "dsh"), [], { env: { PATH: "/usr/bin:/bin", HOME: "/h", XDG_CACHE_HOME: "relative" } });
+	seen = seenEnv(root);
+	expect(seen.DSH_BUNDLE_CACHE).toBe(mac ? "/h/Library/Caches/dsh-bin" : "/h/.cache/dsh-bin");
+
+	spawnSync(join(root, "dsh"), [], { env: { PATH: "/usr/bin:/bin", HOME: "/h", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" } });
+	expect(seenEnv(root).BUN_RUNTIME_TRANSPILER_CACHE_PATH).toBe("0");
+
+	spawnSync(join(root, "dsh"), [], { env: { PATH: "/usr/bin:/bin" } });
+	seen = seenEnv(root);
+	expect(seen.DSH_BUNDLE_CACHE).toBeUndefined();
+	expect(seen.BUN_RUNTIME_TRANSPILER_CACHE_PATH).toBeUndefined();
+});
+
 test.skipIf(!hasZig)("5.1/D9: a symlinked launcher resolves the real install root", () => {
 	const { root } = install();
 	const link = join(mkdtempSync(join(tmpdir(), "dsh-bin-link-")), "dsh");

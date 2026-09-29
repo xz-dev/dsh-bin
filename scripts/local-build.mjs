@@ -15,7 +15,7 @@ import { distribution } from "./versioning.mjs";
 
 const ROOT = resolve(import.meta.dir, "..");
 
-export function localBuild({ out, channel, run, attempt = 1, index, upstreamCommit, upstreamVersion = "0.1.7-rc.2", slot = null, work = join(ROOT, "work"), native, targetId = hostTargetId() }) {
+export function localBuild({ out, channel, run, attempt = 1, index, upstreamCommit, upstreamVersion = "0.1.7-rc.2", slot = null, work = join(ROOT, "work"), native, targetId = hostTargetId(), warm = false }) {
 	const t = target(targetId);
 	// CI passes the commit (git in the musl container refuses the runner-owned checkout as dubious).
 	const launcherCommit = process.env.DSH_BIN_LAUNCHER_COMMIT || execFileSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -43,6 +43,7 @@ export function localBuild({ out, channel, run, attempt = 1, index, upstreamComm
 		launcherCommit,
 		slot,
 		index,
+		warm,
 	});
 	const zip = join(out, `${id.tag}-${t.archive}`);
 	archive(root, zip);

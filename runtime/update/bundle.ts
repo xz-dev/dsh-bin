@@ -1,7 +1,7 @@
 // `dsh update` (binary) and `dsh update --clean` (self-update spec: Channels, Version selection,
 // Verification before activation, Atomic activation and read-only result, Cleanup).
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { addonDir, type BundleMeta, BUNDLE_META, type Channel, exeName, readAddonMeta, readAddonsState, readBundleMeta, USAGE_GUARD } from "../layout.ts";
 import { type Context, launcherPath, launcherVersion, launcherVersionOf, UserError } from "./context.ts";
 import { installTree, newWorkDir, removeTree, retire, replaceLauncher, STAGING_PREFIX, writeFileAtomic } from "./fsops.ts";
@@ -148,4 +148,20 @@ export function clean(ctx: Context) {
 		}
 	}
 	if (addonsRemoved) ctx.out(`Removed ${addonsRemoved} old addon version(s)`);
+
+	// dsh-bin's own transpiler cache (launcher-chosen; a user-set BUN_RUNTIME_TRANSPILER_CACHE_PATH is not
+	// ours). Entries are content-keyed, so old versions' files only accumulate; the kept bundle reseeds on
+	// its next start.
+	const cache = process.env.DSH_BUNDLE_CACHE;
+	if (cache && isAbsolute(cache)) {
+		const transpiler = join(cache, "transpiler");
+		if (existsSync(transpiler)) {
+			try {
+				rmSync(transpiler, { recursive: true, force: true, maxRetries: 3 });
+				ctx.out("Cleared the transpiler cache");
+			} catch {
+				// In use on Windows: stale entries are harmless; cleared next time.
+			}
+		}
+	}
 }

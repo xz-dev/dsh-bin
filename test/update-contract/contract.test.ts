@@ -4,7 +4,7 @@
 // output substrings, the exact requests made and the resulting filesystem state.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { acquireClaim, type Claim } from "../../runtime/usage-claim.ts";
 import {
 	ADDON_PLATFORM,
@@ -57,6 +57,8 @@ type Step = {
 	viaLauncher?: boolean;
 	/** Bundle whose entry runs (default: the root's initial version). */
 	from?: string;
+	/** Extra environment for the run (`root` is substituted with the install root). */
+	env?: (root: string) => Record<string, string>;
 	code: number;
 	stdout?: (string | RegExp)[];
 	stderr?: (string | RegExp)[];
@@ -402,6 +404,33 @@ const cases: Case[] = [
 		],
 	},
 	{
+		name: "--clean clears dsh-bin's transpiler cache, and only that cache",
+		root: { version: V.R3 },
+		arrange: (root) => {
+			for (const d of ["cache/transpiler", "cache/other", "user-cache"]) {
+				mkdirSync(join(root, "..", `${basename(root)}-x`, d), { recursive: true });
+				writeFileSync(join(root, "..", `${basename(root)}-x`, d, "a.pile"), "x");
+			}
+		},
+		steps: [
+			{
+				argv: ["update", "--clean"],
+				offline: true,
+				env: (root) => ({ DSH_BUNDLE_CACHE: join(root, "..", `${basename(root)}-x`, "cache"), BUN_RUNTIME_TRANSPILER_CACHE_PATH: join(root, "..", `${basename(root)}-x`, "user-cache") }),
+				code: 0,
+				stdout: ["Removed 0 old bundle(s)", "Cleared the transpiler cache"],
+				requests: [],
+				check: (root) => {
+					const x = join(root, "..", `${basename(root)}-x`);
+					expect(existsSync(join(x, "cache/transpiler"))).toBe(false);
+					expect(existsSync(join(x, "cache/other/a.pile"))).toBe(true);
+					expect(existsSync(join(x, "user-cache/a.pile"))).toBe(true);
+					rmSync(x, { recursive: true, force: true });
+				},
+			},
+		],
+	},
+	{
 		name: "--clean keeps the launcher version when run from another bundle",
 		root: { version: V.R3, extra: [V.R1, V.R2] },
 		steps: [{ argv: ["update", "--clean"], from: V.R1, offline: true, code: 0, stdout: ["Removed 1 old bundle(s)"], requests: [], check: (root) => expect(bundles(root)).toEqual([V.R1, V.R3].sort()) }],
@@ -717,7 +746,7 @@ describe("update contract", () => {
 					const server = serve(world, step.serve);
 					const origin = step.offline ? "http://127.0.0.1:9" : server.origin;
 					const before = snapshot(root);
-					const r = step.viaLauncher ? await launch(root, step.argv, origin) : await dsh(root, step.from ?? c.root.version, step.argv, origin);
+					const r = step.viaLauncher ? await launch(root, step.argv, origin) : await dsh(root, step.from ?? c.root.version, step.argv, origin, step.env?.(root));
 					server.stop();
 					const label = `${c.name} [step ${i}: ${step.argv.join(" ")}]\nstdout: ${r.stdout}\nstderr: ${r.stderr}`;
 					expect({ label, code: r.code }).toEqual({ label, code: step.code });

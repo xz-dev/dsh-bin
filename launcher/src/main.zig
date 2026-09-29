@@ -76,7 +76,31 @@ fn resolvePaths(allocator: std.mem.Allocator) !Paths {
     };
 }
 
+/// Per-user cache root of dsh-bin: %LOCALAPPDATA%\dsh-bin\cache (Windows), ~/Library/Caches/dsh-bin
+/// (macOS), $XDG_CACHE_HOME/dsh-bin or ~/.cache/dsh-bin (elsewhere). Null when no base is known.
+fn cacheRoot(allocator: std.mem.Allocator, env: *const std.process.EnvMap) !?[]const u8 {
+    const set = struct {
+        fn abs(e: *const std.process.EnvMap, name: []const u8) ?[]const u8 {
+            const v = e.get(name) orelse return null;
+            return if (v.len > 0 and std.fs.path.isAbsolute(v)) v else null;
+        }
+    };
+    if (is_windows) {
+        const base = set.abs(env, "LOCALAPPDATA") orelse return null;
+        return try std.fs.path.join(allocator, &.{ base, "dsh-bin", "cache" });
+    }
+    if (builtin.os.tag != .macos) {
+        if (set.abs(env, "XDG_CACHE_HOME")) |x| return try std.fs.path.join(allocator, &.{ x, "dsh-bin" });
+    }
+    const home = set.abs(env, "HOME") orelse return null;
+    if (builtin.os.tag == .macos) return try std.fs.path.join(allocator, &.{ home, "Library", "Caches", "dsh-bin" });
+    return try std.fs.path.join(allocator, &.{ home, ".cache", "dsh-bin" });
+}
+
 /// The runtime's environment: the parent's, minus `cleared_vars`, plus the DSH_BUNDLE_* contract.
+/// Bun's transpiler cache moves from its shared default (~/.bun/install/cache) into dsh-bin's own user
+/// cache, which the runtime seeds from the bundle and `dsh update --clean` clears. A value the user set wins.
+/// Set here because Bun reads it only at process start.
 fn runtimeEnv(allocator: std.mem.Allocator, paths: Paths) !std.process.EnvMap {
     var env = try std.process.getEnvMap(allocator);
     for (cleared_vars) |name| env.remove(name);
@@ -84,8 +108,15 @@ fn runtimeEnv(allocator: std.mem.Allocator, paths: Paths) !std.process.EnvMap {
     try env.put("DSH_BUNDLE_VERSION", version);
     try env.put("DSH_BUNDLE_LAUNCHER", paths.launcher);
     try env.put("DSH_BUNDLE_CHANNEL", channel);
+    if (try cacheRoot(allocator, &env)) |cache| {
+        try env.put("DSH_BUNDLE_CACHE", cache);
+        if (env.get(transpiler_cache_var) == null)
+            try env.put(transpiler_cache_var, try std.fs.path.join(allocator, &.{ cache, "transpiler" }));
+    }
     return env;
 }
+
+const transpiler_cache_var = "BUN_RUNTIME_TRANSPILER_CACHE_PATH";
 
 // ---------------------------------------------------------------------------------------------- POSIX
 
