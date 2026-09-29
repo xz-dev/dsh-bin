@@ -169,6 +169,14 @@ What the first runs found and fixed:
   `test/runtime` (4.1) but not yet by `scripts/e2e.mjs`.
 - **Workflow references:** the workflows use `actions/*@vN` tags, not commit SHAs. Pin them if you
   want SHA pinning like xz-dev/pi.
+- **Windows CI timing flakes.** On windows-2022, a heavy test sometimes goes over bun's default 5 s
+  test timeout. Two cases have shown this:
+  - "two concurrent updaters", which also failed on `main` in run 36535866768;
+  - "assemble inventory", which took 9.3 s once and passed on the rerun.
+
+  Each was a single failure, and a different one on each attempt. Neither goes through the launcher.
+  The probable fix is an explicit per-test timeout; I will apply it with 5.4, which rewrites the updater
+  contract.
 
 ## Design decisions made on my own (package-manager style)
 
@@ -530,6 +538,10 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   - the claim held or not held per command.
 
   The tests now remove their temporary directories.
+- Verified on Windows: CI run 36568881662 on the side branch `select-snapshots` (not `main`, so no
+  poll). On windows-2022, all 18 Windows-eligible launcher tests pass in both attempts. The symlink and
+  POSIX-cache cases are skipped by design. Ubuntu and macOS are fully green. The only red on Windows was
+  one timing flake per attempt, listed under "Not verified yet".
 - Verified on Linux: `zig build test` 15/15, and the full suite 298 pass / 0 fail. Cross-builds for
   Windows x64/arm64, linux-musl and macOS arm64 succeed, and both markers are present in `dsh.exe`.
   Earlier runs had filled `/tmp` with about 6 GB of leftover test directories (ENOSPC); those were
