@@ -48,7 +48,7 @@ export const tagOf = (channel: Channel, version: string) => (channel === "live" 
 export const addonTag = (version: string) => `dsh-addon-office-v${version}`;
 
 export function launcherScript(version: string) {
-	return `#!/bin/sh\n# DSH_BIN_LAUNCHER_VERSION=${version}\nexec "$(dirname "$0")/bundles/${version}/dsh-native" "$@"\n`;
+	return `#!/bin/sh\n# DSH_BIN_LAUNCHER_VERSION=${version}\n# DSH_BIN_LAUNCHER_PROTOCOL=${LAUNCHER_PROTOCOL}\nexec "$(dirname "$0")/bundles/${version}/dsh-native" "$@"\n`;
 }
 
 export function bundleInputs(spec: BundleSpec, native: string): { inputs: ZipInput[]; meta: BundleMeta } {

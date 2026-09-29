@@ -68,6 +68,22 @@ export function launcherVersionOf(bytes: Uint8Array): string | undefined {
 
 export const launcherPath = (root: string, platform = process.platform) => join(root, exeName("dsh", platform));
 
+const PROTOCOL_MARKER = /DSH_BIN_LAUNCHER_PROTOCOL=(\d+)/;
+
+/** Launcher protocol embedded in a launcher binary; 1 for launchers from before the marker existed. */
+export function launcherProtocolOf(bytes: Uint8Array): number {
+	const m = PROTOCOL_MARKER.exec(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("latin1"));
+	return m ? Number(m[1]) : 1;
+}
+
+/**
+ * Whether installing a bundle of `protocol` replaces the root launcher at `path` (self-update "Atomic
+ * activation"): only a newer protocol does, so installing an older version never downgrades it.
+ */
+export function replacesLauncher(path: string, protocol: number): boolean {
+	return !existsSync(path) || protocol > launcherProtocolOf(readFileSync(path));
+}
+
 /** Version the root launcher starts (the active version), if the launcher is readable. */
 export function launcherVersion(root: string, platform = process.platform): string | undefined {
 	const path = launcherPath(root, platform);

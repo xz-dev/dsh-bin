@@ -13,7 +13,9 @@ export type ParsedCommand =
 	| { command: "update"; help: false; clean: true }
 	| { command: "update"; help: false; clean: false; target: UpdateTarget; force: boolean; channel?: Channel; version?: string }
 	| { command: "install"; help: false; addon: AddonName; version?: string; force: boolean }
+	| { command: "install"; help: false; bundle: string; channel?: Channel; force: boolean }
 	| { command: "uninstall"; help: false; addon: AddonName }
+	| { command: "uninstall"; help: false; bundles: string[] }
 	| { command: "list"; help: false; addon?: AddonName; channel?: Channel; json: boolean }
 	| { command: "select"; help: false; use?: string; snapshot?: string; addons: { name: AddonName; version: string }[] }
 	| { command: "snapshot"; help: false; action: "new"; target?: string; name?: string; empty: boolean }
@@ -28,8 +30,8 @@ const VALID_ADDONS = `valid addons: ${ADDON_NAMES.join(", ")}`;
 
 export const USAGE: Record<MaintenanceCommand, string> = {
 	update: "dsh update [self|dsh] [--self | --all | --addon <name> [--version <v>]] [--force] [--channel <live|release>] | dsh update --clean",
-	install: "dsh install --addon <name> [--version <v>] [--force]",
-	uninstall: "dsh uninstall --addon <name>",
+	install: "dsh install <version> [--channel <live|release>] [--force] | dsh install --addon <name> [--version <v>] [--force]",
+	uninstall: "dsh uninstall <version>... | dsh uninstall --addon <name>",
 	list: "dsh list [--addon <name>] [--channel <live|release>] [--json]",
 	select: "dsh select [--use <version|latest> [--snapshot <id>] [--addon <name>:<version>]...]",
 	snapshot: "dsh snapshot new [--target <id> | --empty] [--name <alias>] | dsh snapshot remove <id>... | dsh snapshot list [--json]",
@@ -41,7 +43,7 @@ const SNAPSHOT_OPTIONS: Record<string, string[]> = { new: ["--target", "--name",
 /** Options each command accepts: flags, and options that take a value. */
 const GRAMMAR: Record<MaintenanceCommand, { flags: string[]; values: string[] }> = {
 	update: { flags: ["--self", "--all", "--force", "--clean"], values: ["--addon", "--version", "--channel"] },
-	install: { flags: ["--force"], values: ["--addon", "--version"] },
+	install: { flags: ["--force"], values: ["--addon", "--version", "--channel"] },
 	uninstall: { flags: [], values: ["--addon"] },
 	list: { flags: ["--json"], values: ["--addon", "--channel"] },
 	select: { flags: [], values: ["--use", "--snapshot", "--addon"] },
@@ -69,9 +71,9 @@ export const MAINTENANCE_HELP = [
 	`  ${USAGE.update}`,
 	"      update the dsh binary (--all: then every installed addon), switch channel, or remove unused versions",
 	`  ${USAGE.install}`,
-	"      install an optional addon for the active bundle (--force: out of slot)",
+	"      install a dsh version next to the installed ones, or an optional addon (--force: reinstall / out of slot)",
 	`  ${USAGE.uninstall}`,
-	"      disable an addon and remove its unused files",
+	"      remove installed dsh versions (their snapshots are kept), or disable an addon",
 	`  ${USAGE.list}`,
 	"      show installed and installable dsh and addon versions",
 	`  ${USAGE.select}`,
@@ -204,6 +206,22 @@ export function parseMaintenance(argv: readonly string[]): ParseResult | undefin
 		return { command: "update", help: false, clean: false, target, force, ...(channel ? { channel: channel as Channel } : {}), ...(version ? { version } : {}) };
 	}
 
+	if (cmd === "install" || cmd === "uninstall") {
+		// A positional is a dsh version (digits first, or a dsh tag / live version); anything else is taken
+		// for a plugin source.
+		const source = positionals.find((a) => !/^(?:(?:dsh-v)?\d|live\.[0-9a-f]|dsh-live-[0-9a-f])[0-9A-Za-z.+_-]*$/.test(a));
+		if (source) return fail(`dsh ${cmd} does not ${cmd} plugins (${source}). ${PLUGIN_REDIRECT}`);
+		if (conflict) return fail(conflict);
+		if (positionals.length && addon) return fail("--addon cannot be combined with a dsh version");
+		if (cmd === "install" && positionals.length) {
+			if (positionals.length > 1) return fail(`Unexpected argument ${positionals[1]}.`);
+			if (version) return fail("--version requires --addon");
+			return { command: "install", help: false, bundle: positionals[0]!, force: flags.has("--force"), ...(channel ? { channel: channel as Channel } : {}) };
+		}
+		if (positionals.length) return { command: "uninstall", help: false, bundles: positionals };
+		if (!addon) return fail(`dsh ${cmd} requires a dsh version or --addon <name> (${VALID_ADDONS}). ${PLUGIN_REDIRECT}`);
+		if (channel) return fail("--channel requires a dsh version");
+	}
 	if (positionals.length) {
 		const what = cmd === "list" ? "does not list plugins" : `does not ${cmd} plugins`;
 		return fail(`dsh ${cmd} ${what} (${positionals[0]}). ${PLUGIN_REDIRECT}`);

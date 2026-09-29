@@ -4,12 +4,15 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, st
 import { isAbsolute, join } from "node:path";
 import { addonDir, type BundleMeta, BUNDLE_META, type Channel, dshHome, exeName, readAddonMeta, readAddonsState, readBundleMeta, USAGE_GUARD } from "../layout.ts";
 import { createdLine, ensureSnapshot } from "../snapshot/auto.ts";
-import { type Context, launcherPath, launcherVersion, launcherVersionOf, UserError } from "./context.ts";
+import { type Context, launcherPath, launcherVersion, launcherVersionOf, replacesLauncher, UserError } from "./context.ts";
 import { removePartials } from "./download.ts";
 import { installTree, newWorkDir, removeTree, retire, replaceLauncher, STAGING_PREFIX, writeFileAtomic } from "./fsops.ts";
 import { type BundleEntry, fetchIndex, isNewer, newestFor, type ReleaseIndex } from "./index-client.ts";
 import { checkRoots, fetchAndExtract, mismatch } from "./stage.ts";
 import { defaultVersion } from "./addon-resolve.ts";
+
+/** Mark written into a bundle quarantined by `dsh uninstall`: the leftover sweep never restores it. */
+export const UNINSTALLED_MARK = ".uninstalled";
 
 export type SelfResult = { updated: boolean; index: ReleaseIndex; version: string; meta: BundleMeta };
 
@@ -52,7 +55,12 @@ export function snapshotAfterInstall(ctx: Context, meta: BundleMeta) {
 	}
 }
 
-async function activateBundle(ctx: Context, entry: BundleEntry): Promise<BundleMeta> {
+/**
+ * Download, verify and place one bundle (caller holds `update.lock`). `launcher`: `always` replaces the root
+ * launcher (`dsh update`, until task 5.4 moves it to the protocol rule); `newer-protocol` only when the
+ * bundle declares a newer launcher protocol than the installed launcher.
+ */
+export async function activateBundle(ctx: Context, entry: BundleEntry, launcher_: "always" | "newer-protocol" = "always"): Promise<BundleMeta> {
 	const target = ctx.meta.target;
 	const asset = entry.assets[target]!;
 	const launcher = exeName("dsh", ctx.platform);
@@ -84,7 +92,9 @@ async function activateBundle(ctx: Context, entry: BundleEntry): Promise<BundleM
 		const dest = join(ctx.root, rel);
 		// An existing generation (same-version --force) is replaced under its exclusive usage claim; a version
 		// in use is never replaced.
-		const placed = installTree(ctx.root, staged, dest, () => replaceLauncher(stagedLauncher, launcherPath(ctx.root, ctx.platform), ctx.platform), ctx.platform);
+		const rootLauncher = launcherPath(ctx.root, ctx.platform);
+		const replace = launcher_ === "always" || replacesLauncher(rootLauncher, meta.launcherProtocol);
+		const placed = installTree(ctx.root, staged, dest, () => replace && replaceLauncher(stagedLauncher, rootLauncher, ctx.platform), ctx.platform);
 		if (placed === "busy") {
 			throw new UserError(`dsh ${entry.version} is in use by another dsh process, so it cannot be replaced now.`, ["Close the other dsh sessions and run the update again."]);
 		}
@@ -107,6 +117,7 @@ export function referencedHome(ctx: Context): (trash: string) => string | undefi
 	const enabled = readAddonsState(ctx.root);
 	return (trash) => {
 		const meta = readBundleMeta(trash);
+		if (existsSync(join(trash, UNINSTALLED_MARK))) return undefined;
 		if (meta?.name === "dsh-bin" && (meta.version === active || meta.version === ctx.running)) return join(ctx.root, "bundles", meta.version);
 		const addon = readAddonMeta(trash);
 		if (addon && enabled[addon.name]?.version === addon.version) return addonDir(ctx.root, addon.name, addon.version);

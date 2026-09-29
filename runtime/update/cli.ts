@@ -10,6 +10,7 @@ import { sweepLeftovers, withUpdateLock } from "./fsops.ts";
 import { list } from "./list.ts";
 import { select } from "./select.ts";
 import { snapshot } from "./snapshot.ts";
+import { installVersion, uninstallVersions } from "./versions.ts";
 
 const HELP: Record<string, string[]> = {
 	update: [
@@ -24,8 +25,21 @@ const HELP: Record<string, string[]> = {
 		"  --clean                                   remove bundles and addon versions no longer in use (offline)",
 		"Plugins are managed with `dsh plugin --profile <name> …`.",
 	],
-	install: [`Usage: ${USAGE.install}`, "", "Install an optional addon (office) for the active dsh bundle."],
-	uninstall: [`Usage: ${USAGE.uninstall}`, "", "Disable an installed addon and remove its unused files."],
+	install: [
+		`Usage: ${USAGE.install}`,
+		"",
+		"Install a dsh version next to the installed ones, or an optional addon (office) for the active dsh bundle.",
+		"  <version>                  exact version, its tag, or an upstream version (0.1.7-rc.2: its newest build)",
+		"  --channel <live|release>   index channel to look the version up in (default: the recorded channel)",
+		"  --force                    reinstall an installed version",
+		"Installing never changes the selection (`dsh select`).",
+	],
+	uninstall: [
+		`Usage: ${USAGE.uninstall}`,
+		"",
+		"Remove installed dsh versions (not the last one, one in use, or the one `dsh select` pins); their plugin",
+		"snapshots are kept. With --addon, disable an installed addon and remove its unused files.",
+	],
 	list: [`Usage: ${USAGE.list}`, "", "Show installed and installable dsh and addon versions (read-only)."],
 	select: [
 		`Usage: ${USAGE.select}`,
@@ -64,9 +78,11 @@ async function run(cmd: ParsedCommand, ctx: Context) {
 		sweepLeftovers(ctx.root, referencedHome(ctx));
 		switch (cmd.command) {
 			case "install":
+				if ("bundle" in cmd) return installVersion(ctx, { query: cmd.bundle, channel: cmd.channel, force: cmd.force });
 				await installAddon(ctx, activeMeta(ctx), { name: cmd.addon, version: cmd.version, force: cmd.force, mode: "install" });
 				return;
 			case "uninstall":
+				if ("bundles" in cmd) return uninstallVersions(ctx, cmd.bundles);
 				uninstallAddon(ctx, cmd.addon);
 				return;
 			case "update": {

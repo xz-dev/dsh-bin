@@ -29,6 +29,9 @@ describe("accepted", () => {
 		expect(p("install --addon office")).toEqual({ command: "install", help: false, addon: "office", force: false });
 		expect(p("install --addon office --version dsh-addon-office-v1 --force")).toEqual({ command: "install", help: false, addon: "office", force: true, version: "dsh-addon-office-v1" });
 		expect(p("uninstall --addon=office")).toEqual({ command: "uninstall", help: false, addon: "office" });
+		expect(p("install 0.1.7-rc.2")).toEqual({ command: "install", help: false, bundle: "0.1.7-rc.2", force: false });
+		expect(p("install dsh-live-abc1234-xz.4.1.g44444444 --channel live --force")).toEqual({ command: "install", help: false, bundle: "dsh-live-abc1234-xz.4.1.g44444444", channel: "live", force: true });
+		expect(p("uninstall 0.1.7-rc.2 live.abc1234")).toEqual({ command: "uninstall", help: false, bundles: ["0.1.7-rc.2", "live.abc1234"] });
 		expect(p("list")).toEqual({ command: "list", help: false, json: false });
 		expect(p("list --addon office --channel live --json")).toEqual({ command: "list", help: false, json: true, addon: "office", channel: "live" });
 	});
@@ -68,8 +71,13 @@ describe("rejected (first error wins)", () => {
 		["install github:x/y", "dsh install does not install plugins (github:x/y). Plugins are managed with `dsh plugin --profile <name> …`."],
 		["uninstall foo", "dsh uninstall does not uninstall plugins (foo). Plugins are managed with `dsh plugin --profile <name> …`."],
 		["list foo", "dsh list does not list plugins (foo). Plugins are managed with `dsh plugin --profile <name> …`."],
-		["install", "dsh install requires --addon <name> (valid addons: office). Plugins are managed with `dsh plugin --profile <name> …`."],
-		["uninstall", "dsh uninstall requires --addon <name> (valid addons: office). Plugins are managed with `dsh plugin --profile <name> …`."],
+		["install", "dsh install requires a dsh version or --addon <name> (valid addons: office). Plugins are managed with `dsh plugin --profile <name> …`."],
+		["uninstall", "dsh uninstall requires a dsh version or --addon <name> (valid addons: office). Plugins are managed with `dsh plugin --profile <name> …`."],
+		["install 0.1.7 0.1.8", "Unexpected argument 0.1.8."],
+		["install 0.1.7 --addon office", "--addon cannot be combined with a dsh version"],
+		["install 0.1.7 --version 1", "--version requires --addon"],
+		["install --addon office --channel live", "--channel requires a dsh version"],
+		["uninstall 0.1.7 --force", 'Unknown option --force for "uninstall".'],
 		["update --clean --force", "--clean cannot be combined with another update target, --force, or --channel"],
 		["update --clean self", "--clean cannot be combined with another update target, --force, or --channel"],
 		["update --clean --channel live", "--clean cannot be combined with another update target, --force, or --channel"],

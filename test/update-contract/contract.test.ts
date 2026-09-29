@@ -272,6 +272,116 @@ const snapshotCases: Case[] = [
 	},
 ];
 
+// ── dsh install <version> / dsh uninstall <version> (self-update "Installing and uninstalling versions") ──
+const versionCases: Case[] = [
+	{
+		name: "install an older version by upstream version: its newest build, next to the others; launcher and selection untouched",
+		root: { version: V.R3 },
+		steps: [
+			{
+				argv: ["install", "0.1.7-rc.2"],
+				code: 0,
+				stdout: [`Installed dsh ${V.R2}`, `Created plugin snapshot ${V.R2}@1 (empty).`],
+				requests: [INDEX, bundleUrl("release", V.R2)],
+				check: (root) => {
+					expect(bundles(root)).toEqual([V.R2, V.R3].sort());
+					expect(launcherOf(root)).toBe(V.R3);
+					expect(isReadOnly(join(root, "bundles", V.R2))).toBe(true);
+					expect(selectionOf(root)).toBeUndefined();
+					expect(leftovers(root)).toEqual([]);
+				},
+			},
+			{ argv: ["select", "--use", "0.1.7-rc.2"], code: 0, stdout: [`Selected --use ${V.R2}.`] },
+			// Already installed: nothing downloaded; --force reinstalls it.
+			{ argv: ["install", `dsh-v${V.R2}`], code: 0, stdout: [`dsh ${V.R2} is already installed.`], requests: [INDEX], unchanged: true },
+			{ argv: ["install", V.R2, "--force"], code: 0, stdout: [`Installed dsh ${V.R2}`], requests: [INDEX, bundleUrl("release", V.R2)], check: (root) => expect(launcherOf(root)).toBe(V.R3) },
+		],
+	},
+	{
+		name: "install replaces a launcher of an older protocol (no protocol marker = protocol 1)",
+		root: { version: V.R3 },
+		arrange: (root) => {
+			const path = join(root, `dsh${EXE}`);
+			const old = readFileSync(path, "utf8").replace(/# DSH_BIN_LAUNCHER_PROTOCOL=\d+\n/, "");
+			chmodSync(path, 0o755);
+			writeFileSync(path, old);
+		},
+		steps: [{ argv: ["install", V.R1], code: 0, stdout: [`Installed dsh ${V.R1}`], check: (root) => expect(launcherOf(root)).toBe(V.R1) }],
+	},
+	{
+		name: "install a newer version while pinned warns and keeps the selection",
+		root: { version: V.R1 },
+		arrange: (root) => writeSel(root, { schema: 1, use: V.R1, snapshot: null, addons: {} }),
+		steps: [
+			{
+				argv: ["install", V.R2],
+				code: 0,
+				stdout: [`Installed dsh ${V.R2}`],
+				stderr: [`plain \`dsh\` still starts ${V.R1}`, "dsh select --use latest"],
+				check: selectionKept({ schema: 1, use: V.R1, snapshot: null, addons: {} }),
+			},
+		],
+	},
+	{
+		name: "install: a version not in the channel's index entries exits 1 with no download",
+		root: { version: V.R1 },
+		steps: [
+			{ argv: ["install", "9.9.9"], code: 1, stderr: ["no release entry of the release index matches 9.9.9"], requests: [INDEX], unchanged: true },
+			// The live build is found only on the live channel.
+			{ argv: ["install", "0.1.7-rc.1"], code: 1, stderr: ["no release entry", "dsh list"], requests: [INDEX], unchanged: true },
+			{ argv: ["install", "0.1.7-rc.1", "--channel", "live"], code: 0, stdout: [`Installed dsh ${V.L1}`], requests: [INDEX, bundleUrl("live", V.L1)], check: (root) => expect(channelFile(root)).toBeUndefined() },
+		],
+	},
+	{
+		name: "uninstall keeps snapshots; they still start on another version",
+		root: { version: V.R2, extra: [V.R1] },
+		arrange: (root) => {
+			snap(root, V.R1, 1);
+			snap(root, V.R1, 1);
+			snap(root, V.R2, 2);
+		},
+		steps: [
+			{
+				argv: ["uninstall", "0.1.7-rc.2-xz.1"],
+				code: 0,
+				stdout: [`Uninstalled dsh ${V.R1}; its plugin snapshots are kept`],
+				requests: [],
+				check: (root) => {
+					expect(bundles(root)).toEqual([V.R2]);
+					expect(snapIds(root)).toEqual([`${V.R1}@1`, `${V.R1}@2`, `${V.R2}@1`]);
+					expect(leftovers(root)).toEqual([]);
+				},
+			},
+			{ argv: ["snapshot", "list", "--json"], code: 0, check: (_root, r) => expect(json(r).snapshots.filter((s: { bundleInstalled: boolean }) => !s.bundleInstalled).map((s: { id: string }) => s.id)).toEqual([`${V.R1}@1`, `${V.R1}@2`]) },
+			{ argv: ["select", "--use", V.R2, "--snapshot", `${V.R1}@2`], code: 0, stdout: [`version:  ${V.R2}`, `snapshot: ${V.R1}@2`] },
+			// A later sweep never brings the uninstalled bundle back.
+			{ argv: ["update", "--clean"], code: 0, check: (root) => expect(bundles(root)).toEqual([V.R2]) },
+		],
+	},
+	{
+		name: "uninstall refuses the pinned, the last and an in-use version; several are all or none",
+		root: { version: V.R3, extra: [V.R1, V.R2] },
+		arrange: (root) => {
+			writeSel(root, { schema: 1, use: "0.1.7-rc.2-xz.2", snapshot: null, addons: {} });
+			const held = holdShared(root, V.R1);
+			return () => held.release();
+		},
+		steps: [
+			{ argv: ["uninstall", V.R2], code: 1, stderr: [`dsh ${V.R2} is pinned by the selection`, "dsh select --use latest"], requests: [], unchanged: true },
+			{ argv: ["uninstall", V.R1], code: 1, stderr: [`dsh ${V.R1} is in use`, "nothing was uninstalled"], unchanged: true },
+			{ argv: ["uninstall", V.R3, V.R1], code: 1, stderr: ["in use"], unchanged: true, check: (root) => expect(bundles(root)).toEqual([V.R1, V.R2, V.R3].sort()) },
+			{ argv: ["uninstall", V.R1, V.R2, V.R3], code: 1, stderr: ["cannot uninstall every installed version"], unchanged: true },
+			{ argv: ["uninstall", "0.1.5"], code: 1, stderr: ["dsh 0.1.5 is not installed"], unchanged: true },
+			{ argv: ["uninstall", "0.1.7"], code: 1, stderr: ["version 0.1.7 is ambiguous"], unchanged: true },
+		],
+	},
+	{
+		name: "uninstall the last installed version is refused",
+		root: { version: V.R1 },
+		steps: [{ argv: ["uninstall", V.R1], code: 1, stderr: [`cannot uninstall dsh ${V.R1}, the last installed version`], requests: [], unchanged: true }],
+	},
+];
+
 const selectCases: Case[] = [
 	{
 		name: "select with no options prints the initial state: latest, the newest snapshot, default addons",
@@ -466,7 +576,7 @@ const cases: Case[] = [
 			[["update", "--channel", "beta"], "valid channels: live, release"],
 			[["update", "--channel"], "valid channels: live, release"],
 			[["install", "--addon", "foo"], "valid addons: office"],
-			[["install"], "requires --addon"],
+			[["install"], "requires a dsh version or --addon"],
 			[["install", "github:x/y"], "Plugins are managed with `dsh plugin --profile <name> …`."],
 			[["list", "--addon", "foo"], "valid addons: office"],
 			[["list", "--force"], 'Unknown option --force for "list".'],
@@ -1062,6 +1172,8 @@ const cases: Case[] = [
 			["portage", ["uninstall", "--addon", "office"]],
 			["portage", ["update", "--addon", "office"]],
 			["scoop", ["update", "--all"]],
+			["portage", ["install", "0.1.7-rc.2"]],
+			["scoop", ["uninstall", V.R1]],
 		] as const
 	).map<Case>(([manager, argv]) => ({
 		name: `${manager}-managed: dsh ${argv.join(" ")} is refused before any network access`,
@@ -1181,7 +1293,7 @@ const cases: Case[] = [
 const allowed = () => new Set([INDEX, ...[...world.assets.keys()].map((k) => `/download/${k}`)]);
 
 describe("update contract", () => {
-	for (const c of [...cases, ...selectCases, ...snapshotCases]) {
+	for (const c of [...cases, ...selectCases, ...snapshotCases, ...versionCases]) {
 		test(c.name, async () => {
 			const root = installRoot(world, c.root.version, { channelFile: c.root.channelFile, managed: c.root.managed });
 			roots.push(root);

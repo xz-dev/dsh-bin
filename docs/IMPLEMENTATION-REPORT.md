@@ -701,3 +701,27 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   and bundle-not-installed marking, managed install, empty list). The `dsh uninstall <version>` half of
   "Uninstall keeps snapshots" is added with the command in 5.3.
 - Full suite: 339 pass / 0 fail; `zig build test` passes.
+
+### Task 5.3: `dsh install <version>` / `dsh uninstall <version>...`
+
+- `runtime/update/versions.ts`:
+  - `findEntry`: exact version, tag, or upstream version (`<q>-xz.*`, highest seq) on the recorded channel or
+    `--channel`; no match exits 1 after the index request only, naming `dsh list`;
+  - `installVersion`: already installed -> status 0 without download unless `--force`; otherwise
+    `activateBundle(..., "newer-protocol")`, the automatic snapshot, and the pinned-selection warning
+    (`pinnedWarning`, reused by 5.4). The recorded channel file is not changed by `install --channel`;
+  - `uninstallVersions`: refuses unknown/ambiguous, the last installed version(s), the pinned one (naming
+    `dsh select --use latest`), and in-use ones; all targets are quarantined first and put back if one is
+    busy. A `.uninstalled` mark stops the leftover sweep from restoring a crashed uninstall. Snapshots stay.
+- Launcher replacement: `replacesLauncher` reads `DSH_BIN_LAUNCHER_PROTOCOL=<n>` from the root launcher
+  (none = protocol 1) and replaces it only for a newer bundle protocol. `dsh update` still replaces always
+  until 5.4 moves it to this rule.
+- Managed installs refuse both new forms (existing refusal, 2 new matrix cases).
+- Contract: 7 new cases (older version by upstream version, already installed / `--force`, pinned warning,
+  not in index and `--channel live`, older-protocol launcher replaced, uninstall keeps snapshots incl. after
+  `update --clean`, pinned/last/in-use/all-or-none/unknown/ambiguous refusals). This completes 5.2's
+  "uninstall keeps snapshots".
+- Not verified yet: on Windows, uninstalling the bundle that runs the maintenance command (the newest one,
+  under the launcher) likely fails the rename and is reported as "in use". Safe, but the message is
+  misleading; check it in the 5.4 Windows CI run.
+- Full suite: 353 pass / 0 fail; `zig build test` passes.
