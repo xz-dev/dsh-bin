@@ -177,9 +177,12 @@ What the first runs found and fixed:
   Each was a single failure, and a different one on each attempt. Neither goes through the launcher.
   The probable fix is an explicit per-test timeout; I will apply it with 5.4, which rewrites the updater
   contract.
-- **Children do not hold the usage claims (a design gap; 4.3 is blocked on your decision).**
-  - Design S3 assumes the pnpm children and lifecycle scripts inherit the claim descriptor on POSIX.
-    D4 assumes the same for the bundle claim. They do not.
+- **Children do not hold the usage claims (accepted trade-off, your decision 2026-09-29).**
+  - The usage claims now cover only dsh-bin's own runtime processes, and the spec says so. They prevent
+    mistakes; they are not a guarantee. Plain filesystem primitives cannot track every user of a
+    directory. The launcher and plugin-snapshots specs and design S3 were changed to match.
+  - Design S3 used to assume that pnpm children and lifecycle scripts inherit the claim descriptor on
+    POSIX, and D4 assumed the same. They do not.
   - Evidence: `~/.cache/cp-probe/inherit2.ts`. A Bun parent takes a shared flock, then starts `sleep`
     through both `child_process.spawn` and `Bun.spawn`, and is SIGKILLed. The lock was free at once,
     although both children were still running. Bun passes no extra descriptors to its children, even with
@@ -189,8 +192,6 @@ What the first runs found and fixed:
   - Effect: while the session lives, its own claim covers everything. When only a child remains (the
     session was killed while pnpm was still installing), a `dsh snapshot remove` or `dsh uninstall`
     could delete files under it.
-  - What works: `BUN_OPTIONS=--preload <file>` runs under `BUN_BE_BUN` (probe `pre.mjs`), so a small
-    preload in the bundle could take the claims in every process a shim starts.
 - **Environment inheritance.** `DSH_BIN_SNAPSHOT_DIR` reaches children started through
   `node:child_process`. No upstream package calls `Bun.spawn`, so this covers all of upstream. A plain
   `Bun.spawn` without `env` would not see runtime changes to `process.env` (probe above).
@@ -618,7 +619,7 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
     everything unchanged.
 - Full suite: 316 pass / 0 fail. Leaked `dsh-*` test directories were removed from `/tmp`.
 
-### Task 4.3: runtime wiring (in progress, not ticked)
+### Task 4.3: runtime wiring
 
 - `runtime/snapshot/resolve.ts` resolves the snapshot in this order:
   1. the snapshot already resolved (a restart);
@@ -649,5 +650,5 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
 - Addon resolution from the launch (`--addon`) belongs to 5.5, which replaces `officeWiring`'s enabled
   record. The launch record already carries the addons.
 - Full suite: 320 pass / 0 fail.
-- **Blocked.** The spec requires pnpm children to hold the snapshot claim for their whole lifetime, and
-  they do not; see "Not verified yet".
+- The claim covers the runtime processes (the session, `dsh plugin`, restarts), as the revised spec
+  requires. Children are out of scope by decision; see "Not verified yet".

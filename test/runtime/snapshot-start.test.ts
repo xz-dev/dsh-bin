@@ -29,7 +29,7 @@ export async function runCli() {
 	if (!process.env.STUB_REPORT) return;
 	const launch = JSON.parse(process.env.DSH_BIN_LAUNCH ?? "null");
 	const shim = spawnSync("node", ["-e", "process.stdout.write(process.env.DSH_BIN_SNAPSHOT_DIR ?? '-')"], { encoding: "utf8" }).stdout;
-	process.stdout.write("REPORT " + JSON.stringify({ args: process.argv.slice(2), dir: process.env.DSH_BIN_SNAPSHOT_DIR, resolved: launch?.resolved?.snapshot, shim }) + "\\n");
+	process.stdout.write("REPORT " + JSON.stringify({ args: process.argv.slice(2), dir: process.env.DSH_BIN_SNAPSHOT_DIR, resolved: launch?.resolved?.snapshot, version: launch?.version, addons: launch?.selection?.addons, shim }) + "\\n");
 	if (process.env.STUB_RESTART_WRITE) {
 		writeFileSync(process.env.STUB_RESTART_WRITE, process.env.STUB_RESTART_DATA);
 		const env = { ...process.env };
@@ -133,15 +133,15 @@ test("a restart keeps the snapshot after a selection change; the node shim inher
 	createSnapshot(dshHome, { version: V2.version, order: V2, reason: "user", source: () => null });
 	const selPath = join(dshHome, "dsh-bin", "selection.json");
 	mkdirSync(join(dshHome, "dsh-bin"), { recursive: true });
-	const selection = { schema: 1, use: V2.version, snapshot: `${V2.version}@1`, addons: {} };
+	const selection = { schema: 1, use: V2.version, snapshot: `${V2.version}@1`, addons: { office: "0.1.1" } };
 	writeFileSync(selPath, JSON.stringify(selection));
-	const env = { STUB_REPORT: "1", STUB_RESTART_WRITE: selPath, STUB_RESTART_DATA: JSON.stringify({ ...selection, snapshot: `${V2.version}@2` }), PATH: `/usr/bin:/bin` };
+	const env = { STUB_REPORT: "1", STUB_RESTART_WRITE: selPath, STUB_RESTART_DATA: JSON.stringify({ ...selection, use: "latest", snapshot: `${V2.version}@2`, addons: { office: "0.1.2" } }), PATH: `/usr/bin:/bin` };
 	const r = await start(home, { version: V2.version, source: "selection", selection }, ["--profile", "tui"], env);
 	expect(r.code).toBe(0);
 	const reports = r.stdout.split("\n").filter((l) => l.startsWith("REPORT ")).map((l) => JSON.parse(l.slice(7)));
 	expect(reports).toHaveLength(2);
 	const dir = snapshotDir(dshHome, `${V2.version}@1`);
-	for (const rep of reports) expect(rep).toEqual({ args: ["--profile", "tui"], dir, resolved: `${V2.version}@1`, shim: dir });
+	for (const rep of reports) expect(rep).toEqual({ args: ["--profile", "tui"], dir, resolved: `${V2.version}@1`, version: V2.version, addons: { office: "0.1.1" }, shim: dir });
 }, 60_000);
 
 test("a running session holds the snapshot's claim; removal is refused until it exits", async () => {
