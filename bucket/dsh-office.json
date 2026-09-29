@@ -1,0 +1,27 @@
+{
+  "version": "0.1.1-xz.1.1.g46c01aa6",
+  "description": "LibreOffice Kit addon for dsh (office-to-pdf, skill-office)",
+  "homepage": "https://github.com/xz-dev/dsh-bin",
+  "license": "MPL-2.0",
+  "depends": "dsh",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/xz-dev/dsh-bin/releases/download/dsh-addon-office-v0.1.1-xz.1.1.g46c01aa6/dsh-addon-office-windows-x64.zip",
+      "hash": "cc73657958b81776e378481681c3dd5b3f71d07ebd432bd27d8fa31f4858a234"
+    },
+    "arm64": {
+      "url": "https://github.com/xz-dev/dsh-bin/releases/download/dsh-addon-office-v0.1.1-xz.1.1.g46c01aa6/dsh-addon-office-windows-arm64.zip",
+      "hash": "f70f7bff31e10bcf28e89b9b6ecc97b6bb881d2e6f124df926adbb71cec01261"
+    }
+  },
+  "post_install": [
+    "$t = Join-Path (appdir dsh $global) 'current\\addons\\office\\0.1.1-xz.1.1.g46c01aa6'; if (Test-Path $t) { Remove-Item -Recurse -Force $t }; New-Item -ItemType Directory -Force $t | Out-Null",
+    "Get-ChildItem -Force $dir | Where-Object Name -NotIn @('manifest.json','install.json') | Copy-Item -Recurse -Destination $t",
+    "$s = Join-Path (appdir dsh $global) 'current\\addons.json'; $j = @{}; if ((Test-Path $s) -and (Get-Item $s).Length) { (Get-Content -Raw $s | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $j[$_.Name] = $_.Value } }",
+    "$j['office'] = @{ version = '0.1.1-xz.1.1.g46c01aa6'; forced = $false }; $j | ConvertTo-Json | Set-Content -NoNewline -Path $s"
+  ],
+  "pre_uninstall": [
+    "$s = Join-Path (appdir dsh $global) 'current\\addons.json'; if (Test-Path $s) { $j = Get-Content -Raw $s | ConvertFrom-Json; $j.PSObject.Properties.Remove('office'); $j | ConvertTo-Json | Set-Content -NoNewline -Path $s }",
+    "$t = Join-Path (appdir dsh $global) 'current\\addons\\office\\0.1.1-xz.1.1.g46c01aa6'; if (Test-Path $t) { Remove-Item -Recurse -Force $t }"
+  ]
+}
