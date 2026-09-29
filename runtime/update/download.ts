@@ -131,11 +131,11 @@ function tidy(root: string) {
 	try {
 		if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
 	} catch {
-		// Not empty or not removable now; the next run or `dsh update --clean` handles it.
+		// Not empty or not removable now; the next run or `dsh clean --update` handles it.
 	}
 }
 
-/** Remove every kept partial download (`dsh update --clean`). */
+/** Remove every kept partial download (`dsh clean --update`). */
 export function removePartials(root: string): number {
 	const dir = join(root, DOWNLOADS_DIR);
 	if (!existsSync(dir)) return 0;

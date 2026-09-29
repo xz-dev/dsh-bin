@@ -44,7 +44,7 @@ export function officeWiring(bundleDir: string): OfficeWiring {
 	if (!meta || extra.size === 0) {
 		return {
 			kind: "degraded",
-			degradations: officeDegradations(`the enabled office addon ${enabled.version} is missing or incomplete; run \`dsh update --addon office\``),
+			degradations: officeDegradations(`the enabled office addon ${enabled.version} is missing or incomplete; run \`dsh install --addon office\``),
 		};
 	}
 	const bundleSlot = readBundleMeta(bundleDir)?.addons?.office?.slot;
@@ -55,13 +55,13 @@ export function officeWiring(bundleDir: string): OfficeWiring {
 			version: enabled.version,
 			dir,
 			extra,
-			warning: `dsh: warning: office addon ${enabled.version} is forced out of slot (addon slot ${slotLabel(meta.slot)}, bundle slot ${slotLabel(bundleSlot)}); run \`dsh update --addon office\` to return to the default`,
+			warning: `dsh: warning: office addon ${enabled.version} is forced out of slot (addon slot ${slotLabel(meta.slot)}, bundle slot ${slotLabel(bundleSlot)}); run \`dsh install --addon office\` to install the default`,
 		};
 	}
 	return {
 		kind: "degraded",
 		degradations: officeDegradations(
-			`office addon ${enabled.version} is out of slot for this bundle (addon slot ${slotLabel(meta.slot)}, bundle slot ${slotLabel(bundleSlot)}); run \`dsh update --addon office\``,
+			`office addon ${enabled.version} is out of slot for this bundle (addon slot ${slotLabel(meta.slot)}, bundle slot ${slotLabel(bundleSlot)}); run \`dsh install --addon office\``,
 		),
 	};
 }

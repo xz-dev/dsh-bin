@@ -9,7 +9,7 @@ pub const protocol: u32 = 2;
 
 /// dsh-bin maintenance commands: run on the newest installed bundle, without a usage claim, so a missing
 /// or broken selected version can always be fixed.
-pub const maintenance_cmds = [_][]const u8{ "update", "install", "uninstall", "list", "select", "snapshot" };
+pub const maintenance_cmds = [_][]const u8{ "update", "install", "uninstall", "list", "select", "snapshot", "clean" };
 
 pub fn isMaintenance(arg: ?[]const u8) bool {
     const a = arg orelse return false;
@@ -495,7 +495,7 @@ test "maintenance bundle: newest this launcher can start, any channel" {
     const all = [_]Bundle{ R2, L, R1, future, .{ .version = "junk", .meta = null } };
     try tt.expectEqualStrings(L.version, maintenanceBundle(&all).?);
     try tt.expectEqual(@as(?[]const u8, null), maintenanceBundle(&.{future}));
-    try tt.expect(isMaintenance("select") and isMaintenance("snapshot") and !isMaintenance("plugin") and !isMaintenance(null));
+    try tt.expect(isMaintenance("select") and isMaintenance("snapshot") and isMaintenance("clean") and !isMaintenance("plugin") and !isMaintenance(null));
 }
 
 test "DSH_BIN_LAUNCH" {

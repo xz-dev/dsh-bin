@@ -2,28 +2,45 @@
 // usage claim, app resolution or compat layer, so it works whatever the upstream app contains.
 import { isMaintenance, type ParsedCommand, parseMaintenance, USAGE } from "./args.ts";
 import { parseLeading, writeLaunch } from "../snapshot/launch.ts";
-import { addonHints, clean, referencedHome, updateSelf } from "./bundle.ts";
+import { cleanTranspiler, cleanUpdateLeftovers, newSlotHints, referencedHome, updateSelf } from "./bundle.ts";
 import { installAddon, uninstallAddon } from "./addon.ts";
-import { readAddonsState } from "../layout.ts";
-import { activeMeta, type Context, resolveContext, UserError } from "./context.ts";
+import { dshHome, type BundleMeta } from "../layout.ts";
+import { sweepSnapshotLeftovers } from "../snapshot/store.ts";
+import { type Context, resolveContext, UserError } from "./context.ts";
 import { sweepLeftovers, withUpdateLock } from "./fsops.ts";
 import { list } from "./list.ts";
-import { select } from "./select.ts";
+import { effectiveBundle, select } from "./select.ts";
 import { snapshot } from "./snapshot.ts";
-import { installVersion, uninstallVersions } from "./versions.ts";
+import { installVersion, pinnedWarning, uninstallVersions } from "./versions.ts";
+
+/** Bundle an addon command acts on: the effective version, or the running bundle when it does not resolve. */
+function addonTarget(ctx: Context): BundleMeta {
+	try {
+		return effectiveBundle(ctx);
+	} catch {
+		return ctx.meta;
+	}
+}
 
 const HELP: Record<string, string[]> = {
 	update: [
 		`Usage: ${USAGE.update}`,
 		"",
-		"Update the dsh binary from xz-dev/dsh-bin releases, or an installed addon.",
-		"  update, update self, update dsh, --self   update the binary only",
-		"  --all                                     update the binary, then every installed addon",
-		"  --addon <name> [--version <v|tag>]        update one installed addon (to its default, or to <v>)",
-		"  --force                                   reinstall the current version (with --addon --version: allow out of slot)",
+		"Install the newest dsh version of the channel from xz-dev/dsh-bin releases, next to the installed ones.",
+		"It never changes the selection (`dsh select`); older versions stay until `dsh uninstall <version>`.",
+		"  update, update self, update dsh, --self   the same install",
+		"  --force                                   reinstall the newest version when it is already installed",
 		"  --channel <live|release>                  switch channel (recorded after a successful update)",
-		"  --clean                                   remove bundles and addon versions no longer in use (offline)",
-		"Plugins are managed with `dsh plugin --profile <name> …`.",
+		"Addons: `dsh install --addon <name>`. Plugins are managed with `dsh plugin --profile <name> …`.",
+	],
+	clean: [
+		`Usage: ${USAGE.clean}`,
+		"",
+		"Remove what dsh-bin leaves behind (offline). No option means --all.",
+		"  --update       leftovers of interrupted installs, updates and uninstalls, and partial downloads",
+		"  --snapshots    interrupted snapshot copies and removals",
+		"  --transpiler   dsh-bin's own transpiler cache (a path you set yourself is left alone)",
+		"Installed versions and snapshots are removed only by `dsh uninstall` and `dsh snapshot remove`.",
 	],
 	install: [
 		`Usage: ${USAGE.install}`,
@@ -72,6 +89,7 @@ async function run(cmd: ParsedCommand, ctx: Context) {
 	if (cmd.command === "list") return list(ctx, cmd);
 	if (cmd.command === "select") return select(ctx, cmd);
 	if (cmd.command === "snapshot") return snapshot(ctx, cmd);
+	if (cmd.command === "clean") return clean(ctx, cmd.parts);
 	refuseManaged(ctx);
 	await withUpdateLock(ctx.root, async () => {
 		// Staging/trash leftovers of an interrupted run are removed first (when no longer claimed).
@@ -79,30 +97,33 @@ async function run(cmd: ParsedCommand, ctx: Context) {
 		switch (cmd.command) {
 			case "install":
 				if ("bundle" in cmd) return installVersion(ctx, { query: cmd.bundle, channel: cmd.channel, force: cmd.force });
-				await installAddon(ctx, activeMeta(ctx), { name: cmd.addon, version: cmd.version, force: cmd.force, mode: "install" });
+				await installAddon(ctx, addonTarget(ctx), { name: cmd.addon, version: cmd.version, force: cmd.force, mode: "install" });
 				return;
 			case "uninstall":
 				if ("bundles" in cmd) return uninstallVersions(ctx, cmd.bundles);
 				uninstallAddon(ctx, cmd.addon);
 				return;
 			case "update": {
-				if (cmd.clean) return clean(ctx);
-				if (cmd.target.type === "addon") {
-					await installAddon(ctx, activeMeta(ctx), { name: cmd.target.name, version: cmd.version, force: cmd.force, mode: "update" });
-					return;
-				}
 				const self = await updateSelf(ctx, { channel: cmd.channel, force: cmd.force });
-				if (cmd.target.type === "all") {
-					const meta = self.updated ? self.meta : activeMeta(ctx);
-					for (const name of Object.keys(readAddonsState(ctx.root)) as "office"[]) {
-						await installAddon(ctx, meta, { name, force: cmd.force, mode: "update" }, self.index);
-					}
-					return;
-				}
-				for (const line of addonHints(ctx, self.updated ? self.meta : activeMeta(ctx), self.index)) ctx.out(line);
+				if (!self.updated) return;
+				for (const line of newSlotHints(ctx, self.meta)) ctx.out(line);
+				for (const line of pinnedWarning(ctx, self.version)) ctx.err(line);
 			}
 		}
 	});
+}
+
+/**
+ * `dsh clean` (self-update "Cleanup"): offline, each part only what can be claimed. A managed install root
+ * belongs to the package manager, so `--update` is skipped there.
+ */
+async function clean(ctx: Context, parts: readonly string[]) {
+	if (parts.includes("update")) {
+		if (ctx.managed) ctx.out(`Skipped the install root: it is managed by ${ctx.managed}.`);
+		else await withUpdateLock(ctx.root, async () => cleanUpdateLeftovers(ctx));
+	}
+	if (parts.includes("snapshots")) ctx.out(`Removed ${sweepSnapshotLeftovers(dshHome())} interrupted snapshot leftover(s)`);
+	if (parts.includes("transpiler")) cleanTranspiler(ctx);
 }
 
 /** Run a maintenance command; resolves to the process exit status. */

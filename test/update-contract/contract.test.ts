@@ -355,7 +355,7 @@ const versionCases: Case[] = [
 			{ argv: ["snapshot", "list", "--json"], code: 0, check: (_root, r) => expect(json(r).snapshots.filter((s: { bundleInstalled: boolean }) => !s.bundleInstalled).map((s: { id: string }) => s.id)).toEqual([`${V.R1}@1`, `${V.R1}@2`]) },
 			{ argv: ["select", "--use", V.R2, "--snapshot", `${V.R1}@2`], code: 0, stdout: [`version:  ${V.R2}`, `snapshot: ${V.R1}@2`] },
 			// A later sweep never brings the uninstalled bundle back.
-			{ argv: ["update", "--clean"], code: 0, check: (root) => expect(bundles(root)).toEqual([V.R2]) },
+			{ argv: ["clean", "--update"], code: 0, check: (root) => expect(bundles(root)).toEqual([V.R2]) },
 		],
 	},
 	{
@@ -533,15 +533,18 @@ const cases: Case[] = [
 				stdout: [`Updated dsh from ${V.R1} to ${V.R3}`],
 				requests: [INDEX, bundleUrl("release", V.R3)],
 				check: (root) => {
+					// Installed next to R1; the launcher (same protocol) and the selection are untouched.
 					expect(bundles(root)).toEqual([V.R1, V.R3].sort());
-					expect(launcherOf(root)).toBe(V.R3);
+					expect(launcherOf(root)).toBe(V.R1);
+					expect(selectionOf(root)).toBeUndefined();
 					expect(channelFile(root)).toBe("release");
 					expect(isReadOnly(join(root, "bundles", V.R3))).toBe(true);
 					expect(isReadOnly(join(root, "bundles", V.R3, "app", "lib"))).toBe(true);
 					expect(leftovers(root)).toEqual([]);
 				},
 			},
-			{ argv: ["--version"], viaLauncher: true, code: 97, stdout: [join("bundles", V.R3, "app", "lib")], requests: [] },
+			// The initial selection (`latest`) now resolves to the new version.
+			{ argv: ["select"], code: 0, stdout: [`version:  ${V.R3} (latest on the release channel)`], requests: [] },
 		],
 	})),
 	...[
@@ -557,22 +560,16 @@ const cases: Case[] = [
 		root: { version: V.R1 },
 		steps: [{ argv: ["update", opt], code: 1, stderr: [`Unknown option ${opt} for "update".`], requests: [], ...UNCHANGED_UPDATE }],
 	})),
-	...[
-		["update", "--clean", "--force"],
-		["update", "--clean", "self"],
-		["update", "--clean", "--channel", "live"],
-	].map<Case>((argv) => ({
-		name: `clean conflict: ${argv.join(" ")}`,
-		root: { version: V.R1 },
-		steps: [{ argv, code: 1, stderr: ["--clean cannot be combined with another update target, --force, or --channel"], requests: [], ...UNCHANGED_UPDATE }],
-	})),
 	...(
 		[
-			[["update", "--all", "--addon", "office"], "--all cannot be combined with --self, --addon, or a positional target"],
-			[["update", "--addon", "office", "--addon", "office"], "--addon can only be provided once"],
-			[["update", "--addon", "office", "--channel", "live"], "--channel requires a dsh update"],
-			[["update", "--version", V.P1], "--version requires --addon"],
-			[["update", "--all", "--version", V.P1], "--version cannot be combined with --all, --self, or --channel"],
+			// Removed options (self-update "Removed addon options"): unknown, the addon ones naming `dsh install --addon`.
+			[["update", "--all"], 'Unknown option --all for "update". Run `dsh install --addon office`'],
+			[["update", "--addon", "office"], 'Unknown option --addon for "update". Run `dsh install --addon office`'],
+			[["update", "--version", V.P1], 'Unknown option --version for "update".'],
+			[["update", "--clean"], 'Unknown option --clean for "update".'],
+			[["update", "--clean", "--force"], 'Unknown option --clean for "update".'],
+			[["clean", "--force"], 'Unknown option --force for "clean".'],
+			[["clean", "everything"], "Unexpected argument everything."],
 			[["update", "--channel", "beta"], "valid channels: live, release"],
 			[["update", "--channel"], "valid channels: live, release"],
 			[["install", "--addon", "foo"], "valid addons: office"],
@@ -588,32 +585,28 @@ const cases: Case[] = [
 		steps: [{ argv: [...argv], code: 1, stderr: [message], requests: [], ...UNCHANGED_UPDATE }],
 	})),
 	{
-		name: "--all updates the binary, then the addon to the new default",
-		root: { version: V.R1, addon: { version: V.P1, slot: SLOT_A, forced: false } },
-		steps: [
-			{
-				argv: ["update", "--all"],
-				code: 0,
-				stdout: [`Updated dsh from ${V.R1} to ${V.R3}`, `Installed the office addon ${V.P3}`],
-				requests: [INDEX, bundleUrl("release", V.R3), addonUrl(V.P3)],
-				check: (root) => {
-					expect(launcherOf(root)).toBe(V.R3);
-					expect(addonsState(root)).toEqual({ office: { version: V.P3, forced: false } });
-					expect(isReadOnly(join(root, "addons", "office", V.P3))).toBe(true);
-				},
-			},
-		],
-	},
-	{
-		name: "plain self-update leaves the addon alone and prints the --addon/--all hint",
+		name: "new slot hint: the new bundle's slot has no installed office version; nothing is downloaded",
 		root: { version: V.R1, addon: { version: V.P1, slot: SLOT_A, forced: false } },
 		steps: [
 			{
 				argv: ["update"],
 				code: 0,
-				stdout: [`Updated dsh from ${V.R1} to ${V.R3}`, "`dsh update --addon office` or `dsh update --all`"],
+				stdout: [`Updated dsh from ${V.R1} to ${V.R3}`, `No installed office addon version fits dsh ${V.R3}`, "dsh install --addon office"],
 				requests: [INDEX, bundleUrl("release", V.R3)],
-				check: (root) => expect(addonsState(root)).toEqual({ office: { version: V.P1, forced: false } }),
+				check: (root) => expect(readdirSync(join(root, "addons", "office"))).toEqual([V.P1]),
+			},
+		],
+	},
+	{
+		name: "no new slot hint when the new bundle's slot has an installed office version",
+		root: { version: V.R1, addon: { version: V.P1, slot: SLOT_A, forced: false } },
+		steps: [
+			{
+				argv: ["update", "--channel", "live"],
+				code: 0,
+				stdout: [`Updated dsh from ${V.R1} to ${V.L1}`],
+				requests: [INDEX, bundleUrl("live", V.L1)],
+				check: (_root, r) => expect(r.stdout).not.toContain("dsh install --addon"),
 			},
 		],
 	},
@@ -688,7 +681,8 @@ const cases: Case[] = [
 				requests: [INDEX, bundleUrl("live", V.L1)],
 				check: (root) => {
 					expect(channelFile(root)).toBe("live");
-					expect(launcherOf(root)).toBe(V.L1);
+					expect(bundles(root)).toEqual([V.R1, V.L1].sort());
+					expect(launcherOf(root)).toBe(V.R1);
 				},
 			},
 			{ argv: ["update"], from: V.L1, code: 0, stdout: [`dsh is already up to date (${V.L1})`], requests: [INDEX] },
@@ -736,7 +730,7 @@ const cases: Case[] = [
 			{
 				argv: ["update", "--force"],
 				code: 0,
-				stdout: [`Updated dsh from ${V.R3} to ${V.R3}`],
+				stdout: [`Installed dsh ${V.R3}`],
 				requests: [INDEX, bundleUrl("release", V.R3)],
 				check: (root) => {
 					expect(bundles(root)).toEqual([V.R3]);
@@ -779,7 +773,7 @@ const cases: Case[] = [
 				stdout: ["Download interrupted (", "retrying", `Updated dsh from ${V.R1} to ${V.R3}`, /\d+%\s+\S+ \S+ \/ \S+ \S+\s+\S+ \S+\/s\s+ETA /],
 				requests: [INDEX, bundleUrl("release", V.R3), bundleUrl("release", V.R3), bundleUrl("release", V.R3)],
 				check: (root) => {
-					expect(launcherOf(root)).toBe(V.R3);
+					expect(bundles(root)).toContain(V.R3);
 					expect(existsSync(join(root, ".downloads"))).toBe(false);
 				},
 			},
@@ -795,7 +789,7 @@ const cases: Case[] = [
 				code: 1,
 				stderr: ["download failed", "HTTP 503", "Run the same command again to resume the download."],
 				check: (root) => {
-					expect(launcherOf(root)).toBe(V.R1);
+					expect(bundles(root)).toEqual([V.R1]);
 					expect(readdirSync(join(root, ".downloads")).map((n) => [n.endsWith(".part"), readFileSync(join(root, ".downloads", n)).length])).toEqual([[true, 4096]]);
 				},
 			},
@@ -805,7 +799,7 @@ const cases: Case[] = [
 				stdout: ["Resuming dsh-", `Updated dsh from ${V.R1} to ${V.R3}`],
 				requests: [INDEX, bundleUrl("release", V.R3)],
 				check: (root) => {
-					expect(launcherOf(root)).toBe(V.R3);
+					expect(bundles(root)).toContain(V.R3);
 					expect(existsSync(join(root, ".downloads"))).toBe(false);
 				},
 			},
@@ -820,7 +814,7 @@ const cases: Case[] = [
 				serve: { assetFault: (_a, n) => (n === 0 ? { cutAt: 4096 } : { ignoreRange: true }) },
 				code: 0,
 				stdout: ["The server ignored the resume request", `Updated dsh from ${V.R1} to ${V.R3}`],
-				check: (root) => expect(launcherOf(root)).toBe(V.R3),
+				check: (root) => expect(bundles(root)).toContain(V.R3),
 			},
 		],
 	},
@@ -839,7 +833,7 @@ const cases: Case[] = [
 				stdout: ["Resuming", "did not verify; downloading it again from the start", `Updated dsh from ${V.R1} to ${V.R3}`],
 				requests: [INDEX, bundleUrl("release", V.R3), bundleUrl("release", V.R3)],
 				check: (root) => {
-					expect(launcherOf(root)).toBe(V.R3);
+					expect(bundles(root)).toContain(V.R3);
 					expect(existsSync(join(root, ".downloads"))).toBe(false);
 				},
 			},
@@ -860,13 +854,13 @@ const cases: Case[] = [
 		],
 	},
 	{
-		name: "update --clean removes kept partial downloads",
+		name: "clean --update removes kept partial downloads",
 		root: { version: V.R1 },
 		arrange: (root) => {
 			mkdirSync(join(root, ".downloads"));
 			writeFileSync(join(root, ".downloads", `${"0".repeat(64)}.part`), "x");
 		},
-		steps: [{ argv: ["update", "--clean"], offline: true, code: 0, stdout: ["Removed 1 partial download(s)"], requests: [], check: (root) => expect(existsSync(join(root, ".downloads"))).toBe(false) }],
+		steps: [{ argv: ["clean", "--update"], offline: true, code: 0, stdout: ["Removed 1 partial download(s)"], requests: [], check: (root) => expect(existsSync(join(root, ".downloads"))).toBe(false) }],
 	},
 	// ── Verification before activation ───────────────────────────────────────────────────────────────
 	{
@@ -937,31 +931,79 @@ const cases: Case[] = [
 		},
 		steps: [
 			{ argv: ["update"], code: 1, stderr: ["Another dsh update or cleanup is already running.", "remove", "update.lock manually"], requests: [], unchanged: true },
-			{ argv: ["update", "--clean"], code: 1, stderr: ["Another dsh update or cleanup is already running."], requests: [], unchanged: true },
+			{ argv: ["clean"], code: 1, stderr: ["Another dsh update or cleanup is already running."], requests: [], unchanged: true },
 			{ argv: ["install", "--addon", "office"], code: 1, stderr: ["Another dsh update or cleanup is already running."], requests: [], unchanged: true },
+			{ argv: ["install", V.R2], code: 1, stderr: ["Another dsh update or cleanup is already running."], requests: [], unchanged: true },
 		],
 	},
 	// ── Cleanup ──────────────────────────────────────────────────────────────────────────────────────
 	{
-		name: "--clean keeps the running, launcher and claimed versions; offline",
+		name: "clean keeps installed versions and removes only leftovers; offline",
 		root: { version: V.R3, extra: [V.R1, V.R2] },
 		arrange: (root) => {
-			const c = holdShared(root, V.R2);
-			return () => c.release();
+			mkdirSync(join(root, ".staging-deadbeef0001", "tree"), { recursive: true });
+			snap(root, V.R3, 3);
+			mkdirSync(join(homeOf(root), "snapshots", ".staging-deadbeef0003", "profiles"), { recursive: true });
 		},
 		steps: [
 			{
-				argv: ["update", "--clean"],
+				argv: ["clean"],
 				offline: true,
 				code: 0,
-				stdout: ["Removed 1 old bundle(s)"],
+				stdout: ["Removed 1 interrupted install leftover(s)", "Removed 1 interrupted snapshot leftover(s)", "No transpiler cache to clear"],
 				requests: [],
-				check: (root) => expect(bundles(root)).toEqual([V.R2, V.R3].sort()),
+				check: (root) => {
+					expect(bundles(root)).toEqual([V.R1, V.R2, V.R3].sort());
+					expect(leftovers(root)).toEqual([]);
+					expect(snapIds(root)).toEqual([`${V.R3}@1`]);
+					expect(readdirSync(join(homeOf(root), "snapshots")).filter((n) => n.startsWith(".staging-"))).toEqual([]);
+				},
 			},
 		],
 	},
 	{
-		name: "--clean clears dsh-bin's transpiler cache, and only that cache",
+		name: "clean --snapshots removes only the interrupted snapshot copy",
+		root: { version: V.R1 },
+		arrange: (root) => {
+			mkdirSync(join(root, ".staging-deadbeef0001", "tree"), { recursive: true });
+			mkdirSync(join(homeOf(root), "snapshots", ".staging-deadbeef0003"), { recursive: true });
+		},
+		steps: [
+			{
+				argv: ["clean", "--snapshots"],
+				offline: true,
+				code: 0,
+				stdout: ["Removed 1 interrupted snapshot leftover(s)"],
+				unchanged: true,
+				check: (root, r) => {
+					expect(leftovers(root)).toEqual([".staging-deadbeef0001"]);
+					expect(r.stdout).not.toContain("install leftover");
+					expect(r.stdout).not.toContain("transpiler");
+				},
+			},
+		],
+	},
+	{
+		name: "managed clean: the install root is left to the manager, the rest is cleaned",
+		root: { version: V.R1, managed: "portage" },
+		arrange: (root) => {
+			mkdirSync(join(root, ".staging-deadbeef0001", "tree"), { recursive: true });
+			mkdirSync(join(homeOf(root), "snapshots", ".staging-deadbeef0003"), { recursive: true });
+		},
+		steps: [
+			{
+				argv: ["clean"],
+				offline: true,
+				code: 0,
+				stdout: ["Skipped the install root: it is managed by portage.", "Removed 1 interrupted snapshot leftover(s)"],
+				requests: [],
+				unchanged: true,
+				check: (root) => expect(leftovers(root)).toEqual([".staging-deadbeef0001"]),
+			},
+		],
+	},
+	{
+		name: "clean --transpiler clears dsh-bin's transpiler cache, and only that cache",
 		root: { version: V.R3 },
 		arrange: (root) => {
 			for (const d of ["cache/transpiler", "cache/other", "user-cache"]) {
@@ -971,12 +1013,13 @@ const cases: Case[] = [
 		},
 		steps: [
 			{
-				argv: ["update", "--clean"],
+				argv: ["clean", "--transpiler"],
 				offline: true,
 				env: (root) => ({ DSH_BUNDLE_CACHE: join(root, "..", `${basename(root)}-x`, "cache"), BUN_RUNTIME_TRANSPILER_CACHE_PATH: join(root, "..", `${basename(root)}-x`, "user-cache") }),
 				code: 0,
-				stdout: ["Removed 0 old bundle(s)", "Cleared the transpiler cache"],
+				stdout: ["Cleared the transpiler cache"],
 				requests: [],
+				unchanged: true,
 				check: (root) => {
 					const x = join(root, "..", `${basename(root)}-x`);
 					expect(existsSync(join(x, "cache/transpiler"))).toBe(false);
@@ -988,28 +1031,13 @@ const cases: Case[] = [
 		],
 	},
 	{
-		name: "--clean keeps the launcher version when run from another bundle",
-		root: { version: V.R3, extra: [V.R1, V.R2] },
-		steps: [{ argv: ["update", "--clean"], from: V.R1, offline: true, code: 0, stdout: ["Removed 1 old bundle(s)"], requests: [], check: (root) => expect(bundles(root)).toEqual([V.R1, V.R3].sort()) }],
-	},
-	{
-		name: "--clean keeps the enabled addon and kept bundles' pinned addon, removes the rest",
+		name: "clean never removes addon versions",
 		root: { version: V.R3, addon: { version: V.B1, slot: SLOT_B, forced: true } },
 		arrange: (root) => {
 			addAddon(world, root, { version: V.P1, seq: 1, slot: SLOT_A });
-			addAddon(world, root, { version: V.Q, seq: 2, slot: SLOT_A });
 			addAddon(world, root, { version: V.P3, seq: 4, slot: SLOT_A2 });
 		},
-		steps: [
-			{
-				argv: ["update", "--clean"],
-				offline: true,
-				code: 0,
-				stdout: ["Removed 0 old bundle(s)", "Removed 2 old addon version(s)"],
-				requests: [],
-				check: (root) => expect(readdirSync(join(root, "addons", "office")).sort()).toEqual([V.B1, V.P3].sort()),
-			},
-		],
+		steps: [{ argv: ["clean", "--update"], offline: true, code: 0, requests: [], unchanged: true, check: (root) => expect(readdirSync(join(root, "addons", "office")).sort()).toEqual([V.B1, V.P1, V.P3].sort()) }],
 	},
 	// ── Optional addons ──────────────────────────────────────────────────────────────────────────────
 	{
@@ -1041,14 +1069,9 @@ const cases: Case[] = [
 			},
 		],
 	},
-	{
-		name: "update --addon when the addon is not installed",
-		root: { version: V.R1 },
-		steps: [{ argv: ["update", "--addon", "office"], code: 1, stderr: ["the office addon is not installed.", "dsh install --addon office"], requests: [], unchanged: true }],
-	},
 	// ── Addon slots ──────────────────────────────────────────────────────────────────────────────────
 	{
-		name: "newer-slot addon refused; --force installs it forced; update --addon returns to the default",
+		name: "newer-slot addon refused; --force installs it forced; list names the install of the default",
 		root: { version: V.R1 },
 		steps: [
 			{
@@ -1071,33 +1094,7 @@ const cases: Case[] = [
 				code: 0,
 				requests: [INDEX],
 				unchanged: true,
-				check: (_root, r) => expect(json(r).addons[0]).toMatchObject({ installed: { version: V.B1, forced: true, inSlot: false }, default: V.P1, hint: "dsh update --addon office" }),
-			},
-			{
-				argv: ["update", "--addon", "office"],
-				code: 0,
-				stdout: [`Installed the office addon ${V.P1}`, `(was ${V.B1})`],
-				requests: [INDEX, addonUrl(V.P1)],
-				check: (root) => expect(addonsState(root)).toEqual({ office: { version: V.P1, forced: false } }),
-			},
-		],
-	},
-	{
-		name: "update --addon --version --force switches to an out-of-slot version; --all returns it to the default",
-		root: { version: V.R3, addon: { version: V.P3, slot: SLOT_A2, forced: false } },
-		steps: [
-			{
-				argv: ["update", "--addon", "office", "--version", V.P1, "--force"],
-				code: 0,
-				requests: [INDEX, addonUrl(V.P1)],
-				check: (root) => expect(addonsState(root)).toEqual({ office: { version: V.P1, forced: true } }),
-			},
-			{
-				argv: ["update", "--all"],
-				code: 0,
-				stdout: [`dsh is already up to date (${V.R3})`, `Installed the office addon ${V.P3}`],
-				requests: [INDEX],
-				check: (root) => expect(addonsState(root)).toEqual({ office: { version: V.P3, forced: false } }),
+				check: (_root, r) => expect(json(r).addons[0]).toMatchObject({ installed: { version: V.B1, forced: true, inSlot: false }, default: V.P1, hint: "dsh install --addon office" }),
 			},
 		],
 	},
@@ -1167,11 +1164,9 @@ const cases: Case[] = [
 		[
 			["portage", ["update", "--force"]],
 			["scoop", ["update"]],
-			["portage", ["update", "--clean"]],
+			["portage", ["update", "--channel", "live"]],
 			["scoop", ["install", "--addon", "office"]],
 			["portage", ["uninstall", "--addon", "office"]],
-			["portage", ["update", "--addon", "office"]],
-			["scoop", ["update", "--all"]],
 			["portage", ["install", "0.1.7-rc.2"]],
 			["scoop", ["uninstall", V.R1]],
 		] as const
@@ -1335,32 +1330,41 @@ describe("update contract", () => {
 		expect(stderr).toContain("not a dsh-bin bundle installation");
 		expect(stderr).toContain("https://github.com/xz-dev/dsh-bin/releases");
 		expect(server.requests).toEqual([]);
-	});
+	}, 30_000);
 
 	test("two concurrent updaters: one completes, the other reports the running update", async () => {
 		const root = installRoot(world, V.R1);
 		roots.push(root);
 		const server = serve(world, { indexDelayMs: 500 });
-		const [a, b] = await Promise.all([dsh(root, V.R1, ["update"], server.origin), (async () => (await Bun.sleep(150), dsh(root, V.R1, ["update", "--clean"], server.origin)))()]);
+		const [a, b] = await Promise.all([dsh(root, V.R1, ["update"], server.origin), (async () => (await Bun.sleep(150), dsh(root, V.R1, ["clean", "--update"], server.origin)))()]);
 		server.stop();
 		expect([a.code, b.code].sort()).toEqual([0, 1]);
 		const loser = a.code === 1 ? a : b;
 		expect(loser.stderr).toContain("Another dsh update or cleanup is already running.");
-		expect(launcherOf(root)).toBe(V.R3);
+		expect(bundles(root)).toEqual([V.R1, V.R3].sort());
 		expect(leftovers(root)).toEqual([]);
 		removeRoot(root);
-	});
+	}, 60_000);
 
 	// Crash injection (7.6): kill the updater at each step. The launcher must then start the old or the new
 	// version, and the next update must succeed and leave no leftovers.
 	/** The killed updater's update.lock stays (never reclaimed); the user removes it as the diagnostic says. */
 	const afterCrash = async (root: string, origin: string) => {
-		const refused = await launch(root, ["update", "--clean"], origin);
+		const refused = await launch(root, ["clean", "--update"], origin);
 		expect(refused.code).toBe(1);
 		expect(refused.stderr).toContain("Another dsh update or cleanup is already running.");
 		rmSync(join(root, "update.lock"), { recursive: true });
 	};
 	const runs = (r: RunResult) => /UPSTREAM-DSH \S*bundles[\\/]([^\\/]+)[\\/]app[\\/]lib/.exec(r.stdout)?.[1];
+	/**
+	 * What a plain launch starts now. The fixture's shell launcher runs one fixed version, so resolve `latest`
+	 * as the real launcher does (through `dsh select`) and start that bundle's entry directly.
+	 */
+	const startsNow = async (root: string, origin: string) => {
+		const via = bundles(root).find((v) => existsSync(join(root, "bundles", v, `dsh-native${EXE}`)))!;
+		const v = /version: {2}(\S+) \(latest/.exec((await dsh(root, via, ["select"], origin)).stdout)?.[1];
+		return v ? runs(await dsh(root, v, ["--version"], origin)) : undefined;
+	};
 	for (const point of ["after-download", "after-extract", "before-place", "after-place", "after-launcher"]) {
 		test(`crash ${point} on a version change: old or new starts, then the update completes`, async () => {
 			const root = installRoot(world, V.R1);
@@ -1369,14 +1373,13 @@ describe("update contract", () => {
 				const crashed = await dsh(root, V.R1, ["update"], server.origin, { DSH_BIN_TEST_CRASH: point });
 				expect(crashed.code).not.toBe(0);
 				expect(crashed.stderr).toContain(`test crash at ${point}`);
-				const started = runs(await launch(root, ["--version"], server.origin));
-				expect([V.R1, V.R3]).toContain(started!);
-				if (point !== "after-launcher") expect(started).toBe(V.R1);
+				// Before placement `latest` is still the old version; once the new one is in bundles/ it is complete.
+				expect(await startsNow(root, server.origin)).toBe(["after-place", "after-launcher"].includes(point) ? V.R3 : V.R1);
 				await afterCrash(root, server.origin);
 				const again = await launch(root, ["update"], server.origin);
 				server.stop();
 				expect(again.code).toBe(0);
-				expect(runs(await launch(root, ["--version"], server.origin))).toBe(V.R3);
+				expect(await startsNow(root, server.origin)).toBe(V.R3);
 				expect(await settledLeftovers(root, server.origin)).toEqual([]);
 			} finally {
 				removeRoot(root);

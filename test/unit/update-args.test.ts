@@ -10,22 +10,17 @@ const err = (s: string) => {
 };
 
 describe("accepted", () => {
-	const self = { command: "update", help: false, clean: false, target: { type: "self" }, force: false };
+	const self = { command: "update", help: false, force: false };
 	test.each(["update", "update self", "update dsh", "update --self", "update self --self"])("%s is the binary update", (s) => {
 		expect(p(s)).toEqual(self as never);
 	});
 	test("options", () => {
 		expect(p("update --force --channel live")).toEqual({ ...self, force: true, channel: "live" } as never);
 		expect(p("update --channel=release")).toEqual({ ...self, channel: "release" } as never);
-		expect(p("update --all --force --channel live")).toEqual({ ...self, target: { type: "all" }, force: true, channel: "live" } as never);
-		expect(p("update --clean")).toEqual({ command: "update", help: false, clean: true });
-		expect(p("update --addon office")).toEqual({ ...self, target: { type: "addon", name: "office" } } as never);
-		expect(p("update --addon=office --version=0.1.2-xz.1.1.gabcdef12 --force")).toEqual({
-			...self,
-			target: { type: "addon", name: "office" },
-			force: true,
-			version: "0.1.2-xz.1.1.gabcdef12",
-		} as never);
+		expect(p("clean")).toEqual({ command: "clean", help: false, parts: ["update", "snapshots", "transpiler"] });
+		expect(p("clean --all --snapshots")).toEqual({ command: "clean", help: false, parts: ["update", "snapshots", "transpiler"] });
+		expect(p("clean --transpiler --update")).toEqual({ command: "clean", help: false, parts: ["update", "transpiler"] });
+		expect(p("clean --snapshots")).toEqual({ command: "clean", help: false, parts: ["snapshots"] });
 		expect(p("install --addon office")).toEqual({ command: "install", help: false, addon: "office", force: false });
 		expect(p("install --addon office --version dsh-addon-office-v1 --force")).toEqual({ command: "install", help: false, addon: "office", force: true, version: "dsh-addon-office-v1" });
 		expect(p("uninstall --addon=office")).toEqual({ command: "uninstall", help: false, addon: "office" });
@@ -35,7 +30,7 @@ describe("accepted", () => {
 		expect(p("list")).toEqual({ command: "list", help: false, json: false });
 		expect(p("list --addon office --channel live --json")).toEqual({ command: "list", help: false, json: true, addon: "office", channel: "live" });
 	});
-	test.each(["update -h", "update --help", "update --bogus --help", "install -h", "uninstall --help", "list -h"])("%s is help", (s) => {
+	test.each(["update -h", "update --help", "update --bogus --help", "install -h", "uninstall --help", "list -h", "clean -h"])("%s is help", (s) => {
 		expect(p(s)).toMatchObject({ help: true });
 	});
 	test("other commands are not maintenance commands", () => {
@@ -59,14 +54,19 @@ describe("rejected (first error wins)", () => {
 		["update --models --channel", 'Unknown option --models for "update".'],
 		["update --channel", "Missing value for --channel; valid channels: live, release."],
 		["update --channel=", "Missing value for --channel; valid channels: live, release."],
-		["update --addon", "Missing value for --addon."],
-		["update --addon --force", "Missing value for --addon."],
+		["update --clean", 'Unknown option --clean for "update".'],
+		["update --version 1", 'Unknown option --version for "update".'],
+		["update --all", 'Unknown option --all for "update". Run `dsh install --addon office` to install an addon version.'],
+		["update --addon office", 'Unknown option --addon for "update". Run `dsh install --addon office` to install an addon version.'],
+		["update --addon=office", 'Unknown option --addon=office for "update". Run `dsh install --addon office` to install an addon version.'],
+		["clean --force", 'Unknown option --force for "clean".'],
+		["clean update", "Unexpected argument update."],
 		["update --channel beta", "Invalid channel beta; valid channels: live, release."],
 		["list --channel beta", "Invalid channel beta; valid channels: live, release."],
 		["install --addon foo", "Unknown addon foo; valid addons: office."],
 		["list --addon foo", "Unknown addon foo; valid addons: office."],
 		["update some-plugin", "dsh update does not update plugins (some-plugin). Plugins are managed with `dsh plugin --profile <name> …`."],
-		["update npm:foo --clean", "dsh update does not update plugins (npm:foo). Plugins are managed with `dsh plugin --profile <name> …`."],
+		["update npm:foo --force", "dsh update does not update plugins (npm:foo). Plugins are managed with `dsh plugin --profile <name> …`."],
 		["update self dsh", "Unexpected argument dsh."],
 		["install github:x/y", "dsh install does not install plugins (github:x/y). Plugins are managed with `dsh plugin --profile <name> …`."],
 		["uninstall foo", "dsh uninstall does not uninstall plugins (foo). Plugins are managed with `dsh plugin --profile <name> …`."],
@@ -78,23 +78,7 @@ describe("rejected (first error wins)", () => {
 		["install 0.1.7 --version 1", "--version requires --addon"],
 		["install --addon office --channel live", "--channel requires a dsh version"],
 		["uninstall 0.1.7 --force", 'Unknown option --force for "uninstall".'],
-		["update --clean --force", "--clean cannot be combined with another update target, --force, or --channel"],
-		["update --clean self", "--clean cannot be combined with another update target, --force, or --channel"],
-		["update --clean --channel live", "--clean cannot be combined with another update target, --force, or --channel"],
-		["update --clean --all", "--clean cannot be combined with another update target, --force, or --channel"],
-		["update --clean --addon office", "--clean cannot be combined with another update target, --force, or --channel"],
-		["update --all --addon office", "--all cannot be combined with --self, --addon, or a positional target"],
-		["update --all --self", "--all cannot be combined with --self, --addon, or a positional target"],
-		["update self --all", "--all cannot be combined with --self, --addon, or a positional target"],
-		["update --addon office --addon office", "--addon can only be provided once"],
-		["update --addon office --self", "--addon cannot be combined with --self or a positional target"],
-		["update dsh --addon office", "--addon cannot be combined with --self or a positional target"],
-		["update --addon office --channel live", "--channel requires a dsh update (--self, --all, or no target)"],
-		["update --version 0.1.2-xz.1.1.gabcdef12", "--version requires --addon"],
-		["update --all --version 0.1.2-xz.1.1.gabcdef12", "--version cannot be combined with --all, --self, or --channel"],
-		["update --self --version 1", "--version cannot be combined with --all, --self, or --channel"],
-		["update --addon office --version 1 --channel live", "--version cannot be combined with --all, --self, or --channel"],
-		["update --addon office --version 1 --version 2", "--version can only be provided once"],
+		["update --channel live --channel release", "--channel can only be provided once"],
 		["install --addon office --version 1 --version 1", "--version can only be provided once"],
 		["list --channel live --channel release", "--channel can only be provided once"],
 	])("%s", (argv, message) => {

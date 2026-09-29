@@ -1,7 +1,7 @@
 // What every maintenance command needs to know about the running installation.
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { type BundleMeta, type Channel, exeName, installOf, managedBy, readBundleMeta, recordedChannel } from "../layout.ts";
+import { type BundleMeta, type Channel, exeName, installedBundles, installOf, latestOf, managedBy, readBundleMeta, recordedChannel } from "../layout.ts";
 
 /** An expected failure: printed as `error: <message>` (plus optional hint lines) and exit status `code`. */
 export class UserError extends Error {
@@ -84,14 +84,11 @@ export function replacesLauncher(path: string, protocol: number): boolean {
 	return !existsSync(path) || protocol > launcherProtocolOf(readFileSync(path));
 }
 
-/** Version the root launcher starts (the active version), if the launcher is readable. */
-export function launcherVersion(root: string, platform = process.platform): string | undefined {
-	const path = launcherPath(root, platform);
-	return existsSync(path) ? launcherVersionOf(readFileSync(path)) : undefined;
-}
-
-/** `bundle.json` of the active (root launcher) bundle, falling back to the running one. */
+/**
+ * `bundle.json` of the newest installed bundle of the recorded channel (where `latest` resolves), falling
+ * back to the running one. The root launcher's build no longer names an active version (one launcher
+ * starts every installed version).
+ */
 export function activeMeta(ctx: Context): BundleMeta {
-	const active = launcherVersion(ctx.root, ctx.platform);
-	return (active && readBundleMeta(join(ctx.root, "bundles", active))) || ctx.meta;
+	return latestOf(installedBundles(ctx.root), ctx.channel) ?? ctx.meta;
 }

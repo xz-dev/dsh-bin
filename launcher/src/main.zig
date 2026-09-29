@@ -242,7 +242,7 @@ const transpiler_cache_var = "BUN_RUNTIME_TRANSPILER_CACHE_PATH";
 
 /// The runtime's environment: the parent's, minus `cleared_vars`, plus the DSH_BUNDLE_* contract and
 /// `DSH_BIN_LAUNCH`. Bun's transpiler cache moves from its shared default (~/.bun/install/cache) into
-/// dsh-bin's own user cache, which the runtime seeds from the bundle and `dsh update --clean` clears. A
+/// dsh-bin's own user cache, which the runtime seeds from the bundle and `dsh clean --transpiler` clears. A
 /// value the user set wins. Set here because Bun reads it only at process start.
 fn runtimeEnv(a: std.mem.Allocator, env: *std.process.EnvMap, root: []const u8, launcher: []const u8, p: Plan) !void {
     for (cleared_vars) |name| env.remove(name);

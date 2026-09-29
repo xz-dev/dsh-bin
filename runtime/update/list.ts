@@ -36,7 +36,7 @@ export async function list(ctx: Context, opts: ListOptions) {
 		const installedInSlot = rec ? !!installedMeta && !!table.slot && installedMeta.slot.commit === table.slot.commit : null;
 		let hint: string | null = null;
 		if (!rec && def) hint = managedHint ?? `dsh install --addon ${name}`;
-		else if (rec && def && rec.version !== def) hint = managedHint ?? `dsh update --addon ${name}`;
+		else if (rec && def && rec.version !== def) hint = managedHint ?? `dsh install --addon ${name}`;
 		const versions = opts.addon
 			? candidates(table, index).map((c) => ({
 					version: c.version,

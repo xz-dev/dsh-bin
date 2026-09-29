@@ -1,17 +1,18 @@
-// Argument parsing for `dsh update|install|uninstall|list` (self-update spec, "Command surface" and
-// "Listing versions"). A port of pi's parsePackageCommand update branch: extension targets removed,
-// `--addon`/`--version`/`--channel` added. Every error exits 1; only the first error found is reported,
+// Argument parsing for the dsh-bin maintenance commands (self-update spec, "Command surface", "Cleanup"
+// and "Listing versions"). A port of pi's parsePackageCommand update branch: extension targets removed. Every error exits 1; only the first error found is reported,
 // in pi's order (unknown option, missing value, bad value, unexpected argument, conflicts).
 import { ADDON_NAMES, type AddonName, type Channel, CHANNELS } from "../layout.ts";
 
-export const MAINTENANCE_COMMANDS = ["update", "install", "uninstall", "list", "select", "snapshot"] as const;
+export const MAINTENANCE_COMMANDS = ["update", "install", "uninstall", "list", "select", "snapshot", "clean"] as const;
 export type MaintenanceCommand = (typeof MAINTENANCE_COMMANDS)[number];
 
-export type UpdateTarget = { type: "self" } | { type: "all" } | { type: "addon"; name: AddonName };
+export const CLEAN_PARTS = ["update", "snapshots", "transpiler"] as const;
+export type CleanPart = (typeof CLEAN_PARTS)[number];
+
 export type ParsedCommand =
 	| { command: MaintenanceCommand; help: true }
-	| { command: "update"; help: false; clean: true }
-	| { command: "update"; help: false; clean: false; target: UpdateTarget; force: boolean; channel?: Channel; version?: string }
+	| { command: "update"; help: false; force: boolean; channel?: Channel }
+	| { command: "clean"; help: false; parts: CleanPart[] }
 	| { command: "install"; help: false; addon: AddonName; version?: string; force: boolean }
 	| { command: "install"; help: false; bundle: string; channel?: Channel; force: boolean }
 	| { command: "uninstall"; help: false; addon: AddonName }
@@ -29,12 +30,13 @@ const VALID_CHANNELS = `valid channels: ${[...CHANNELS].sort().join(", ")}`;
 const VALID_ADDONS = `valid addons: ${ADDON_NAMES.join(", ")}`;
 
 export const USAGE: Record<MaintenanceCommand, string> = {
-	update: "dsh update [self|dsh] [--self | --all | --addon <name> [--version <v>]] [--force] [--channel <live|release>] | dsh update --clean",
+	update: "dsh update [self|dsh] [--self] [--force] [--channel <live|release>]",
 	install: "dsh install <version> [--channel <live|release>] [--force] | dsh install --addon <name> [--version <v>] [--force]",
 	uninstall: "dsh uninstall <version>... | dsh uninstall --addon <name>",
 	list: "dsh list [--addon <name>] [--channel <live|release>] [--json]",
 	select: "dsh select [--use <version|latest> [--snapshot <id>] [--addon <name>:<version>]...]",
 	snapshot: "dsh snapshot new [--target <id> | --empty] [--name <alias>] | dsh snapshot remove <id>... | dsh snapshot list [--json]",
+	clean: "dsh clean [--update] [--snapshots] [--transpiler] [--all]",
 };
 
 /** Options of each `dsh snapshot` action. */
@@ -42,13 +44,18 @@ const SNAPSHOT_OPTIONS: Record<string, string[]> = { new: ["--target", "--name",
 
 /** Options each command accepts: flags, and options that take a value. */
 const GRAMMAR: Record<MaintenanceCommand, { flags: string[]; values: string[] }> = {
-	update: { flags: ["--self", "--all", "--force", "--clean"], values: ["--addon", "--version", "--channel"] },
+	update: { flags: ["--self", "--force"], values: ["--channel"] },
 	install: { flags: ["--force"], values: ["--addon", "--version", "--channel"] },
 	uninstall: { flags: [], values: ["--addon"] },
 	list: { flags: ["--json"], values: ["--addon", "--channel"] },
 	select: { flags: [], values: ["--use", "--snapshot", "--addon"] },
 	snapshot: { flags: ["--empty", "--json"], values: ["--target", "--name"] },
+	clean: { flags: ["--update", "--snapshots", "--transpiler", "--all"], values: [] },
 };
+
+/** Hints for options a command no longer has. */
+const INSTALL_ADDON_HINT = `Run \`dsh install --addon ${ADDON_NAMES.join("|")}\` to install an addon version.`;
+const REMOVED_HINTS: Partial<Record<MaintenanceCommand, Record<string, string>>> = { update: { "--addon": INSTALL_ADDON_HINT, "--all": INSTALL_ADDON_HINT } };
 
 /** Options that may be repeated. */
 const REPEATABLE: Partial<Record<MaintenanceCommand, string[]>> = { select: ["--addon"] };
@@ -69,7 +76,7 @@ export function isTopLevelHelp(argv: readonly string[]): boolean {
 export const MAINTENANCE_HELP = [
 	"dsh-bin commands (self-update and addons; see `dsh <command> --help`):",
 	`  ${USAGE.update}`,
-	"      update the dsh binary (--all: then every installed addon), switch channel, or remove unused versions",
+	"      install the channel's newest dsh version (never changes the selection), or switch channel",
 	`  ${USAGE.install}`,
 	"      install a dsh version next to the installed ones, or an optional addon (--force: reinstall / out of slot)",
 	`  ${USAGE.uninstall}`,
@@ -80,6 +87,8 @@ export const MAINTENANCE_HELP = [
 	"      choose the version, snapshot and addons a plain `dsh` uses; no options: print the selection",
 	`  ${USAGE.snapshot}`,
 	"      copy, remove or list plugin-runtime snapshots",
+	`  ${USAGE.clean}`,
+	"      remove leftovers of interrupted runs and dsh-bin's transpiler cache (default: --all)",
 	"",
 ].join("\n");
 
@@ -135,7 +144,10 @@ export function parseMaintenance(argv: readonly string[]): ParseResult | undefin
 	}
 
 	if (help) return { command: cmd, help: true };
-	if (unknown) return fail(`Unknown option ${unknown} for "${cmd}".`);
+	if (unknown) {
+		const hint = REMOVED_HINTS[cmd]?.[unknown.split("=")[0]!];
+		return fail(`Unknown option ${unknown} for "${cmd}".${hint ? ` ${hint}` : ""}`);
+	}
 	if (missing === "--channel") return fail(`Missing value for --channel; ${VALID_CHANNELS}.`);
 	if (missing) return fail(`Missing value for ${missing}.`);
 
@@ -187,23 +199,13 @@ export function parseMaintenance(argv: readonly string[]): ParseResult | undefin
 			return fail(`dsh update does not update plugins (${positional}). ${PLUGIN_REDIRECT}`);
 		}
 		if (extra !== undefined) return fail(`Unexpected argument ${extra}.`);
-		const self = flags.has("--self");
-		const all = flags.has("--all");
-		const force = flags.has("--force");
 		if (conflict) return fail(conflict);
-		if (flags.has("--clean")) {
-			if (positional || self || all || addon || version || force || channel) {
-				return fail("--clean cannot be combined with another update target, --force, or --channel");
-			}
-			return { command: "update", help: false, clean: true };
-		}
-		if (all && (self || addon || positional)) return fail("--all cannot be combined with --self, --addon, or a positional target");
-		if (addon && (self || positional)) return fail("--addon cannot be combined with --self or a positional target");
-		if (version && (all || self || channel)) return fail("--version cannot be combined with --all, --self, or --channel");
-		if (version && !addon) return fail("--version requires --addon");
-		if (channel && addon) return fail("--channel requires a dsh update (--self, --all, or no target)");
-		const target: UpdateTarget = all ? { type: "all" } : addon ? { type: "addon", name: addon as AddonName } : { type: "self" };
-		return { command: "update", help: false, clean: false, target, force, ...(channel ? { channel: channel as Channel } : {}), ...(version ? { version } : {}) };
+		return { command: "update", help: false, force: flags.has("--force"), ...(channel ? { channel: channel as Channel } : {}) };
+	}
+	if (cmd === "clean") {
+		if (positionals.length) return fail(`Unexpected argument ${positionals[0]}.`);
+		const named = CLEAN_PARTS.filter((p) => flags.has(`--${p}`));
+		return { command: "clean", help: false, parts: flags.has("--all") || !named.length ? [...CLEAN_PARTS] : named };
 	}
 
 	if (cmd === "install" || cmd === "uninstall") {

@@ -157,7 +157,7 @@ function sweepLocked(root: string): number {
 	return removed;
 }
 
-/** Remove interrupted copies and removals (`dsh update --clean`); returns how many were removed. */
+/** Remove interrupted copies and removals (`dsh clean --snapshots`); returns how many were removed. */
 export function sweepSnapshotLeftovers(home: string): number {
 	if (!existsSync(snapshotsDir(home))) return 0;
 	return withStoreLock(home, (swept) => swept);

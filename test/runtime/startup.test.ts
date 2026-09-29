@@ -121,7 +121,7 @@ describe.skipIf(!built)("compiled entry startup", () => {
 		["unforced out-of-slot addon degrades office", { version: "B1", forced: false }, (e) => {
 			const reasons = inactive(e);
 			expect(reasons).toHaveLength(2);
-			for (const r of reasons) expect(r).toMatch(/DeclaredDegradation: .*out of slot.*dsh update --addon office/);
+			for (const r of reasons) expect(r).toMatch(/DeclaredDegradation: .*out of slot.*dsh install --addon office/);
 		}],
 		["no addon degrades office naming dsh install --addon office", undefined, (e) => {
 			const office = officeDegradations("the office addon is not installed; run `dsh install --addon office`");

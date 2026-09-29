@@ -130,5 +130,5 @@ export function uninstallAddon(ctx: Context, name: AddonName) {
 	const dir = addonDir(ctx.root, name, enabled.version);
 	const removed = existsSync(dir) && retire(ctx.root, dir);
 	ctx.out(`Uninstalled the ${name} addon ${enabled.version}.`);
-	if (existsSync(dir) && !removed) ctx.out("Its files are still used by a running dsh session; `dsh update --clean` removes them later.");
+	if (existsSync(dir) && !removed) ctx.out("Its files are still used by a running dsh session; `dsh clean --update` removes them later.");
 }

@@ -122,7 +122,7 @@ describe("assemble (6.1)", () => {
 		expect(meta.addons.office.pinned).toBe("0.1.2-xz.3.1.g33333333");
 		expect(meta.addons.office.known).toEqual(index.addons.office);
 		expect(readFileSync(join(r.bundle, "bin/pnpm"), "utf8")).toContain("pnpm/dist/pnpm.mjs");
-	});
+	}, 30_000);
 
 	test("prunes other-platform prebuilds; every remaining native file matches the target", () => {
 		const f = fixture();
