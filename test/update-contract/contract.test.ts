@@ -71,6 +71,15 @@ const addonsState = (root: string) => (existsSync(join(root, "addons.json")) ? J
 const channelFile = (root: string) => (existsSync(join(root, "channel")) ? readFileSync(join(root, "channel"), "utf8").trim() : undefined);
 const launcherOf = (root: string) => /DSH_BIN_LAUNCHER_VERSION=(\S+)/.exec(readFileSync(join(root, `dsh${EXE}`), "utf8"))?.[1];
 const leftovers = (root: string) => readdirSync(root).filter((n) => n.startsWith(".staging-") || n.startsWith(".trash-") || n === "update.lock");
+/**
+ * Leftovers once the next maintenance run has swept. Windows cannot delete the executable a process is
+ * running from, so a generation retired by the dsh running from it stays quarantined in `.trash-*` until
+ * then; everywhere else it is removed at once.
+ */
+const settledLeftovers = async (root: string, origin: string) => {
+	if (process.platform === "win32" && leftovers(root).some((n) => n.startsWith(".trash-"))) await launch(root, ["update"], origin);
+	return leftovers(root);
+};
 const isReadOnly = (dir: string) => {
 	try {
 		writeFileSync(join(dir, ".probe"), "");
@@ -284,7 +293,9 @@ const cases: Case[] = [
 				check: (root) => {
 					expect(bundles(root)).toEqual([V.R3]);
 					expect(isReadOnly(join(root, "bundles", V.R3))).toBe(true);
-					expect(leftovers(root)).toEqual([]);
+					// Windows: the old generation holds the running executable, so it stays quarantined until
+					// the next maintenance run (see the crash cases, which sweep it).
+					expect(leftovers(root).filter((n) => process.platform !== "win32" || !n.startsWith(".trash-"))).toEqual([]);
 				},
 			},
 		],
@@ -761,7 +772,7 @@ describe("update contract", () => {
 		expect(refused.stderr).toContain("Another dsh update or cleanup is already running.");
 		rmSync(join(root, "update.lock"), { recursive: true });
 	};
-	const runs = (r: RunResult) => /UPSTREAM-DSH \S*bundles\/([^/]+)\/app\/lib/.exec(r.stdout)?.[1];
+	const runs = (r: RunResult) => /UPSTREAM-DSH \S*bundles[\\/]([^\\/]+)[\\/]app[\\/]lib/.exec(r.stdout)?.[1];
 	for (const point of ["after-download", "after-extract", "before-place", "after-place", "after-launcher"]) {
 		test(`crash ${point} on a version change: old or new starts, then the update completes`, async () => {
 			const root = installRoot(world, V.R1);
@@ -778,7 +789,7 @@ describe("update contract", () => {
 				server.stop();
 				expect(again.code).toBe(0);
 				expect(runs(await launch(root, ["--version"], server.origin))).toBe(V.R3);
-				expect(leftovers(root)).toEqual([]);
+				expect(await settledLeftovers(root, server.origin)).toEqual([]);
 			} finally {
 				removeRoot(root);
 			}
@@ -813,13 +824,13 @@ describe("update contract", () => {
 					// The launcher's bundle is gone: repair through the quarantined copy's own entry.
 					const trash = readdirSync(root).find((n) => n.startsWith(".trash-"))!;
 					expect(trash).toBeDefined();
-					const r = await dsh(root, "", ["update", "--force"], server.origin, {}, join(root, trash, "dsh-native"));
+					const r = await dsh(root, "", ["update", "--force"], server.origin, {}, join(root, trash, `dsh-native${EXE}`));
 					expect(r.code).toBe(0);
 				} else expect((await launch(root, ["update", "--force"], server.origin)).code).toBe(0);
-				server.stop();
 				expect(runs(await launch(root, ["--version"], server.origin))).toBe(V.R3);
 				expect(bundles(root)).toEqual([V.R3]);
-				expect(leftovers(root)).toEqual([]);
+				expect(await settledLeftovers(root, server.origin)).toEqual([]);
+				server.stop();
 			} finally {
 				removeRoot(root);
 			}
