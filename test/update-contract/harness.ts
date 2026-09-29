@@ -291,7 +291,7 @@ export async function dsh(root: string, version: string, args: string[], origin:
 
 /** Run the root launcher script (shell fixture launcher). */
 export async function launch(root: string, args: string[], origin: string): Promise<RunResult> {
-	const proc = Bun.spawn(["sh", join(root, `dsh${EXE}`), ...args], { env: { PATH: process.env.PATH ?? "", DSH_BIN_TEST: "1", DSH_BIN_TEST_ORIGIN: origin, HOME: root, ...FAST_RETRIES }, stdout: "pipe", stderr: "pipe" });
+	const proc = Bun.spawn(["sh", join(root, `dsh${EXE}`), ...args], { env: { PATH: process.env.PATH ?? "", DSH_BIN_TEST: "1", DSH_BIN_TEST_ORIGIN: origin, HOME: root, USERPROFILE: root, ...FAST_RETRIES }, stdout: "pipe", stderr: "pipe" });
 	const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
 	return { code, stdout, stderr };
 }

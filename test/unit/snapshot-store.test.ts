@@ -166,7 +166,7 @@ test("an interrupted copy leaves no snapshot; its staging is swept and n is not 
 	expect(readdirSync(snapshotsDir(home)).some((n) => n.startsWith(".staging-"))).toBe(true);
 	// The lock died with the process: the next operation proceeds and sweeps the staging copy.
 	expect(sweepSnapshotLeftovers(home)).toBe(1);
-	expect(readdirSync(snapshotsDir(home)).filter((n) => n.startsWith("."))).toEqual([".counters.json", ".lock"].sort());
+	expect(readdirSync(snapshotsDir(home)).filter((n) => n.startsWith(".")).sort()).toEqual([".counters.json", ".lock"].sort());
 	expect(createSnapshot(home, { version: R1, order: order(R1), reason: "start", ifNone: true, source: empty }).snapshot.id).toBe(`${R1}@2`);
 }, 30_000);
 
