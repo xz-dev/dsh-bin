@@ -5,7 +5,6 @@ import { delimiter, dirname, join } from "node:path";
 import { dshArgv } from "./argv.ts";
 import { officeWiring, SKILL_OFFICE, withOfficeNode } from "./compat/addons.ts";
 import { degradedPlugin, HMR_DEGRADATION } from "./compat/degradations.ts";
-import { installCreateRequireCompat } from "./compat/create-require.ts";
 import { installHostPackages } from "./compat/host-packages.ts";
 import { installNodeModuleCompat } from "./compat/node-module-compat.ts";
 import { installRequireBuiltin } from "./compat/require-builtin.ts";
@@ -44,7 +43,6 @@ const host = installHostPackages(appDir, {
 });
 installRequireBuiltin(join(appDir, "lib"), host.specifiers);
 installNodeModuleCompat();
-installCreateRequireCompat(binJs);
 
 process.argv = dshArgv(process.argv, process.execPath, binJs);
 const { runCli } = (await import(binJs)) as { runCli(): Promise<void> };

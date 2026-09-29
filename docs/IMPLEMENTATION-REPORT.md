@@ -196,32 +196,27 @@ What the first runs found and fixed:
 - **Host resolution** uses virtual modules plus an `onResolve` for host `<pkg>/package.json`
   (option a). The `_nodeModulePaths` patch was **not needed** and is not in the code. User
   directories are untouched.
-- **musl `createRequire` (found by the 8.9 addon probe, 2026-09-29).**
-  - Symptom: on musl, Bun (1.4.0 and 1.4.2) calls a replaced `Module._resolveFilename` from
-    `createRequire(...)` with no parent module; glibc passes one. dsh's installation scope replaces
-    `_resolveFilename`, so every `createRequire(import.meta.url)("../package.json")` failed with
-    `Cannot find module`. Result: 62 plugins "failed to import" and no real profile could start.
+- **musl builds ran Bun 1.4.0 (found by the 8.9 addon probe, 2026-09-29).**
+  - Symptom: the three musl accepts failed. Every plugin's `createRequire(import.meta.url)("../package.json")`
+    threw `Cannot find module`, 62 plugins "failed to import" and no real profile could start.
   - Affected: the published **rc.2 and rc.1 musl assets** (linux-x64-musl-*, linux-arm64-musl).
     Earlier acceptance only ran `--help` and could not see this.
-  - Diagnosis: reproduced in the musl container as root and as uid 1000, with and without the
-    addon. The glibc bundle in an Ubuntu container works.
-  - Fix (`runtime/compat/create-require.ts`): at startup, dsh-bin probes whether `createRequire`
-    passes a parent. Where it does not, `Module.createRequire` is replaced with one that resolves
-    through `_resolveFilename` with a real parent. Other platforms are unchanged.
-  - The replacement tries Bun's own `require` first, because only that serves Bun plugin virtual
-    modules (`node-addon-require-builtin`, host packages). A request it cannot find is resolved again
-    with the parent. `resolve.paths` stays bound to Bun's resolver: detached it returns `[]`, and
-    dsh-app-boot finds profile bundles through it.
-  - Correction: the first version (b497de0) was checked with a dsh-native compiled on the host with
-    Bun 1.4.2. CI compiles musl dsh-native inside the pinned oven/bun image, which contains
-    **Bun 1.4.0**. In CI that version broke transpiler-cache warming, because virtual modules were
-    bypassed; a container build also failed to find profile bundles, because of the unbound
-    `resolve.paths`.
-  - Verified: with dsh-native compiled inside the pinned image the way CI builds it:
-    - the probe boot, the five warm profiles and the full musl E2E (office addon cycle) pass;
-    - runtime tests on both the host and the image cover the parent, the virtual modules and
-    `resolve.paths`, and on musl the earlier versions fail them.
-  - Open: the musl images run Bun 1.4.0, not the required 1.4.2.
+  - Root cause:
+    - The pinned musl build images (inherited from xz-dev/pi) contain **Bun 1.4.0**, not the required
+      1.4.2, and dsh-native embeds the Bun that compiles it.
+    - Musl Bun 1.4.0's `createRequire` calls a replaced `Module._resolveFilename` with no parent
+      module. dsh's installation scope replaces `_resolveFilename`, so relative requests failed.
+    - Bun 1.4.2 on musl passes the parent; a direct probe on both confirmed it.
+  - Fix (your decision):
+    - the musl images are pinned to `oven/bun:1.4.2-alpine` by digest (same Alpine 3.22.5
+      toolchain);
+    - `build-target` refuses to build with any Bun other than `BUN_VERSION`;
+    - no runtime shim.
+    A createRequire shim was tried first and removed. Its first version passed only with a
+    host-compiled binary: it bypassed Bun virtual modules and unbound `resolve.paths`, and that
+    only showed in the 1.4.0 image.
+  - Verified with dsh-native compiled inside the new image, as CI builds it: the probe boot reaches the
+    credential check, the five warm profiles pass, and the full musl E2E (office addon cycle) passes.
 - **pnpm 11**
   - Lifecycle scripts run only for packages approved under `allowBuilds`. This is the user's policy
     and is unchanged.

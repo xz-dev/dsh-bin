@@ -10,10 +10,12 @@ const RUNNERS = {
 	"windows-11-arm": ["windows", "arm64"],
 };
 
-// Pinned native musl userspace (same images as xz-dev/pi).
+// Pinned native musl userspace: oven/bun:1.4.2-alpine (Alpine 3.22), so musl builds run BUN_VERSION too.
+// The previous pins carried Bun 1.4.0, whose musl createRequire hands a replaced
+// Module._resolveFilename no parent and broke every plugin's relative createRequire.
 const MUSL_IMAGES = {
-	x64: "docker.io/oven/bun@sha256:8aac45197595035f697ea6b11cd73ce2401d82503fcb2540b5fac606973b242b",
-	arm64: "docker.io/oven/bun@sha256:b707d91190be7e8d5dee8dd7dbe9e7dfecfd26a632266b69335d7a9082814f8b",
+	x64: "docker.io/oven/bun@sha256:d73746a3e6cd8de6d7abff1c4c678028b6fe25e0c39808f9a71214589fa8b023",
+	arm64: "docker.io/oven/bun@sha256:df7bf53d29008d89d195925aad82ca7e51dad114c6cd65b32cf8c3e0c186bb30",
 };
 
 const ZIG_ARCH = { x64: "x86_64", arm64: "aarch64" };

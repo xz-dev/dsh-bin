@@ -13,11 +13,13 @@ import { fetchPnpm } from "./fetch-pnpm.mjs";
 import { checkout, resolveRef } from "./fetch-upstream.mjs";
 import { localBuild } from "./local-build.mjs";
 import { splitOfficeAddon } from "./split-addon.mjs";
-import { hostTargetId, target } from "./targets.mjs";
+import { BUN_VERSION, hostTargetId, target } from "./targets.mjs";
 import { transformApp } from "./transform-app.mjs";
 
 export async function buildTarget({ targetId, channel, ref, out, run, attempt, index, work, gitDir }) {
 	const t = target(targetId);
+	// The compiled dsh-native embeds the building Bun, so a mismatched runner or musl image ships another Bun.
+	if (process.versions.bun !== BUN_VERSION) throw new Error(`build with Bun ${BUN_VERSION} (this is Bun ${process.versions.bun})`);
 	if (hostTargetId().replace(/-(baseline|modern)$/, "") !== t.id.replace(/-(baseline|modern)$/, "")) {
 		throw new Error(`build ${t.id} on its native runner (this host is ${hostTargetId()})`);
 	}
