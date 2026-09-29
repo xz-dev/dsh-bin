@@ -2,15 +2,19 @@
 // this executable (`bundles/<v>/dsh-native` + `bundles/<v>/app`). Imported by entry.ts for non-maintenance commands.
 import { existsSync, realpathSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
-import { dshArgv } from "./argv.ts";
+import { dshArgv, userArgs } from "./argv.ts";
 import { officeWiring, SKILL_OFFICE, withOfficeNode } from "./compat/addons.ts";
 import { degradedPlugin, HMR_DEGRADATION } from "./compat/degradations.ts";
 import { installHostPackages } from "./compat/host-packages.ts";
 import { installNodeModuleCompat } from "./compat/node-module-compat.ts";
 import { installRequireBuiltin } from "./compat/require-builtin.ts";
 import { dshHome, isCommitTime, readBundleMeta, USAGE_GUARD } from "./layout.ts";
-import { createdLine, ensureSnapshot } from "./snapshot/auto.ts";
-import { namedSnapshot, readLaunch } from "./snapshot/launch.ts";
+import { UserError } from "./update/context.ts";
+import { createdLine } from "./snapshot/auto.ts";
+import { readLaunch, writeLaunch } from "./snapshot/launch.ts";
+import { applyLeading, resolveSnapshot } from "./snapshot/resolve.ts";
+import { snapshotDir } from "./snapshot/store.ts";
+import type { Claim } from "./usage-claim.ts";
 import { seedTranspilerCache } from "./transpiler-cache.ts";
 import { holdSessionClaim } from "./usage-claim.ts";
 
@@ -21,22 +25,37 @@ if (existsSync(guard) && holdSessionClaim(guard) === "busy") {
 	process.stderr.write("dsh: this bundle is being removed by `dsh update`; start dsh again to use the active version\n");
 	process.exit(1);
 }
-// plugin-snapshots "Automatic snapshot by copy": a launch of a version with no snapshot, and no snapshot
-// named, first gets one. Only an installed bundle (bundle.json with its build order) takes part.
+const appDir = realpathSync(join(bundleDir, "app"));
+const binJs = join(appDir, "lib", "bin.js");
+
+// Plugin snapshots (S2/S3): resolve the snapshot this process tree runs on, hold its shared claim for the
+// process lifetime, point upstream's profile paths at it (DSH_BIN_SNAPSHOT_DIR), and record it in
+// DSH_BIN_LAUNCH so an in-app restart, which inherits the environment, runs on the same one. Only an
+// installed bundle (bundle.json with its build order) takes part; a bare app tree keeps upstream's paths.
+let user = userArgs(process.argv, binJs);
+let snapshotClaim: Claim | undefined;
 const meta = readBundleMeta(bundleDir);
-if (meta && isCommitTime(meta.upstream?.commitTime) && namedSnapshot(readLaunch()) === null) {
+if (meta && isCommitTime(meta.upstream?.commitTime)) {
 	try {
-		const r = ensureSnapshot(dshHome(), meta.version, meta, "start", () => process.stderr.write("dsh: waiting for another dsh snapshot operation...\n"));
+		const leading = applyLeading(user, meta.version, readLaunch());
+		user = leading.args;
+		const home = dshHome();
+		const r = resolveSnapshot(home, meta, leading.launch, () => process.stderr.write("dsh: waiting for another dsh snapshot operation...\n"));
+		snapshotClaim = r.claim;
 		if (r.created) process.stderr.write(`dsh: ${createdLine(r.snapshot)}\n`);
+		process.env.DSH_BIN_SNAPSHOT_DIR = snapshotDir(home, r.snapshot.id);
+		const base = leading.launch ?? { version: meta.version, source: null, use: null, snapshot: null, addons: [], selection: null };
+		writeLaunch({ ...base, version: meta.version, resolved: { snapshot: r.snapshot.id } });
 	} catch (error) {
-		process.stderr.write(`dsh: cannot create the plugin snapshot of dsh ${meta.version}: ${(error as Error).message}\n`);
-		process.exit(1);
+		if (!(error instanceof UserError)) throw error;
+		process.stderr.write(`dsh: ${error.message}\n${error.hints.map((h) => `${h}\n`).join("")}`);
+		process.exit(error.code);
 	}
 }
+// Held until the process exits (the kernel releases it); referenced so the intent is explicit.
+void snapshotClaim;
 
-const appDir = realpathSync(join(bundleDir, "app"));
 if (process.env.DSH_BUNDLE_VERSION) seedTranspilerCache(bundleDir, process.env.DSH_BUNDLE_VERSION);
-const binJs = join(appDir, "lib", "bin.js");
 
 // D5: the bundle's pnpm and node shims come first on PATH for dsh and everything it starts (the plugin
 // manager's `pnpm`, lifecycle scripts' `node`, `#!/usr/bin/env node` MCP servers). An explicit
@@ -59,6 +78,6 @@ const host = installHostPackages(appDir, {
 installRequireBuiltin(join(appDir, "lib"), host.specifiers);
 installNodeModuleCompat();
 
-process.argv = dshArgv(process.argv, process.execPath, binJs);
+process.argv = dshArgv([process.argv[0]!, process.argv[1]!, ...user], process.execPath, binJs);
 const { runCli } = (await import(binJs)) as { runCli(): Promise<void> };
 await runCli();

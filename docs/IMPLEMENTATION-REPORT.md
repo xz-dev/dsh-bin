@@ -177,6 +177,23 @@ What the first runs found and fixed:
   Each was a single failure, and a different one on each attempt. Neither goes through the launcher.
   The probable fix is an explicit per-test timeout; I will apply it with 5.4, which rewrites the updater
   contract.
+- **Children do not hold the usage claims (a design gap; 4.3 is blocked on your decision).**
+  - Design S3 assumes the pnpm children and lifecycle scripts inherit the claim descriptor on POSIX.
+    D4 assumes the same for the bundle claim. They do not.
+  - Evidence: `~/.cache/cp-probe/inherit2.ts`. A Bun parent takes a shared flock, then starts `sleep`
+    through both `child_process.spawn` and `Bun.spawn`, and is SIGKILLed. The lock was free at once,
+    although both children were still running. Bun passes no extra descriptors to its children, even with
+    `FD_CLOEXEC` cleared (`fdinherit.ts`).
+  - The shims start `dsh-native` with `BUN_BE_BUN=1`, which never runs `runtime/app.ts`, so those
+    processes take no claim of their own either.
+  - Effect: while the session lives, its own claim covers everything. When only a child remains (the
+    session was killed while pnpm was still installing), a `dsh snapshot remove` or `dsh uninstall`
+    could delete files under it.
+  - What works: `BUN_OPTIONS=--preload <file>` runs under `BUN_BE_BUN` (probe `pre.mjs`), so a small
+    preload in the bundle could take the claims in every process a shim starts.
+- **Environment inheritance.** `DSH_BIN_SNAPSHOT_DIR` reaches children started through
+  `node:child_process`. No upstream package calls `Bun.spawn`, so this covers all of upstream. A plain
+  `Bun.spawn` without `env` would not see runtime changes to `process.env` (probe above).
 
 ## Design decisions made on my own (package-manager style)
 
@@ -600,3 +617,37 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
     creates no `profiles/`. The first `--help` launch creates the snapshot, and the second leaves
     everything unchanged.
 - Full suite: 316 pass / 0 fail. Leaked `dsh-*` test directories were removed from `/tmp`.
+
+### Task 4.3: runtime wiring (in progress, not ticked)
+
+- `runtime/snapshot/resolve.ts` resolves the snapshot in this order:
+  1. the snapshot already resolved (a restart);
+  2. the launch's `--snapshot`;
+  3. the selection's snapshot, but only when the version came from the selection or a managed install;
+  4. otherwise the newest snapshot, created automatically when there is none.
+- **Claim.** It takes the shared claim, then re-checks that the snapshot still exists, closing the race
+  with removal. The claim is held for the life of the process.
+- **Missing or ambiguous snapshot.** The launch fails with one diagnostic that names
+  `dsh snapshot list`. When the snapshot came from the selection, it also names
+  `dsh select --use latest`.
+- **`runtime/app.ts`** does four things:
+  - sets `DSH_BIN_SNAPSHOT_DIR`;
+  - writes `resolved.snapshot` into `DSH_BIN_LAUNCH`, so a restart reuses it even after the selection
+    changes (a fresh launcher start always replaces the variable);
+  - strips leading `--use/--snapshot/--addon` on direct `dsh-native` starts. This uses the same parser as
+    the launcher, and a direct start refuses an option that names another version;
+  - skips all of this for a bare app tree with no bundle.json build order, so the old startup and
+    plugin-runtime tests keep upstream paths.
+- `test/runtime/snapshot-start.test.ts`, 7 cases, all passing:
+  - a restart after a selection change stays on the same snapshot with the same arguments, and the
+    `node` shim sees the same `DSH_BIN_SNAPSHOT_DIR`;
+  - the selection's snapshot is used only when the version came from the selection;
+  - a stale or missing snapshot fails with its diagnostic;
+  - a running session makes `removeSnapshot` return busy, and after SIGKILL the removal succeeds;
+  - on a direct start, leading options are stripped, `-p "--use 1"` is passed on unchanged, and another
+    version is refused.
+- Addon resolution from the launch (`--addon`) belongs to 5.5, which replaces `officeWiring`'s enabled
+  record. The launch record already carries the addons.
+- Full suite: 320 pass / 0 fail.
+- **Blocked.** The spec requires pnpm children to hold the snapshot claim for their whole lifetime, and
+  they do not; see "Not verified yet".
