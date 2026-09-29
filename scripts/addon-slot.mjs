@@ -9,15 +9,19 @@ import { UPSTREAM } from "./fetch-upstream.mjs";
 const LOCK = "pnpm-lock.yaml";
 // `packages:` key; lockfile v6 prefixes keys with `/`.
 const KIT_KEY = /^ {2}'?\/?@deepseek-ai\/libreoffice-kit@([^'():\s]+)'?:/m;
+// Blobs are fetched lazily from the promisor remote. With the commit-graph enabled, git 2.49 (the pinned
+// Alpine images) refuses that fetch as "in the commit graph file but not in the object database".
+const GIT = (gitDir) => ["-c", "core.commitGraph=false", "--git-dir", gitDir];
+
 const git = (gitDir, args, input) =>
-	execFileSync("git", ["--git-dir", gitDir, ...args], { encoding: "utf8", input, maxBuffer: 1 << 30, stdio: ["pipe", "pipe", "inherit"] });
+	execFileSync("git", [...GIT(gitDir), ...args], { encoding: "utf8", input, maxBuffer: 1 << 30, stdio: ["pipe", "pipe", "inherit"] });
 
 /** Kit version in a lockfile text (the `packages:` key), or null when the kit is not locked. */
 export const kitVersionOf = (lockText) => lockText.match(KIT_KEY)?.[1] ?? null;
 
 /** Lockfile kit versions for `commits`, read in one `cat-file --batch` pass. */
 function kitVersions(gitDir, commits) {
-	const out = execFileSync("git", ["--git-dir", gitDir, "cat-file", "--batch"], {
+	const out = execFileSync("git", [...GIT(gitDir), "cat-file", "--batch"], {
 		input: commits.map((c) => `${c}:${LOCK}\n`).join(""),
 		maxBuffer: 2 ** 32,
 	});
