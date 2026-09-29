@@ -1,8 +1,8 @@
 // Declared degradations (3.5) and office addon wiring (3.7) against the compiled entry and the built app
 // (work/app, or DSH_BIN_TEST_APP). Hermetic: temp DSH_HOME, no API key, PATH without node.
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { degradationDetail, HMR_DEGRADATION, officeDegradations } from "../../runtime/compat/degradations.ts";
@@ -90,6 +90,9 @@ describe.skipIf(!built)("compiled entry startup", () => {
 			cpSync(join(ADDON, "node_modules"), join(dir, "node_modules"), { recursive: true });
 			writeFileSync(join(dir, "addon.json"), JSON.stringify({ name: "office", version, tag: `dsh-addon-office-v${version}`, kitVersion: "0.1.1", slot, packages: [] }));
 		}
+	});
+	afterAll(() => {
+		if (root) rmSync(root, { recursive: true, force: true });
 	});
 
 	test("3.5: tui startup warnings equal the declared degradation list", async () => {

@@ -96,8 +96,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: "target-${{ matrix.id }}", path: "${{ runner.temp }}/out/", if-no-files-found: error, retention-days: 14 }
 
+  # Jobs downstream of the optional `addon` job need explicit conditions: the implicit success() fails
+  # when any ancestor was skipped, which would silently skip the whole release when the slot has an addon.
   accept:
     needs: [prepare, build-target]
+    if: ${{ !cancelled() && needs.build-target.result == 'success' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
@@ -136,6 +139,7 @@ jobs:
 
   aggregate:
     needs: [prepare, accept]
+    if: ${{ !cancelled() && needs.accept.result == 'success' }}
     runs-on: ubuntu-24.04
     permissions: { contents: read }
     steps:
@@ -151,7 +155,7 @@ jobs:
 
   publish:
     needs: aggregate
-    if: inputs.publish && github.ref == 'refs/heads/main'
+    if: ${{ !cancelled() && needs.aggregate.result == 'success' && inputs.publish && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     concurrency: { group: releases-index, cancel-in-progress: false }
     permissions: { contents: write, id-token: write, attestations: write }
