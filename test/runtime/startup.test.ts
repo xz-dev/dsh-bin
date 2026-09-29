@@ -83,7 +83,7 @@ describe.skipIf(!built)("compiled entry startup", () => {
 		writeFileSync(join(bundle, "bin", "node"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 		writeFileSync(
 			join(bundle, "bundle.json"),
-			JSON.stringify({ schemaVersion: 1, name: "dsh-bin", version: "V1", channel: "release", addons: { office: { slot: SLOT_A, pinned: "A1", known: [] } } }),
+			JSON.stringify({ schemaVersion: 2, name: "dsh-bin", version: "V1", channel: "release", addons: { office: { slot: SLOT_A, pinned: "A1", known: [] } } }),
 		);
 		for (const [version, slot] of [["A1", SLOT_A], ["B1", SLOT_B]] as const) {
 			const dir = join(root, "addons", "office", version);

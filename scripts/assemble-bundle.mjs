@@ -8,14 +8,15 @@
 // identity, the required-path inventory and the embedded office compatibility table (D7b).
 //
 // usage: bun scripts/assemble-bundle.mjs <spec.json>
-//   spec: {target, out, app, pnpm, native, launcher, identity:{version,tag,channel}, upstream:{commit,tag?,version},
-//          launcherCommit, slot:{commit,kitVersion}|null, index?:<path to index.json snapshot>}
+//   spec: {target, out, app, pnpm, native, launcher, identity:{version,tag,channel}, upstream:{commit,commitTime,tag?,version},
+//          run, attempt, launcherCommit, slot:{commit,kitVersion}|null, index?:<path to index.json snapshot>}
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { binaryArch } from "./build-launcher.mjs";
 import { writeShims } from "./shims.mjs";
 import { target as targetById } from "./targets.mjs";
 import { warmTranspilerCache } from "./warm-transpiler-cache.mjs";
+import { isCommitTime, LAUNCHER_PROTOCOL } from "../runtime/layout.ts";
 
 const FORMAT = { linux: "elf", darwin: "macho", windows: "pe" };
 const PLATFORM_DIR = /^(linux|darwin|win32|win|windows|freebsd|android|openbsd|sunos|aix)[-_](x64|arm64|ia32|arm|x86_64|aarch64|ppc64|s390x|riscv64|loong64)(?:[-_](gnu|musl|glibc))?$/;
@@ -139,14 +140,19 @@ export function assembleBundle(spec) {
 
 	const index = spec.index ? JSON.parse(readFileSync(spec.index, "utf8")) : { addons: { office: [] } };
 	const required = requiredPaths(t, version);
+	if (!isCommitTime(spec.upstream?.commitTime)) throw new Error(`upstream.commitTime must be an ISO UTC time: ${spec.upstream?.commitTime}`);
+	if (!(spec.run > 0 && spec.attempt > 0)) throw new Error("run and attempt must be positive integers");
 	const meta = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		name: "dsh-bin",
 		version,
 		tag,
 		channel,
 		target: t.id,
 		upstream: spec.upstream,
+		run: spec.run,
+		attempt: spec.attempt,
+		launcherProtocol: LAUNCHER_PROTOCOL,
 		launcherCommit: spec.launcherCommit,
 		addons: { office: officeTable(spec.slot ?? null, index) },
 		requiredPaths: required,

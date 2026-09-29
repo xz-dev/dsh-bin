@@ -8,7 +8,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { parseIndex } from "../runtime/update/index-client.ts";
 
-export const emptyIndex = () => ({ schemaVersion: 1, channels: { release: [], live: [] }, addons: { office: [] } });
+export const emptyIndex = () => ({ schemaVersion: 2, channels: { release: [], live: [] }, addons: { office: [] } });
 
 export function readIndex(path) {
 	return existsSync(path) ? parseIndex(readFileSync(path, "utf8")) : emptyIndex();
@@ -18,8 +18,8 @@ const nextSeq = (list) => list.reduce((m, e) => Math.max(m, e.seq), 0) + 1;
 const sameAssets = (a, b) => JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
 
 /**
- * Append a bundle release. `manifest` is `release-manifest.json`: {tag, version, channel, upstream,
- * launcherCommit, addons: {office: {slot, pinned}}, targets: {<target>: {file, size, sha256}}}.
+ * Append a bundle release. `manifest` is `release-manifest.json`: {tag, version, channel,
+ * upstream: {commit, commitTime, tag?, version}, run, attempt, launcherProtocol, launcherCommit, addons: {office: {slot, pinned}}, targets: {<target>: {file, size, sha256}}}.
  * Re-appending an identical tag is a no-op (idempotent reruns); a different one with the same tag fails.
  */
 export function appendBundle(index, manifest, publishedAt = new Date().toISOString()) {
@@ -37,6 +37,9 @@ export function appendBundle(index, manifest, publishedAt = new Date().toISOStri
 		version: manifest.version,
 		channel: manifest.channel,
 		upstream: manifest.upstream,
+		run: manifest.run,
+		attempt: manifest.attempt,
+		launcherProtocol: manifest.launcherProtocol,
 		launcherCommit: manifest.launcherCommit,
 		publishedAt,
 		addons: manifest.addons ?? {},

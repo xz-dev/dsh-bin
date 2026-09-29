@@ -293,7 +293,7 @@ const cases: Case[] = [
 	...(
 		[
 			["invalid JSON", { indexBody: "{nope" }, "index is not valid JSON"],
-			["unsupported schema", { index: (i: any) => ({ ...i, schemaVersion: 2 }) }, "unsupported index schemaVersion 2"],
+			["unsupported schema", { index: (i: any) => ({ ...i, schemaVersion: 1 }) }, "unsupported index schemaVersion 1 (expected 2)"],
 			["no entry for this target", { index: (i: any) => ({ ...i, channels: { release: [], live: i.channels.live } }) }, `no release release for target ${TARGET}`],
 			["unreachable index", { indexStatus: 503 }, "HTTP 503"],
 		] as const

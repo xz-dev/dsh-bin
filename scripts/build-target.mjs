@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 import { addonSlot, ensureHistory } from "./addon-slot.mjs";
 import { buildApp } from "./build-app.mjs";
 import { fetchPnpm } from "./fetch-pnpm.mjs";
-import { checkout, resolveRef } from "./fetch-upstream.mjs";
+import { checkout, commitTime, resolveRef } from "./fetch-upstream.mjs";
 import { localBuild } from "./local-build.mjs";
 import { splitOfficeAddon } from "./split-addon.mjs";
 import { BUN_VERSION, hostTargetId, target } from "./targets.mjs";
@@ -37,7 +37,7 @@ export async function buildTarget({ targetId, channel, ref, out, run, attempt, i
 	transformApp(app);
 	const addon = join(work, "addon-office");
 	splitOfficeAddon(app, addon);
-	const r = localBuild({ out, channel, run, attempt, index, upstreamCommit: upstream.commit, upstreamVersion: upstreamVersion ?? readVersion(src), slot, work, targetId: t.id, warm: true });
+	const r = localBuild({ out, channel, run, attempt, index, upstreamCommit: upstream.commit, upstreamCommitTime: commitTime(src, upstream.commit), upstreamVersion: upstreamVersion ?? readVersion(src), slot, work, targetId: t.id, warm: true });
 	rmSync(r.root, { recursive: true, force: true });
 	// The per-target release manifest, named per target: aggregate merges all 12 artifacts into one dir.
 	writeFileSync(join(out, `${r.tag}.${t.id}.json`), `${JSON.stringify(r.manifest, null, 2)}\n`);

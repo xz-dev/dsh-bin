@@ -12,14 +12,16 @@ import { buildLauncher } from "./build-launcher.mjs";
 import { compileEntry } from "./compile-entry.mjs";
 import { hostTargetId, target } from "./targets.mjs";
 import { distribution } from "./versioning.mjs";
+import { commitTime } from "./fetch-upstream.mjs";
 
 const ROOT = resolve(import.meta.dir, "..");
 
-export function localBuild({ out, channel, run, attempt = 1, index, upstreamCommit, upstreamVersion = "0.1.7-rc.2", slot = null, work = join(ROOT, "work"), native, targetId = hostTargetId(), warm = false }) {
+export function localBuild({ out, channel, run, attempt = 1, index, upstreamCommit, upstreamCommitTime, upstreamVersion = "0.1.7-rc.2", slot = null, work = join(ROOT, "work"), native, targetId = hostTargetId(), warm = false }) {
 	const t = target(targetId);
 	// CI passes the commit (git in the musl container refuses the runner-owned checkout as dubious).
 	const launcherCommit = process.env.DSH_BIN_LAUNCHER_COMMIT || execFileSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 	upstreamCommit ??= execFileSync("git", ["-C", join(work, "src-rc2"), "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+	upstreamCommitTime ??= commitTime(join(work, "src-rc2"), upstreamCommit);
 	const id = distribution({ channel, upstreamVersion, upstreamCommit, run, attempt, launcherCommit });
 	mkdirSync(out, { recursive: true });
 	const scratch = join(out, `.scratch-${id.version}`);
@@ -39,7 +41,9 @@ export function localBuild({ out, channel, run, attempt = 1, index, upstreamComm
 		native,
 		launcher,
 		identity: id,
-		upstream: { commit: upstreamCommit, ...(channel === "release" ? { tag: `dsh-v${upstreamVersion}` } : {}), version: upstreamVersion },
+		upstream: { commit: upstreamCommit, commitTime: upstreamCommitTime, ...(channel === "release" ? { tag: `dsh-v${upstreamVersion}` } : {}), version: upstreamVersion },
+		run: Number(run),
+		attempt: Number(attempt),
 		launcherCommit,
 		slot,
 		index,
@@ -55,6 +59,9 @@ export function localBuild({ out, channel, run, attempt = 1, index, upstreamComm
 		version: id.version,
 		channel,
 		upstream: r.meta.upstream,
+		run: r.meta.run,
+		attempt: r.meta.attempt,
+		launcherProtocol: r.meta.launcherProtocol,
 		launcherCommit,
 		addons: { office: { slot: r.meta.addons.office.slot, pinned: r.meta.addons.office.pinned } },
 		targets: { [t.id]: { file: asset.name, size: asset.size, sha256: asset.sha256 } },

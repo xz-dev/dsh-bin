@@ -38,6 +38,11 @@ export function checkout(commit, dest, url = UPSTREAM) {
 	return head;
 }
 
+/** Committer time of `commit` in a checkout, in the `toISOString()` form bundles carry (version order). */
+export function commitTime(dir, commit = "HEAD") {
+	return new Date(git(["-C", dir, "log", "-1", "--format=%cI", commit])).toISOString();
+}
+
 if (import.meta.main) {
 	const [ref, dest] = process.argv.slice(2);
 	if (!ref) throw new Error("usage: fetch-upstream.mjs <dsh-v*-tag|master> [dest]");

@@ -21,15 +21,33 @@ export type AssetRef = { name: string; size: number; sha256: string };
 export type AddonRelease = { seq?: number; tag: string; version: string; slot: Slot; assets: Record<string, AssetRef> };
 export type AddonTable = { slot: Slot | null; pinned: string | null; known: AddonRelease[] };
 
+/** Launcher/bundle contract version; the launcher refuses a bundle declaring another one (design S2). */
+export const LAUNCHER_PROTOCOL = 2;
+
+/** Build position of a bundle: upstream commit time (UTC `toISOString()` form), then dsh-bin run and attempt. */
+export type BuildOrder = { upstream: { commitTime: string }; run: number; attempt: number };
+
+/** Whether `s` is a commit time in the one form bundles carry (`Date#toISOString`, so it sorts as text). */
+export const isCommitTime = (s: unknown): s is string => typeof s === "string" && !Number.isNaN(Date.parse(s)) && new Date(s).toISOString() === s;
+
+/** Version order (version-selection spec): upstream commit time, then run, then attempt. */
+export function compareVersionOrder(a: BuildOrder, b: BuildOrder): number {
+	const t = a.upstream.commitTime < b.upstream.commitTime ? -1 : a.upstream.commitTime > b.upstream.commitTime ? 1 : 0;
+	return t || a.run - b.run || a.attempt - b.attempt;
+}
+
 /** `bundle.json`: the bundle's identity and its embedded addon compatibility table. */
 export type BundleMeta = {
-	schemaVersion: 1;
+	schemaVersion: 2;
 	name: "dsh-bin";
 	version: string;
 	tag: string;
 	channel: Channel;
 	target: string;
-	upstream: { commit: string; tag?: string; version: string };
+	upstream: { commit: string; commitTime: string; tag?: string; version: string };
+	run: number;
+	attempt: number;
+	launcherProtocol: number;
 	launcherCommit: string;
 	addons: Partial<Record<AddonName, AddonTable>>;
 	requiredPaths: string[];

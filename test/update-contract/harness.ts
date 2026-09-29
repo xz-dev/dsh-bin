@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import type { AddonRelease, AddonTable, BundleMeta, Channel, Slot } from "../../runtime/layout.ts";
+import { type AddonRelease, type AddonTable, type BundleMeta, type Channel, LAUNCHER_PROTOCOL, type Slot } from "../../runtime/layout.ts";
 import { makeReadOnly, makeWritable } from "../../runtime/readonly.ts";
 import { addonPlatform } from "../../runtime/update/addon-resolve.ts";
 import { hostTargetId } from "../../scripts/targets.mjs";
@@ -41,6 +41,9 @@ export type AssetFile = { tag: string; name: string; bytes: Uint8Array };
 export type BundleSpec = { version: string; seq: number; channel: Channel; slot?: Slot | null; pinned?: string | null; known?: AddonRelease[]; launcherVersion?: string; tamper?: (inputs: ZipInput[]) => void; metaPatch?: Partial<BundleMeta> };
 export type AddonSpec = { version: string; seq: number; slot: Slot };
 
+/** Fixture build order follows the index sequence: one upstream day per seq. */
+export const orderTime = (seq: number) => new Date(Date.UTC(2026, 8, 1) + seq * 86_400_000).toISOString();
+
 export const tagOf = (channel: Channel, version: string) => (channel === "live" ? `dsh-live-${version}` : `dsh-v${version}`);
 export const addonTag = (version: string) => `dsh-addon-office-v${version}`;
 
@@ -54,13 +57,16 @@ export function bundleInputs(spec: BundleSpec, native: string): { inputs: ZipInp
 	const required = [`dsh${EXE}`, `${b}/dsh-native${EXE}`, `${b}/bundle.json`, `${b}/.usage.lock`, `${b}/app/package.json`, `${b}/app/lib/bin.js`, `${b}/pnpm/dist/pnpm.mjs`, `${b}/bin/node`, `${b}/bin/pnpm`];
 	const table: AddonTable = { slot: spec.slot === undefined ? SLOT_A : spec.slot, pinned: spec.pinned ?? null, known: spec.known ?? [] };
 	const meta: BundleMeta = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		name: "dsh-bin",
 		version: v,
 		tag: tagOf(spec.channel, v),
 		channel: spec.channel,
 		target: TARGET,
-		upstream: { commit: "c".repeat(40), version: "0.1.7-rc.2" },
+		upstream: { commit: "c".repeat(40), commitTime: orderTime(spec.seq), version: "0.1.7-rc.2" },
+		run: Math.max(spec.seq, 1),
+		attempt: 1,
+		launcherProtocol: LAUNCHER_PROTOCOL,
 		launcherCommit: "d".repeat(40),
 		addons: { office: table },
 		requiredPaths: required,
@@ -115,7 +121,7 @@ function zipBytes(dir: string, inputs: ZipInput[]): Uint8Array {
 export class World {
 	readonly dir = mkdtempSync(join(tmpdir(), "dsh-contract-world-"));
 	readonly assets = new Map<string, AssetFile>();
-	readonly index = { schemaVersion: 1, channels: { release: [] as any[], live: [] as any[] }, addons: { office: [] as any[] } };
+	readonly index = { schemaVersion: 2, channels: { release: [] as any[], live: [] as any[] }, addons: { office: [] as any[] } };
 	readonly zips = new Map<string, string>();
 	readonly metas = new Map<string, BundleMeta>();
 
@@ -146,6 +152,9 @@ export class World {
 			version: spec.version,
 			channel: spec.channel,
 			upstream: meta.upstream,
+			run: meta.run,
+			attempt: meta.attempt,
+			launcherProtocol: meta.launcherProtocol,
 			addons: { office: { slot: meta.addons.office!.slot, pinned: meta.addons.office!.pinned } },
 			assets: { [TARGET]: { name, size: bytes.length, sha256: sha(bytes) } },
 		};

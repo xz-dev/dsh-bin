@@ -25,7 +25,7 @@ const addon = (seq: number, version: string) => ({
 	assets: { "windows-x64": { name: "dsh-addon-office-windows-x64.zip", size: 1, sha256: h("b") }, "windows-arm64": { name: "dsh-addon-office-windows-arm64.zip", size: 1, sha256: h("c") } },
 });
 const INDEX = {
-	schemaVersion: 1,
+	schemaVersion: 2,
 	channels: {
 		release: [bundle(1, "0.1.7-rc.2-xz.1.1.g00000001", "release", "0.1.1-xz.1.1.g00000001"), bundle(2, "0.1.7-rc.2-xz.5.1.g00000005", "release", "0.1.1-xz.1.1.g00000001")],
 		live: [bundle(1, "live.4878cda-xz.6.1.g00000006", "live", "0.1.1-xz.2.1.g00000002")],

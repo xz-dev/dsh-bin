@@ -47,7 +47,7 @@ jobs:
           case "$CHANNEL:$UPSTREAM" in release:dsh-v*|live:master|live:*) ;; *) echo "bad channel/upstream: $CHANNEL $UPSTREAM" >&2; exit 1 ;; esac
           if [[ "$UPSTREAM" =~ ^[0-9a-f]{40}$ ]]; then commit=$UPSTREAM; else commit=$(bun scripts/fetch-upstream.mjs "$UPSTREAM" | jq -r .commit); fi
           slot=$(bun scripts/addon-slot.mjs "$RUNNER_TEMP/upstream.git" "$commit")
-          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/releases/index.json" -o "$RUNNER_TEMP/index.json" || echo '{"schemaVersion":1,"channels":{"release":[],"live":[]},"addons":{"office":[]}}' > "$RUNNER_TEMP/index.json"
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/releases/index.json" -o "$RUNNER_TEMP/index.json" || echo '{"schemaVersion":2,"channels":{"release":[],"live":[]},"addons":{"office":[]}}' > "$RUNNER_TEMP/index.json"
           addon=$(jq --argjson s "$slot" '$s != null and ([.addons.office[] | select(.slot.commit == $s.commit)] | length == 0)' "$RUNNER_TEMP/index.json")
           { echo "commit=$commit"; echo "key=$CHANNEL-$commit"; echo "slot=$slot"; echo "addon=$addon"; echo "matrix=$(bun scripts/targets.mjs --matrix)"; } >> "$GITHUB_OUTPUT"
 
@@ -127,7 +127,7 @@ jobs:
         run: |
           set -euo pipefail
           c="$RUNNER_TEMP/cand"
-          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/releases/index.json" -o "$c/index.json" || echo '{"schemaVersion":1,"channels":{"release":[],"live":[]},"addons":{"office":[]}}' > "$c/index.json"
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/releases/index.json" -o "$c/index.json" || echo '{"schemaVersion":2,"channels":{"release":[],"live":[]},"addons":{"office":[]}}' > "$c/index.json"
           # Exact-tag downloads (not the API): the previous published asset for this target, and this
           # platform's addon assets.
           prev=$(jq -r --arg ch "$CHANNEL" --arg t '${{ matrix.id }}' '[.channels[$ch][] | select(.assets[$t])] | max_by(.seq) // empty | "\(.tag)/\(.assets[$t].name)"' "$c/index.json")

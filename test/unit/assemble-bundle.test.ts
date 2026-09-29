@@ -70,7 +70,7 @@ const addon = (seq: number, version: string, slot: typeof slotA) => ({
 	assets: { linux: { name: "dsh-addon-office-linux.zip", size: 1, sha256: "0".repeat(64) } },
 });
 const index = {
-	schemaVersion: 1,
+	schemaVersion: 2,
 	channels: { release: [], live: [] },
 	addons: { office: [addon(1, "0.1.2-xz.1.1.g11111111", slotA), addon(2, "0.1.3-xz.2.1.g22222222", slotB), addon(3, "0.1.2-xz.3.1.g33333333", slotA)] },
 };
@@ -100,7 +100,9 @@ describe("assemble (6.1)", () => {
 		native: f.native,
 		launcher: f.launcher,
 		identity: { version: "0.1.7-rc.2-xz.1.1.gabcdef12", tag: "dsh-v0.1.7-rc.2-xz.1.1.gabcdef12", channel: "release" },
-		upstream: { commit: "4".repeat(40), tag: "dsh-v0.1.7-rc.2", version: "0.1.7-rc.2" },
+		upstream: { commit: "4".repeat(40), commitTime: "2026-09-24T13:39:59.000Z", tag: "dsh-v0.1.7-rc.2", version: "0.1.7-rc.2" },
+		run: 1,
+		attempt: 1,
 		launcherCommit: "abcdef12".repeat(5),
 		slot: slotA,
 		index: idx,
@@ -115,7 +117,8 @@ describe("assemble (6.1)", () => {
 		expect(r.meta.requiredPaths).toEqual(requiredPaths(target("linux-x64-modern"), v));
 		for (const p of r.meta.requiredPaths) expect(existsSync(join(r.out, p))).toBe(true);
 		const meta = JSON.parse(readFileSync(join(r.bundle, "bundle.json"), "utf8"));
-		expect(meta).toMatchObject({ schemaVersion: 1, name: "dsh-bin", version: v, channel: "release", target: "linux-x64-modern" });
+		expect(meta).toMatchObject({ schemaVersion: 2, name: "dsh-bin", version: v, channel: "release", target: "linux-x64-modern", run: 1, attempt: 1, launcherProtocol: 2 });
+		expect(meta.upstream.commitTime).toBe("2026-09-24T13:39:59.000Z");
 		expect(meta.addons.office.pinned).toBe("0.1.2-xz.3.1.g33333333");
 		expect(meta.addons.office.known).toEqual(index.addons.office);
 		expect(readFileSync(join(r.bundle, "bin/pnpm"), "utf8")).toContain("pnpm/dist/pnpm.mjs");
@@ -167,6 +170,13 @@ describe("assemble (6.1)", () => {
 		const f = fixture();
 		put(join(f.app, "node_modules/@deepseek-ai/libreoffice-kit/package.json"), "{}");
 		expect(() => assembleBundle(spec(f, "linux-x64-modern"))).toThrow(/office kit/);
+	});
+
+	test("bundle.json needs the build order: an upstream commit time and positive run/attempt", () => {
+		const s = () => spec(fixture(), "linux-x64-modern");
+		const a = s();
+		expect(() => assembleBundle({ ...a, upstream: { ...a.upstream, commitTime: "2026-09-24T21:39:59+08:00" } })).toThrow(/commitTime/);
+		expect(() => assembleBundle({ ...s(), run: 0 })).toThrow(/run and attempt/);
 	});
 
 	test("prunePrebuilds keeps the matching libc on linux", () => {

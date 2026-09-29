@@ -452,3 +452,20 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   - Your migration (7.2) must re-add such plugins, or rewrite the paths, or use an absolute path.
 - Not a spike regression: `dsh -p` gets no model reply within 240 s on either the snapshot or your
   untouched install. This is still the open item "a model reply through `dsh -p`".
+
+### Task 2.1: build order and schema 2
+
+- `bundle.json` and every index entry now carry:
+  - `upstream.commitTime`: the committer time of the upstream commit, in UTC `toISOString()` form so it
+    sorts as text;
+  - `run` and `attempt`;
+  - `launcherProtocol: 2`.
+- The index and `bundle.json` are schema 2. The updater rejects a schema-1 index, and assembly refuses a
+  missing or non-canonical commit time.
+- Version order (`compareVersionOrder` in `runtime/layout.ts`) is commit time, then run, then attempt.
+  Unit tests cover the release/live and rebuild scenarios.
+- Checked on a real local build: `bundle.json` in the archive, `release-manifest.json` and the appended
+  index entry all carry the same four fields, and `index.mjs check` accepts the result.
+- **Not pushed.** The build workflow reads the live schema-1 index, so any push that triggers a poll
+  would fail until the one-time reset (7.1) empties it to schema 2. The code stays on local `main` until
+  then.

@@ -6,7 +6,7 @@ import { readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "
 import { join } from "node:path";
 import { sha256 } from "./fetch-pnpm.mjs";
 
-const IDENTITY = ["tag", "version", "channel", "launcherCommit"];
+const IDENTITY = ["tag", "version", "channel", "run", "attempt", "launcherProtocol", "launcherCommit"];
 
 export function aggregateRelease(dir, expectTargets) {
 	const parts = readdirSync(dir)

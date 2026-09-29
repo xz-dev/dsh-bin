@@ -3,7 +3,7 @@
 // Never the GitHub REST/GraphQL API, the "latest" redirect, or a package registry.
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import type { AddonRelease, AssetRef, Channel, Slot } from "../layout.ts";
+import { type AddonRelease, type AssetRef, type Channel, isCommitTime, type Slot } from "../layout.ts";
 import { UserError } from "./context.ts";
 import { backoffMs, download, netTuning, RETRYABLE_STATUSES } from "./download.ts";
 
@@ -15,14 +15,17 @@ export type BundleEntry = {
 	tag: string;
 	version: string;
 	channel: Channel;
-	upstream: { commit: string; tag?: string };
+	upstream: { commit: string; commitTime: string; tag?: string };
+	run: number;
+	attempt: number;
+	launcherProtocol: number;
 	launcherCommit?: string;
 	publishedAt?: string;
 	addons?: { office?: { slot: Slot | null; pinned: string | null } };
 	assets: Record<string, AssetRef>;
 };
 export type ReleaseIndex = {
-	schemaVersion: 1;
+	schemaVersion: 2;
 	channels: Record<Channel, BundleEntry[]>;
 	addons: { office: AddonRelease[] };
 };
@@ -44,6 +47,7 @@ export const assetUrl = (tag: string, name: string, env = process.env) =>
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const isPositiveInt = (v: unknown) => Number.isInteger(v) && (v as number) > 0;
 
 function checkAssets(where: string, assets: unknown) {
 	if (!isObj(assets)) throw new Error(`${where}: assets must be an object`);
@@ -68,7 +72,7 @@ export function parseIndex(text: string): ReleaseIndex {
 		throw new Error("index is not valid JSON");
 	}
 	if (!isObj(data)) throw new Error("index is not an object");
-	if (data.schemaVersion !== 1) throw new Error(`unsupported index schemaVersion ${String(data.schemaVersion)} (expected 1)`);
+	if (data.schemaVersion !== 2) throw new Error(`unsupported index schemaVersion ${String(data.schemaVersion)} (expected 2)`);
 	if (!isObj(data.channels)) throw new Error("index has no channels");
 	for (const channel of ["release", "live"] as const) {
 		const list = data.channels[channel] ?? [];
@@ -77,6 +81,8 @@ export function parseIndex(text: string): ReleaseIndex {
 			const where = `index ${channel}[${i}]`;
 			if (!isObj(e) || !Number.isInteger(e.seq) || typeof e.tag !== "string" || typeof e.version !== "string") throw new Error(`${where}: invalid entry`);
 			if (e.channel !== channel) throw new Error(`${where}: channel ${String(e.channel)} is listed under ${channel}`);
+			if (!isObj(e.upstream) || typeof e.upstream.commit !== "string" || !isCommitTime(e.upstream.commitTime)) throw new Error(`${where}: invalid upstream`);
+			if (!isPositiveInt(e.run) || !isPositiveInt(e.attempt) || !isPositiveInt(e.launcherProtocol)) throw new Error(`${where}: invalid build order or launcher protocol`);
 			checkAssets(where, e.assets);
 		}
 		data.channels[channel] = list;

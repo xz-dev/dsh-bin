@@ -11,7 +11,7 @@ const ls = (master: string, tags: Record<string, string>, annotated: Record<stri
 	[`${master}\trefs/heads/master`, ...Object.entries(tags).map(([t, s]) => `${s}\trefs/tags/${t}`), ...Object.entries(annotated).flatMap(([t, s]) => [`${c("f")}\trefs/tags/${t}`, `${s}\trefs/tags/${t}^{}`])].join("\n");
 const rel = (tag: string, commit: string, seq: number, launcherCommit = c("d")) => ({ seq, tag: `${tag}-xz.1.1.gdeadbeef`, channel: "release", upstream: { tag, commit }, launcherCommit });
 const liv = (commit: string, seq: number, launcherCommit = c("d")) => ({ seq, tag: `dsh-live-${commit.slice(0, 7)}-xz.1.1.gdeadbeef`, channel: "live", upstream: { commit }, launcherCommit });
-const index = (release: object[], live: object[], office: object[] = []) => ({ schemaVersion: 1, channels: { release, live }, addons: { office } });
+const index = (release: object[], live: object[], office: object[] = []) => ({ schemaVersion: 2, channels: { release, live }, addons: { office } });
 
 test("no-op when every tag and master are published", () => {
 	const r = upstreamDiff({ lsRemote: ls(c("1"), { "dsh-v0.1.7-rc.2": c("a"), "dsh-v0.1.6": c("0") }), index: index([rel("dsh-v0.1.7-rc.2", c("a"), 1)], [liv(c("1"), 1)]) });
