@@ -231,6 +231,29 @@ What the first runs found and fixed:
   - the regenerated `profiles/tui/cordis.yml`.
 - Because the launcher points it there, the transpiler cache is in `~/.cache/dsh-bin/transpiler`.
 
+### First real self-update, and why you are back on rc.2
+
+`dsh update` on your machine moved `0.1.7-rc.2` to `0.2.0-rc.1`: a 124 MiB download and
+activation, 25 s in total. The self-update worked.
+
+Your `tui` profile then failed to start on 0.2.0 (`agent-loop (required)` was missing `sessions`).
+This is upstream's plugin compatibility rule, not a dsh-bin fault:
+- every plugin's `peerDependencies` pins `@deepseek-ai/*` to exactly `0.1.7-rc.2`;
+- dsh 0.2.0 refuses such plugins, including the core plugins the profile lock still holds at
+  `0.1.7-rc.2`;
+- npm dsh 0.2.0 would refuse them the same way.
+
+I put the rc.2 launcher back in place; the rc.2 bundle was still installed. Your tui boots again.
+
+On a copy of `~/.dsh`, `dsh plugin --profile tui update` under the 0.2.0 bundle took 12 s with no
+Node, and exit 0. The earlier "900 s timeout" happened only because the copy sat on a different
+filesystem than your pnpm store. It still reports 14 of your profile plugins as incompatible:
+- 13 are `dsh-tui` 0.11.1 and your own `xz-dev/dsh-*` plugins, which pin `0.1.7-rc.2`;
+- the 14th, `dsh-session-search-pro`, pins `^0.1.0-rc.6`.
+
+No newer versions of them exist yet. Until those plugins publish 0.2.0-compatible versions, stay
+on the release that matches them. `dsh update` will offer rc.1 each time until then.
+
 ## Startup performance (your decision, 2026-09-29)
 
 All figures below were measured on Linux x64 (Ryzen AI 9 365). The benchmark boots the shipped
