@@ -268,8 +268,15 @@ export function snapshot(root: string): Record<string, string> {
 export function removeRoot(root: string) {
 	if (!existsSync(root)) return;
 	makeWritable(root);
-	rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); // Windows: a just-killed process briefly holds handles
-	rmSync(`${root}-home`, { recursive: true, force: true });
+	for (const dir of [root, `${root}-home`]) {
+		try {
+			rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+		} catch (error) {
+			// Windows: a just-killed process or a virus scan of a freshly copied executable can hold a temp
+			// test root past the retries. Leaving a temp dir behind is not a contract failure.
+			if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EBUSY") throw error;
+		}
+	}
 }
 
 export const read = (p: string) => readFileSync(p, "utf8");
