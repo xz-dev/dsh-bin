@@ -2,16 +2,59 @@
 
 ## Status
 
-All sections (1–9) are implemented. `openspec validate dsh-bin --strict` reports the change as valid.
-`tasks.md` has 41 tasks `[x]` and 12 `[ ]`. Each open task is one of these:
+All sections (1–10) are implemented. `openspec validate dsh-bin --strict` reports the change as
+valid. `tasks.md` has 47 tasks `[x]` and 6 `[ ]`.
 
-- **Pending CI / publication.** Implemented and checked locally, but the task's own check needs
-  a green CI or dry run on GitHub Actions, or a real publication: 5.3, 6.3, 7.10, 8.1, 8.2, 8.3,
-  8.4, 8.6, 8.8, 9.1, 9.4. Each carries an `implemented; local: …; pending …` note.
-- **Needs your approval:** 10.1, and the first real publication (see below).
+**Published.** The first automatic publication is `dsh-v0.1.7-rc.2-xz.7.1.g4e41a3f1`, from
+upstream-poll run 36514734022:
+- all 12 targets were built natively and passed the packaged E2E;
+- it is attested and verified with empty gh credentials;
+- the release is immutable;
+- `index.json` lists it as release seq 1, next to the office addon (seq 1);
+- the `scoop` branch has `bucket/dsh.json` and `bucket/dsh-office.json`.
 
-`main` is pushed to github.com/xz-dev/dsh-bin with your gh authorization. Release immutability
-(8.7) is enabled. Nothing has been published. Commits are unsigned Conventional Commits.
+**Your dsh is now dsh-bin (10.1).**
+- `~/.local/bin/dsh` runs `~/.local/share/dsh-bin`, with `--profile tui` by default.
+- The npm wrapper is kept as `~/.local/bin/dsh.npm` for rollback.
+- `dsh update` updates it in place.
+
+**The six open tasks.** Each has a check that has not been run yet:
+- **8.2:** GitHub plugin install in the packaged E2E.
+- **8.3:** GitHub computes a "Latest" release; see "Open decision" below. The first live
+  publication is also still pending.
+- **8.4:** concurrent live + release appends on GitHub.
+- **8.6:** the manual-dispatch no-op check.
+- **9.1 / 9.4:** `scoop install` on a Windows runner.
+
+Commits are unsigned Conventional Commits.
+
+### How many rounds it took
+
+Publication succeeded on the fifth push-triggered poll. Each earlier round got one step further,
+then failed on the next step, none of which had run before:
+- the musl builds needed `cmake` (koffi has no arm64-musl prebuild), and the container's output had
+  to be chowned back to the runner;
+- GitHub's implicit `success()` skipped `accept`, `aggregate` and `publish` whenever the optional
+  `addon` job was skipped, so every release built all 12 targets and then published nothing;
+- `build-target.mjs` never wrote its per-target release manifest;
+- the packaged E2E tested the host's default target instead of the matrix target.
+
+The index append, the scoop bucket (including `dsh-office`) and aggregation were rehearsed locally
+against a copy of the real `releases` branch before the poll reached them.
+
+### Open decision: GitHub's "Latest" badge
+
+Every publish sends `make_latest: "false"`, but GitHub still reports the newest non-prerelease
+release as Latest (`isLatest: true`). No release has ever been explicitly marked latest, so GitHub
+falls back to the newest one. xz-dev/pi behaves the same way: its Latest is simply its newest
+release.
+
+dsh-bin never reads Latest, since discovery goes through `index.json`. The only effect is the
+badge on the GitHub page. Two ways to remove it:
+- mark upstream prereleases (`-rc`) and live builds as GitHub prereleases;
+- keep one fixed, non-bundle release as the explicit Latest.
+
+Nothing has changed yet; this needs your call.
 
 ## Verified on GitHub Actions (2026-09-29)
 
@@ -159,13 +202,24 @@ What the first runs found and fixed:
   launcher names the missing path, and the next maintenance run restores it from the quarantined
   copy.
 
-## Needs your approval (not done)
+## Your local install (10.1, done 2026-09-29)
 
-- **10.1:** after the first publication, install it to `~/.local/share/dsh-bin`, keep your wrapper
-  as `~/.local/bin/dsh.npm`, and link `~/.local/bin/dsh`.
-  - The launcher does not choose a profile. Your current wrapper adds `--profile tui` and sets
-    `DSH_TELEMETRY_DISABLED=1`, so keep a small wrapper that does the same and execs
-    `~/.local/share/dsh-bin/dsh`.
+- `~/.local/share/dsh-bin` holds the published `dsh-linux-x64-modern.zip`. Its sha256 was checked
+  against the index and its attestation was verified.
+- `~/.local/bin/dsh` is a small wrapper, because the launcher does not choose a profile. It runs
+  `~/.local/share/dsh-bin/dsh` and, like your old wrapper:
+  - adds `--profile ${DSH_PROFILE:-tui}`;
+  - sets `DSH_TELEMETRY_DISABLED=1`;
+  - passes `update`, `install`, `uninstall`, `list`, `plugin` and the flag commands through
+    unchanged.
+- `~/.local/bin/dsh.npm` is the old npm wrapper, kept for rollback. `~/.local/bin/dsh-trial` is
+  untouched.
+- The install itself wrote nothing under `~/.dsh`. The verification boot of your `tui` profile made
+  the writes every boot makes:
+  - one throwaway session under `~/.dsh/sessions/--tmp-e2e--/`, which you can delete;
+  - storage and cache updates;
+  - the regenerated `profiles/tui/cordis.yml`.
+- Because the launcher points it there, the transpiler cache is in `~/.cache/dsh-bin/transpiler`.
 
 ## Startup performance (your decision, 2026-09-29)
 
