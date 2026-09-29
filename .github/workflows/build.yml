@@ -88,7 +88,7 @@ jobs:
             # musl: build inside the pinned native musl userspace (same images as xz-dev/pi). The
             # workspace and RUNNER_TEMP are mounted at identical paths, so arguments need no rewriting.
             zig=$(dirname "$(command -v zig)")
-            docker run --rm -v "$PWD:$PWD" -v "$RUNNER_TEMP:$RUNNER_TEMP" -v "$zig:/opt/zig:ro" -w "$PWD" -e GITHUB_REPOSITORY -e GH_TOKEN "$IMAGE" sh -euc \
+            docker run --rm -v "$PWD:$PWD" -v "$RUNNER_TEMP:$RUNNER_TEMP" -v "$zig:/opt/zig:ro" -w "$PWD" -e GITHUB_REPOSITORY -e GH_TOKEN -e DSH_BIN_LAUNCHER_COMMIT="$GITHUB_SHA" "$IMAGE" sh -euc \
               'apk add --no-cache bash git curl nodejs nodejs-dev npm python3 build-base linux-headers github-cli >/dev/null; ln -sf /usr/bin/gcc /usr/local/bin/musl-gcc; PATH=/opt/zig:$PATH bun scripts/build-target.mjs "$@"' sh "${args[@]}"
           fi
           rm -rf "$RUNNER_TEMP/out/addon-tree" "$RUNNER_TEMP/out"/.scratch-*
