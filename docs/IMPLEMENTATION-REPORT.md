@@ -3,14 +3,71 @@
 ## Status
 
 All sections (1–9) are implemented. `openspec validate dsh-bin --strict` reports the change as valid.
-`tasks.md` has 40 tasks `[x]` and 13 `[ ]`. Each open task is one of these:
+`tasks.md` has 41 tasks `[x]` and 12 `[ ]`. Each open task is one of these:
 
 - **Pending CI / publication.** Implemented and checked locally, but the task's own check needs
-  GitHub Actions, macOS or Windows runners, or a real publication: 5.3, 6.3, 7.10, 8.1, 8.2, 8.3,
+  a green CI or dry run on GitHub Actions, or a real publication: 5.3, 6.3, 7.10, 8.1, 8.2, 8.3,
   8.4, 8.6, 8.8, 9.1, 9.4. Each carries an `implemented; local: …; pending …` note.
-- **Needs your approval:** 8.7 and 10.1 (see below).
+- **Needs your approval:** 10.1, and the first real publication (see below).
 
-Nothing is pushed. Commits are unsigned Conventional Commits.
+`main` is pushed to github.com/xz-dev/dsh-bin with your gh authorization. Release immutability
+(8.7) is enabled. Nothing has been published. Commits are unsigned Conventional Commits.
+
+## Verified on GitHub Actions (2026-09-29)
+
+CI results are listed under `gh run list -R xz-dev/dsh-bin --workflow CI`, and the build dry
+runs under `--workflow build`. The dry run was dispatched on `main` with `publish=false`, not on a
+separate branch. That is safe because the publish, index and scoop jobs are gated on
+`publish == true`.
+
+What the first runs found and fixed:
+
+- **Test suite on three OSes.**
+  - ubuntu-24.04 and macos-15: green (run 36504244698).
+  - windows-2022: 218 of 219 pass. The last failure was a crash-repair case: a rename was refused
+    right after the updater was killed. Directory renames now retry for up to 3 s, as pi's
+    `renameSyncRetryable` does. The run that tests this is 36505876629; its result was not known
+    when this report was written.
+  - The Windows runtime defects this found are described under "Windows behaviour" below.
+- **Build dry run** (run 36503518820):
+  - `prepare` and the office addon job pass. The addon job runs `scripts/build-target.mjs` end
+    to end on linux-x64-modern.
+  - 9 of 12 targets build: linux-x64-modern/baseline, linux-arm64, darwin-arm64,
+    darwin-x64-modern/baseline, windows-x64-modern/baseline and windows-arm64.
+  - The three musl targets failed. Because of that, `accept` (packaged E2E) and `aggregate` were
+    skipped and have **not run yet** on any target.
+  - Fixes found by the dry runs:
+    - musl (Alpine):
+      - upstream's Node-API build needs `nodejs-dev` headers and a `musl-gcc` name;
+      - git 2.49 refuses lazy blob fetches from the partial clone while the commit-graph is
+        enabled, so the slot reader now runs with `core.commitGraph=false`. This was reproduced
+        and fixed in the pinned image.
+    - windows-x64: the launcher was built in `%TEMP%` (C:) and renamed into the workspace (D:),
+      which failed with EXDEV. It is now built next to its output.
+  - Dry run 36505878507 runs with all of these fixes; its result was not known when this report
+    was written.
+
+### Windows behaviour, measured on windows-2022 and not assumed
+
+- **Read-only ACL.** The deny ACE is `(OI)(CI)(WD,AD,WEA,WA,DC)` for Everyone.
+  - What it blocks: creating files or directories, and renaming a file in place (dsh-tui's `.old`
+    self-update path; 6.3).
+  - Why DELETE is not denied: Bun opens files and directories requesting DELETE access, so denying
+    it broke every read of the bundle.
+  - Trade-off: the owner can still move a whole subdirectory out of a bundle. Closing that would
+    need Bun to open files without DELETE access.
+- **Retiring a bundle.** Windows refuses to move a directory while any handle inside it is open.
+  That includes the updater's own exclusive claim, and it is why `--clean` and `--force` first
+  retired nothing on Windows.
+  - The claim now only checks whether anyone uses the bundle. It is then released, and the rename,
+    retried briefly, refuses a bundle that came into use in between, because every dsh session
+    keeps `.usage.lock` open.
+  - A running executable inside the directory does **not** stop the rename, so the open
+    `.usage.lock` is what protects a running bundle. The contract case
+    `--force fails while another process uses that version` checks this on every OS.
+- **Same-version `--force` from the running version.** Windows cannot delete the executable that
+  is running, so the replaced generation stays in `.trash-*` until the next maintenance run sweeps
+  it. POSIX removes it at once.
 
 ## Verified locally (Linux x64)
 
@@ -51,16 +108,9 @@ Nothing is pushed. Commits are unsigned Conventional Commits.
 - **Upstream diff (8.5):** 8 unit tests pass. Against the real upstream it proposes
   `dsh-v0.2.0-rc.1` plus one live build, both in slot `8e816b7`/kit 0.1.1.
 
-## Not verified yet (first CI run will tell)
+## Not verified yet
 
-- **`scripts/build-target.mjs`** chains the steps that were each run for real (fetch, pnpm,
-  frozen build, transforms, office split, compile, launcher, assembly). The chained script itself
-  has not run end to end in this session. The first CI dry run is its first full run.
-- **macOS and Windows code paths** are implemented and cross-compiled, but not run: the Windows
-  `LockFileEx` claim, the `icacls` deny-write ACL, the launcher rename-aside, and macOS
-  `renamex_np`.
-- **musl targets** build and test inside the pinned `oven/bun` Alpine images (`docker run` with
-  identical mount paths). This path has not run.
+- **Real publication (8.3, 8.4, 8.6, 8.8, 9.1, 9.4):** needs your go-ahead; see below.
 - **Packaged E2E gaps (8.2):** headless boot and GitHub plugin install are covered by
   `test/runtime` (3.5/3.7, 4.1) but not yet by `scripts/e2e.mjs`. Add them there if you want the
   per-target gate to include them.
@@ -82,9 +132,8 @@ Nothing is pushed. Commits are unsigned Conventional Commits.
   - Versions map as `0.1.7-rc.2-xz.5.1.g…` → `0.1.7_rc2_p5`.
   - The ebuild installs with `cp -a` so the archive's file modes survive (`doins` resets them), and
     uses the `baseline` x64 asset for broad CPU support.
-- **Publishing refuses non-immutable releases.** `publish-release.mjs` fails if a release does not
-  become `immutable: true`. Until 8.7 is enabled, the first publication will fail loudly rather
-  than create a mutable release.
+- **Publishing refuses non-immutable releases.** `publish-release.mjs` refuses to publish when the
+  repository setting is disabled, and fails if a release does not become `immutable: true`.
 - **Managed `dsh list` footer.** A managed `dsh list` replaces every hint with
   `Upgrade dsh through <manager> instead.`, as the spec requires. When no hint applies (for
   example offline), it still ends with `This dsh installation is managed by <manager>.`
@@ -112,17 +161,17 @@ Nothing is pushed. Commits are unsigned Conventional Commits.
 
 ## Needs your approval (not done)
 
-- **8.7:** enable release immutability on `xz-dev/dsh-bin`. This is a repository setting, and
-  publishing depends on it.
+- **First publication:** run `upstream-poll` by hand (or `build` with `publish: true`). This
+  creates permanent, immutable releases and the `releases` and `scoop` branches, so I have not done
+  it without an explicit go-ahead.
 - **10.1:** after the first publication, install it to `~/.local/share/dsh-bin`, keep your wrapper
   as `~/.local/bin/dsh.npm`, and link `~/.local/bin/dsh`.
   - The launcher does not choose a profile. Your current wrapper adds `--profile tui` and sets
     `DSH_TELEMETRY_DISABLED=1`, so keep a small wrapper that does the same and execs
     `~/.local/share/dsh-bin/dsh`.
 
-## Suggested first steps
+## Suggested next steps
 
-1. Create `xz-dev/dsh-bin`, push `main`, and enable release immutability (8.7).
-2. Run `build` by hand with `publish: false` on a branch: the 12-target dry run (8.1/8.2).
-3. Run `upstream-poll` by hand (8.6). It should start one release build and one live build, and an
+1. Run `upstream-poll` by hand (8.6). It should start one release build and one live build, and an
    immediate second run should start none.
+2. After the first release is published, do 10.1.
