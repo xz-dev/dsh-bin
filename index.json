@@ -169,6 +169,90 @@
             "sha256": "ca32300e35d23c9c69702b081f6ca16c79f536e9c50d67e67ef119cf37f67519"
           }
         }
+      },
+      {
+        "seq": 3,
+        "tag": "dsh-v0.2.0-rc.1-xz.21.1.g055e1007",
+        "version": "0.2.0-rc.1-xz.21.1.g055e1007",
+        "channel": "release",
+        "upstream": {
+          "commit": "4878cdabd87d4041bdaff61d04c966883b9fd07a",
+          "tag": "dsh-v0.2.0-rc.1",
+          "version": "0.2.0-rc.1"
+        },
+        "launcherCommit": "055e1007b10118a66de0c4e9e0b36230c377c390",
+        "publishedAt": "2026-09-29T08:17:16.449Z",
+        "addons": {
+          "office": {
+            "slot": {
+              "commit": "8e816b7ea4950f53b7eeb4623d63d74bd1341491",
+              "kitVersion": "0.1.1"
+            },
+            "pinned": "0.1.1-xz.1.1.g46c01aa6"
+          }
+        },
+        "assets": {
+          "darwin-arm64": {
+            "name": "dsh-darwin-arm64.zip",
+            "size": 117100832,
+            "sha256": "b4695b6cb21bee47e8145540bcc3087b0067b1f660e2d94addada1a13e8e3793"
+          },
+          "darwin-x64-baseline": {
+            "name": "dsh-darwin-x64-baseline.zip",
+            "size": 121997165,
+            "sha256": "856c6b52a8bba284e200d4e596e46e189a3deb46b6f501795ff5040b4b7a08d7"
+          },
+          "darwin-x64-modern": {
+            "name": "dsh-darwin-x64-modern.zip",
+            "size": 121997166,
+            "sha256": "11e5025dbee3103e3d367a90b5bd5472730a2f85e99c3db30d9e5b8eaba185f7"
+          },
+          "linux-arm64": {
+            "name": "dsh-linux-arm64.zip",
+            "size": 132098230,
+            "sha256": "5aa891ea804a71e4db164af21bad72736614a719f824380252d8578c935660a3"
+          },
+          "linux-arm64-musl": {
+            "name": "dsh-linux-arm64-musl.zip",
+            "size": 129407551,
+            "sha256": "f68fb2b36222880298a978af4e21e4fbc8a813a995790607a2f5cf30f71fc6f2"
+          },
+          "linux-x64-baseline": {
+            "name": "dsh-linux-x64-baseline.zip",
+            "size": 129701970,
+            "sha256": "bdeaa4ae0ad89da2a79bfe5194363203f59320fcc60ad519ebb8784c0e67b3ab"
+          },
+          "linux-x64-modern": {
+            "name": "dsh-linux-x64-modern.zip",
+            "size": 129701970,
+            "sha256": "9802cb733664cf9098b7e47a07e06aae4fc8204e02c2a1ccd7c2dff4b35a2ac6"
+          },
+          "linux-x64-musl-baseline": {
+            "name": "dsh-linux-x64-musl-baseline.zip",
+            "size": 127078231,
+            "sha256": "bc296db2646459f7d7ce5845e7971d58722a7ac8ba9dd801604620c80d33e135"
+          },
+          "linux-x64-musl-modern": {
+            "name": "dsh-linux-x64-musl-modern.zip",
+            "size": 127078233,
+            "sha256": "997da75eb4698e4d4b3eb5e97663faf4580bccbbe9031e95f85572f21cb0dc8f"
+          },
+          "windows-arm64": {
+            "name": "dsh-windows-arm64.zip",
+            "size": 120894607,
+            "sha256": "77462d6f497a83500a43a0d1a5269fba475d4b137bdcbea2c808b9f9b5993281"
+          },
+          "windows-x64-baseline": {
+            "name": "dsh-windows-x64-baseline.zip",
+            "size": 134359266,
+            "sha256": "b65343590145ca2931b84bfd69877327b1e478c35ab5fd71e0311beff00a5f2f"
+          },
+          "windows-x64-modern": {
+            "name": "dsh-windows-x64-modern.zip",
+            "size": 134359267,
+            "sha256": "126f86ecef11d55e0e28b0d89b634af217af41c84a9e13ddbd21eee9b4aa0766"
+          }
+        }
       }
     ],
     "live": []
