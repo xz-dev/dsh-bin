@@ -44,7 +44,13 @@ Scoop owns this install, so `dsh update` and `dsh install --addon` refuse and te
 | `release` (default) | upstream `dsh-v*` tags, starting at `dsh-v0.1.7-rc.2` | `dsh-v<upstream-version>-xz.<run>.<attempt>.g<sha8>` |
 | `live` | upstream `master` | `dsh-live-<sha7>-xz.<run>.<attempt>.g<sha8>` |
 
-`upstream-poll` checks upstream four times a day. Every build is published as an immutable GitHub Release that never becomes "Latest". The updater finds releases through `index.json` on the `releases` branch, not the GitHub API.
+Publishing is fully automatic. `upstream-poll` checks upstream four times a day and on every push to `main`, and it is the only workflow that publishes:
+
+- a new upstream tag becomes a `release` build, and a moved `master` becomes a `live` build;
+- a push that changes packaging rebuilds the newest release tag and `master`;
+- a push that changes only docs or tests builds nothing.
+
+Running `build` or `addon` by hand is always a dry run. Every build is published as an immutable GitHub Release that never becomes "Latest". The updater finds releases through `index.json` on the `releases` branch, not the GitHub API.
 
 ## Commands
 

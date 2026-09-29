@@ -161,17 +161,24 @@ What the first runs found and fixed:
 
 ## Needs your approval (not done)
 
-- **First publication:** run `upstream-poll` by hand (or `build` with `publish: true`). This
-  creates permanent, immutable releases and the `releases` and `scoop` branches, so I have not done
-  it without an explicit go-ahead.
 - **10.1:** after the first publication, install it to `~/.local/share/dsh-bin`, keep your wrapper
   as `~/.local/bin/dsh.npm`, and link `~/.local/bin/dsh`.
   - The launcher does not choose a profile. Your current wrapper adds `--profile tui` and sets
     `DSH_TELEMETRY_DISABLED=1`, so keep a small wrapper that does the same and execs
     `~/.local/share/dsh-bin/dsh`.
 
-## Suggested next steps
+## Automatic publication (your decision, 2026-09-29)
 
-1. Run `upstream-poll` by hand (8.6). It should start one release build and one live build, and an
-   immediate second run should start none.
-2. After the first release is published, do 10.1.
+Publishing works like xz-dev/pi, with no manual step:
+
+- `upstream-poll` runs on its cron, on every push to `main`, and on a manual dispatch that just
+  re-runs detection. It is the only caller of `build` with `publish: true`.
+- `build` and `addon` no longer have a `publish` input, so a manual dispatch is always a dry run.
+- A push that changes packaging (anything except docs, tests, Markdown, LICENSE and `ci.yml`) since
+  the launcher commit of a channel's newest entry rebuilds:
+  - the newest release tag, unless a newer tag is already pending;
+  - the observed `master`.
+  `upstream-diff --head` decides this from the full history, and it is covered by unit tests.
+- The first automatic poll came from the push of the automation commit. It planned
+  `dsh-v0.1.7-rc.2`, then `dsh-v0.2.0-rc.1`, then live `4878cdab`, run one at a time. Each build
+  publishes its slot's office addon first when the slot has none.
