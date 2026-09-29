@@ -117,7 +117,13 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 		check(r.code === 0, "--version failed");
 		// The launcher help is upstream's, followed by the dsh-bin commands.
 		r = await run(["--help"]);
-		check(r.code === 0 && r.out.includes("--profile <name>") && r.out.includes("dsh-bin commands") && r.out.includes("dsh install --addon"), "dsh --help must list upstream and dsh-bin commands");
+		check(
+			r.code === 0 &&
+				r.out.includes("--profile <name>") &&
+				r.out.includes("dsh-bin commands") &&
+				["dsh select ", "dsh snapshot ", "dsh install <version>", "dsh install --addon", "dsh --use <version|latest>"].every((s) => r.out.includes(s)),
+			"dsh --help must list upstream and dsh-bin commands (select, snapshot, install <version>, --use)",
+		);
 		// Headless boot of a shipped profile (plugins mounted, no Node on PATH); the first start seeds the
 		// bundle's prebuilt transpiler cache into the launcher-chosen user cache.
 		const cache = join(home, "xdg-cache");

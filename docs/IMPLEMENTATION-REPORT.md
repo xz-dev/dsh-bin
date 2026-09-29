@@ -838,4 +838,27 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   - `--channel` filtering;
   - managed: the selection block and markers;
   - the existing offline and digest-conflict cases, unchanged.
+- Full suite: 351 pass / 0 fail; `zig build test` passes. CI run 36597479220 at 643ae3c passed on
+  ubuntu-24.04, macos-15 and windows-2022 (including the `in use` probe on Windows).
+
+### Task 5.7: `dsh --help` and README
+
+- `dsh --help` (upstream's help, then dsh-bin's section) now starts with the leading launch options:
+  `dsh --use <version|latest> [--snapshot <id>] [--addon <name>:<version>]...`, noting that they work
+  only before the other arguments and that `--snapshot` implies its version. The command list covers
+  update, install `<version>`/`--addon`, uninstall, list, select, snapshot and clean.
+- README:
+  - a new "Versions, snapshots and selection" section: side-by-side versions (no downgrade), snapshots
+    `<version>@<n>` with the shared `cordis.patch.yml`, the selection starting at `--use latest`, leading
+    options with examples, and the safe-upgrade pattern;
+  - the command table rewritten for the new surface, with no `update --clean/--all/--addon/--version`
+    and no forced addon;
+  - the addon slot and degradation text follow 5.5 (index default, named out-of-slot warning);
+  - Scoop: `--use`/`--addon` are locked, snapshots work;
+  - migration: old npm-era plugin runtimes are deleted, not migrated, and plugins are added again.
+- Verification: the `--help` content is proven by the contract `--help` case, which runs the real help
+  through the fixture launcher and asserts the launch options plus the install `<version>`, select,
+  snapshot and clean lines, and by the unit test that every usage line appears in the help. The e2e help
+  check (`scripts/e2e.mjs`) was updated to require `select`, `snapshot`, `install <version>` and
+  `--use`, but it runs only against published assets, so it has **not** run yet (6.1 / after 7.1).
 - Full suite: 351 pass / 0 fail; `zig build test` passes.

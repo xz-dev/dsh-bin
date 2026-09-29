@@ -640,7 +640,7 @@ const cases: Case[] = [
 				argv: [flag],
 				viaLauncher: true,
 				code: 0,
-				stdout: [/^UPSTREAM-DSH [^\n]*\ndsh-bin commands/, "dsh update [self|dsh]", "dsh install --addon <name>", "dsh uninstall --addon <name>", "dsh list [--addon <name>]"],
+				stdout: [/^UPSTREAM-DSH [^\n]*\ndsh-bin launch options/, "dsh --use <version|latest> [--snapshot <id>]", "dsh-bin commands", "dsh update [self|dsh]", "dsh install <version>", "dsh install --addon <name>", "dsh uninstall --addon <name>", "dsh list [--addon <name>]", "dsh select ", "dsh snapshot new", "dsh clean "],
 				requests: [],
 				unchanged: i > 0,
 				check: (root) => expect(existsSync(join(root, ".dsh", "snapshots", `${V.R3}@1`, "snapshot.json"))).toBe(true),

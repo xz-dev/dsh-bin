@@ -74,7 +74,11 @@ export function isTopLevelHelp(argv: readonly string[]): boolean {
 
 /** The dsh-bin section appended to the launcher help (upstream's help already ends with a blank line). */
 export const MAINTENANCE_HELP = [
-	"dsh-bin commands (self-update and addons; see `dsh <command> --help`):",
+	"dsh-bin launch options (only before the other arguments; they override the selection for one run):",
+	"  dsh --use <version|latest> [--snapshot <id>] [--addon <name>:<version>]... [dsh arguments]",
+	"      start that installed version; --snapshot implies its version unless --use is given",
+	"",
+	"dsh-bin commands (versions, snapshots and addons; see `dsh <command> --help`):",
 	`  ${USAGE.update}`,
 	"      install the channel's newest dsh version (never changes the selection), or switch channel",
 	`  ${USAGE.install}`,
