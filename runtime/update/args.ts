@@ -39,6 +39,30 @@ const GRAMMAR: Record<MaintenanceCommand, { flags: string[]; values: string[] }>
 
 export const isMaintenance = (argv: readonly string[]) => (MAINTENANCE_COMMANDS as readonly string[]).includes(argv[0] ?? "");
 
+/**
+ * `dsh --help` / `dsh -h` for the launcher itself (no profile named): upstream prints its own help, and
+ * dsh-bin appends the commands it adds. A profile's help (`dsh tui --help`) is the app's and is left alone.
+ */
+export function isTopLevelHelp(argv: readonly string[]): boolean {
+	const first = argv[0];
+	if (first !== "-h" && first !== "--help") return false;
+	return !argv.includes("--profile") && !argv.some((a) => a.startsWith("--profile="));
+}
+
+/** The dsh-bin section appended to the launcher help (upstream's help already ends with a blank line). */
+export const MAINTENANCE_HELP = [
+	"dsh-bin commands (self-update and addons; see `dsh <command> --help`):",
+	`  ${USAGE.update}`,
+	"      update the dsh binary (--all: then every installed addon), switch channel, or remove unused versions",
+	`  ${USAGE.install}`,
+	"      install an optional addon for the active bundle (--force: out of slot)",
+	`  ${USAGE.uninstall}`,
+	"      disable an addon and remove its unused files",
+	`  ${USAGE.list}`,
+	"      show installed and installable dsh and addon versions",
+	"",
+].join("\n");
+
 export function parseMaintenance(argv: readonly string[]): ParseResult | undefined {
 	const [command, ...rest] = argv;
 	if (!isMaintenance(argv)) return undefined;

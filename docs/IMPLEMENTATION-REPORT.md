@@ -283,6 +283,58 @@ its addons, and contacts only the release index and exact-tag downloads. Plugin 
 to dsh itself: its startup check and `dsh plugin`. A post-update plugin warning was built and then
 removed for this reason.
 
+### rc.1 again at 15:46, and the startup log at 15:47
+
+Your install is on rc.1 again: the launcher and channel file changed at 15:46, and your shell
+history shows `dsh update --all`, so that is most likely what moved it. The startup logs at 13:02 and 15:47 are
+identical, and they reproduce on a copy of `~/.dsh`.
+
+The first line of the log (`hmr` failed) is misleading: that is dsh-bin's declared degradation,
+which is only a warning on rc.2 too. The real failure is the one above.
+
+The `tui` profile's `node_modules` (`nodeLinker: hoisted`) holds 149 `@deepseek-ai/*` packages at
+`0.1.7-rc.2`, installed with dsh-tui and the plugins. On rc.1, the compatibility preflight resolves
+about 25 base rows to those profile copies and disables them: `session`, the tools, and
+`plugin-manager`. Nothing then provides `sessions`.
+
+Removing only the profile's `dsh-session` on the copy makes every `sessions` error disappear. A fresh
+profile boots on rc.1.
+
+The smoke test gap:
+- the accept job boots a fresh profile on every target;
+- no test boots a new version over a profile that was populated on the previous version.
+
+## Weak-network downloads and `dsh --help` (your request, 2026-09-29)
+
+Ported from xz-dev/pi's updater (`xz-release-update.ts`) and extended with resume:
+- **Progress.** A bar with bytes, speed and ETA, redrawn on a terminal. Off a terminal, one plain
+  line per second. The first line waits one interval, so connection setup does not skew the speed.
+- **Timeouts.** A 30 s inactivity timeout covers both the response headers and each body chunk.
+- **Retry.** Network errors and 408/425/429/500/502/503/504 are retried with exponential backoff
+  from 1 s, capped at 16 s. `Retry-After` is honoured, up to 60 s. A download gives up after 5
+  attempts in a row with no progress; any bytes received reset the count. The index is tried 3
+  times.
+- **Resume.**
+  - Every retry sends `Range: bytes=<kept>-`, and a 206 is accepted only when its `Content-Range`
+    starts at the kept offset.
+  - A 200 restarts from byte 0.
+  - A 416 drops the kept bytes.
+  - The partial file survives a failed run as `<root>/.downloads/<sha256>.part`, keyed by the
+    index digest, so the next run resumes it.
+  - `dsh update --clean` removes kept partial files.
+  - pi has no resume.
+- **Verification is unchanged.** The file must match the index size and SHA-256. If a resumed file
+  fails, it is downloaded once more from the start before `sha256 mismatch` is reported.
+- **Checked against GitHub.** The 124 MiB rc.1 `linux-x64-modern` asset resumed from a kept 8 MiB
+  part: the exact-tag download returned 206, and the result matched the index.
+- **`dsh --help` / `-h`.** Upstream prints its launcher help, then the entry appends the dsh-bin
+  commands (update, install, uninstall, list) from an exit hook. A profile's own help
+  (`dsh tui --help`, `dsh --profile tui --help`) is left alone. The packaged E2E checks both parts.
+- **Tests.**
+  - The update contract serves resets, stalls, 503s, a Range-ignoring server and a corrupt kept
+    part, and pins the exact requests.
+  - Unit tests cover formatting, progress throttling, backoff and help detection.
+
 ## Startup performance (your decision, 2026-09-29)
 
 All figures below were measured on Linux x64 (Ryzen AI 9 365). The benchmark boots the shipped

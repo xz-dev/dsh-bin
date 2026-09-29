@@ -21,8 +21,8 @@ export const ADDON_PLATFORM = addonPlatform(TARGET);
 export const SLOT_A: Slot = { commit: "a".repeat(40), kitVersion: "0.1.2" };
 export const SLOT_B: Slot = { commit: "b".repeat(40), kitVersion: "0.1.3" };
 
-/** Upstream stand-in with its own `update` command: prints which bundle ran it, exits 97. */
-export const HOSTILE_BIN_JS = `export async function runCli() {\n\tconsole.log("UPSTREAM-DSH " + import.meta.dir + " " + process.argv.slice(2).join(" "));\n\tprocess.exit(97);\n}\n`;
+/** Upstream stand-in with its own `update` command: prints which bundle ran it, exits 97 (0 for help, as upstream). */
+export const HOSTILE_BIN_JS = `export async function runCli() {\n\tconst args = process.argv.slice(2);\n\tconsole.log("UPSTREAM-DSH " + import.meta.dir + " " + args.join(" "));\n\tprocess.exit(args.includes("--help") || args.includes("-h") ? 0 : 97);\n}\n`;
 
 const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 
@@ -161,7 +161,7 @@ export class World {
 	}
 }
 
-export type Request = { method: string; path: string };
+export type Request = { method: string; path: string; range?: string };
 
 /** Serve a world: `/index.json` and `/download/<tag>/<asset>`; records every request. */
 export type ServeOptions = {
@@ -170,26 +170,61 @@ export type ServeOptions = {
 	indexBody?: string;
 	indexDelayMs?: number;
 	assetBytes?: (a: AssetFile) => Uint8Array;
+	/** The first `indexFailures` index requests answer `indexStatus` (default: all of them). */
+	indexFailures?: number;
+	/**
+	 * Weak-network faults for asset request number `n` (0-based, per asset): an HTTP status, a body cut off
+	 * after `cutAt` bytes of the response (a connection reset, or with `stall` a connection that goes silent),
+	 * or a 200 with the whole file ignoring Range.
+	 */
+	assetFault?: (a: AssetFile, n: number, range: string | undefined) => { status?: number; cutAt?: number; stall?: boolean; ignoreRange?: boolean } | undefined;
 };
+
+/** A body that sends `bytes` and then fails, as a reset connection does (or, with `stall`, sends nothing more). */
+function cutBody(bytes: Uint8Array, stall = false): ReadableStream<Uint8Array> {
+	return new ReadableStream({
+		start(controller) {
+			if (bytes.length) controller.enqueue(bytes);
+			if (!stall) setTimeout(() => controller.error(new Error("connection reset")), 20);
+		},
+	});
+}
 
 export function serve(world: World, opts: ServeOptions = {}) {
 	const requests: Request[] = [];
+	const counts = new Map<string, number>();
+	let indexRequests = 0;
 	const server = Bun.serve({
 		port: 0,
 		hostname: "127.0.0.1",
 		async fetch(req) {
 			const url = new URL(req.url);
-			requests.push({ method: req.method, path: decodeURIComponent(url.pathname) });
+			const range = req.headers.get("range") ?? undefined;
+			requests.push({ method: req.method, path: decodeURIComponent(url.pathname), ...(range ? { range } : {}) });
 			if (url.pathname === "/index.json") {
 				if (opts.indexDelayMs) await Bun.sleep(opts.indexDelayMs);
-				if (opts.indexStatus) return new Response("unavailable", { status: opts.indexStatus });
+				if (opts.indexStatus && indexRequests++ < (opts.indexFailures ?? Number.POSITIVE_INFINITY)) return new Response("unavailable", { status: opts.indexStatus });
 				const body = opts.indexBody ?? JSON.stringify(opts.index ? opts.index(structuredClone(world.index)) : world.index);
 				return new Response(body, { headers: { "content-type": "application/json" } });
 			}
 			const m = /^\/download\/([^/]+)\/([^/]+)$/.exec(url.pathname);
 			const asset = m && world.assets.get(`${decodeURIComponent(m[1]!)}/${decodeURIComponent(m[2]!)}`);
-			if (asset) return new Response(opts.assetBytes?.(asset) ?? asset.bytes);
-			return new Response("not found", { status: 404 });
+			if (!asset) return new Response("not found", { status: 404 });
+			const key = `${asset.tag}/${asset.name}`;
+			const n = counts.get(key) ?? 0;
+			counts.set(key, n + 1);
+			const bytes = opts.assetBytes?.(asset) ?? asset.bytes;
+			const fault = opts.assetFault?.(asset, n, range);
+			if (fault?.status) return new Response("unavailable", { status: fault.status });
+			// Byte ranges as GitHub's release download host serves them: 206 with Content-Range, 416 past the end.
+			const r = !fault?.ignoreRange && range ? /^bytes=(\d+)-$/.exec(range) : null;
+			const start = r ? Number(r[1]) : 0;
+			if (r && start >= bytes.length) return new Response("", { status: 416, headers: { "content-range": `bytes */${bytes.length}` } });
+			const body = bytes.subarray(start);
+			const headers = r ? { "content-range": `bytes ${start}-${bytes.length - 1}/${bytes.length}` } : undefined;
+			const status = r ? 206 : 200;
+			if (fault?.cutAt !== undefined) return new Response(cutBody(body.subarray(0, fault.cutAt), fault.stall), { status, headers });
+			return new Response(body, { status, headers });
 		},
 	});
 	return { origin: `http://127.0.0.1:${server.port}`, requests, stop: () => server.stop(true) };
@@ -227,6 +262,9 @@ export function addAddon(world: World, root: string, spec: AddonSpec, enabled?: 
 	if (enabled) writeFileSync(join(root, "addons.json"), `${JSON.stringify({ office: { version: spec.version, forced: enabled.forced } }, null, 2)}\n`);
 }
 
+/** Retry backoff for test runs (test mode only): failure cases must not wait seconds. */
+export const FAST_RETRIES = { DSH_BIN_TEST_RETRY_DELAY_MS: "10" };
+
 export type RunResult = { code: number; stdout: string; stderr: string };
 
 /** Run `dsh <args>` through the given bundle's compiled entry (what the root launcher execs). */
@@ -234,7 +272,7 @@ export async function dsh(root: string, version: string, args: string[], origin:
 	const home = join(root, "..", `${basename(root)}-home`);
 	mkdirSync(home, { recursive: true });
 	const proc = Bun.spawn([exe ?? join(root, "bundles", version, `dsh-native${EXE}`), ...args], {
-		env: { PATH: process.env.PATH ?? "", HOME: home, DSH_HOME: join(home, ".dsh"), DSH_BIN_TEST: "1", DSH_BIN_TEST_ORIGIN: origin, ...extraEnv },
+		env: { PATH: process.env.PATH ?? "", HOME: home, DSH_HOME: join(home, ".dsh"), DSH_BIN_TEST: "1", DSH_BIN_TEST_ORIGIN: origin, ...FAST_RETRIES, ...extraEnv },
 		stdout: "pipe",
 		stderr: "pipe",
 	});
@@ -244,7 +282,7 @@ export async function dsh(root: string, version: string, args: string[], origin:
 
 /** Run the root launcher script (shell fixture launcher). */
 export async function launch(root: string, args: string[], origin: string): Promise<RunResult> {
-	const proc = Bun.spawn(["sh", join(root, `dsh${EXE}`), ...args], { env: { PATH: process.env.PATH ?? "", DSH_BIN_TEST: "1", DSH_BIN_TEST_ORIGIN: origin, HOME: root }, stdout: "pipe", stderr: "pipe" });
+	const proc = Bun.spawn(["sh", join(root, `dsh${EXE}`), ...args], { env: { PATH: process.env.PATH ?? "", DSH_BIN_TEST: "1", DSH_BIN_TEST_ORIGIN: origin, HOME: root, ...FAST_RETRIES }, stdout: "pipe", stderr: "pipe" });
 	const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
 	return { code, stdout, stderr };
 }

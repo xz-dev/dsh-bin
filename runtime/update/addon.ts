@@ -94,7 +94,7 @@ async function activateAddon(ctx: Context, name: AddonName, chosen: Candidate, t
 	}
 	const staging = newWorkDir(ctx.root, STAGING_PREFIX);
 	try {
-		const { tree, entries } = await fetchAndExtract(chosen.tag, asset, staging, ctx.out);
+		const { tree, entries } = await fetchAndExtract(chosen.tag, asset, staging, ctx.root, ctx.out);
 		checkRoots(entries, [ADDON_META, "node_modules/"], "addon archive");
 		const meta = readAddonMeta(tree);
 		const what = `addon ${asset.name}`;

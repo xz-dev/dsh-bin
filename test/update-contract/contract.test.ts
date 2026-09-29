@@ -46,6 +46,8 @@ afterAll(() => {
 const bundleUrl = (channel: "release" | "live", v: string) => `/download/${tagOf(channel, v)}/dsh-${TARGET}.zip`;
 const addonUrl = (v: string) => `/download/${addonTag(v)}/dsh-addon-office-${ADDON_PLATFORM}.zip`;
 const INDEX = "/index.json";
+/** An unreachable index (HTTP 503) is tried INDEX_ATTEMPTS times. */
+const INDEX_TRIES = [INDEX, INDEX, INDEX];
 
 type Root = { version: string; channelFile?: "release" | "live"; managed?: string; addon?: { version: string; slot: typeof SLOT_A; forced: boolean }; extra?: string[] };
 
@@ -218,6 +220,29 @@ const cases: Case[] = [
 		],
 	},
 	{
+		name: "dsh --help and -h: upstream help, then the dsh-bin commands; a profile's help is the app's alone",
+		root: { version: V.R3 },
+		steps: [
+			...["--help", "-h"].map<Step>((flag) => ({
+				argv: [flag],
+				viaLauncher: true,
+				code: 0,
+				stdout: [/^UPSTREAM-DSH [^\n]*\ndsh-bin commands/, "dsh update [self|dsh]", "dsh install --addon <name>", "dsh uninstall --addon <name>", "dsh list [--addon <name>]"],
+				requests: [],
+				unchanged: true,
+			})),
+			{
+				argv: ["--profile", "tui", "--help"],
+				viaLauncher: true,
+				code: 0,
+				stdout: ["UPSTREAM-DSH"],
+				requests: [],
+				unchanged: true,
+				check: (_root, r) => expect(r.stdout).not.toContain("dsh-bin commands"),
+			},
+		],
+	},
+	{
 		name: "update with an empty DSH_HOME creates no profile directory",
 		root: { version: V.R3 },
 		steps: [
@@ -275,7 +300,7 @@ const cases: Case[] = [
 	).map<Case>(([what, opts, message]) => ({
 		name: `malformed index fails with a diagnostic and changes nothing: ${what}`,
 		root: { version: V.R1 },
-		steps: [{ argv: ["update"], serve: opts as ServeOptions, code: 1, stderr: [message], requests: [INDEX], unchanged: true }],
+		steps: [{ argv: ["update"], serve: opts as ServeOptions, code: 1, stderr: [message], requests: "indexStatus" in opts ? INDEX_TRIES : [INDEX], unchanged: true }],
 	})),
 	// ── Version selection ────────────────────────────────────────────────────────────────────────────
 	{
@@ -310,6 +335,117 @@ const cases: Case[] = [
 			return () => c.release();
 		},
 		steps: [{ argv: ["update", "--force"], code: 1, stderr: [`dsh ${V.R3} is in use by another dsh process`], requests: [INDEX, bundleUrl("release", V.R3)], unchanged: true }],
+	},
+	// ── Weak networks ────────────────────────────────────────────────────────────────────────────────
+	{
+		name: "transient index failures are retried",
+		root: { version: V.R1 },
+		steps: [{ argv: ["update"], serve: { indexStatus: 503, indexFailures: 2 }, code: 0, stdout: [`Updated dsh from ${V.R1} to ${V.R3}`], requests: [INDEX, INDEX, INDEX, bundleUrl("release", V.R3)] }],
+	},
+	{
+		name: "a non-transient index status is not retried",
+		root: { version: V.R1 },
+		steps: [{ argv: ["update"], serve: { indexStatus: 404 }, code: 1, stderr: ["HTTP 404"], requests: [INDEX], unchanged: true }],
+	},
+	{
+		name: "a reset download resumes with Range and verifies",
+		root: { version: V.R1 },
+		steps: [
+			{
+				argv: ["update"],
+				serve: { assetFault: (_a, n) => (n === 0 ? { cutAt: 4096 } : n === 1 ? { status: 503 } : undefined) },
+				code: 0,
+				stdout: ["Download interrupted (", "retrying", `Updated dsh from ${V.R1} to ${V.R3}`, /\d+%\s+\S+ \S+ \/ \S+ \S+\s+\S+ \S+\/s\s+ETA /],
+				requests: [INDEX, bundleUrl("release", V.R3), bundleUrl("release", V.R3), bundleUrl("release", V.R3)],
+				check: (root) => {
+					expect(launcherOf(root)).toBe(V.R3);
+					expect(existsSync(join(root, ".downloads"))).toBe(false);
+				},
+			},
+		],
+	},
+	{
+		name: "an interrupted update keeps its partial download and the next run resumes it",
+		root: { version: V.R1 },
+		steps: [
+			{
+				argv: ["update"],
+				serve: { assetFault: (_a, n) => (n === 0 ? { cutAt: 4096 } : { status: 503 }) },
+				code: 1,
+				stderr: ["download failed", "HTTP 503", "Run the same command again to resume the download."],
+				check: (root) => {
+					expect(launcherOf(root)).toBe(V.R1);
+					expect(readdirSync(join(root, ".downloads")).map((n) => [n.endsWith(".part"), readFileSync(join(root, ".downloads", n)).length])).toEqual([[true, 4096]]);
+				},
+			},
+			{
+				argv: ["update"],
+				code: 0,
+				stdout: ["Resuming dsh-", `Updated dsh from ${V.R1} to ${V.R3}`],
+				requests: [INDEX, bundleUrl("release", V.R3)],
+				check: (root) => {
+					expect(launcherOf(root)).toBe(V.R3);
+					expect(existsSync(join(root, ".downloads"))).toBe(false);
+				},
+			},
+		],
+	},
+	{
+		name: "a server that ignores Range restarts the download from the start",
+		root: { version: V.R1 },
+		steps: [
+			{
+				argv: ["update"],
+				serve: { assetFault: (_a, n) => (n === 0 ? { cutAt: 4096 } : { ignoreRange: true }) },
+				code: 0,
+				stdout: ["The server ignored the resume request", `Updated dsh from ${V.R1} to ${V.R3}`],
+				check: (root) => expect(launcherOf(root)).toBe(V.R3),
+			},
+		],
+	},
+	{
+		name: "a corrupt kept partial download is fetched again from the start",
+		root: { version: V.R1 },
+		arrange: (root) => {
+			const asset = world.index.channels.release.find((e: { version: string }) => e.version === V.R3)!.assets[TARGET]!;
+			mkdirSync(join(root, ".downloads"));
+			writeFileSync(join(root, ".downloads", `${asset.sha256}.part`), new Uint8Array(4096).fill(7));
+		},
+		steps: [
+			{
+				argv: ["update"],
+				code: 0,
+				stdout: ["Resuming", "did not verify; downloading it again from the start", `Updated dsh from ${V.R1} to ${V.R3}`],
+				requests: [INDEX, bundleUrl("release", V.R3), bundleUrl("release", V.R3)],
+				check: (root) => {
+					expect(launcherOf(root)).toBe(V.R3);
+					expect(existsSync(join(root, ".downloads"))).toBe(false);
+				},
+			},
+		],
+	},
+	{
+		name: "a stalled download times out and resumes",
+		root: { version: V.R1 },
+		steps: [
+			{
+				argv: ["update"],
+				serve: { assetFault: (_a, n) => (n === 0 ? { cutAt: 4096, stall: true } : undefined) },
+				env: () => ({ DSH_BIN_TEST_INACTIVITY_MS: "300" }),
+				code: 0,
+				stdout: ["no data for 0s", `Updated dsh from ${V.R1} to ${V.R3}`],
+				requests: [INDEX, bundleUrl("release", V.R3), bundleUrl("release", V.R3)],
+			},
+		],
+	},
+	{
+		name: "update --clean removes kept partial downloads",
+		root: { version: V.R1 },
+		arrange: (root) => {
+			mkdirSync(join(root, ".downloads"));
+			writeFileSync(join(root, ".downloads", `${"0".repeat(64)}.part`), "x");
+		},
+		steps: [{ argv: ["update", "--clean"], offline: true, code: 0, stdout: ["Removed 1 partial download(s)"], requests: [], check: (root) => expect(existsSync(join(root, ".downloads"))).toBe(false) }],
 	},
 	// ── Verification before activation ───────────────────────────────────────────────────────────────
 	{
@@ -564,7 +700,7 @@ const cases: Case[] = [
 				code: 0,
 				stdout: [`Installed the office addon ${V.P1}`],
 				stderr: ["warning:", "embedded"],
-				requests: [INDEX, addonUrl(V.P1)],
+				requests: [...INDEX_TRIES, addonUrl(V.P1)],
 			},
 		],
 	},
@@ -663,12 +799,12 @@ const cases: Case[] = [
 		name: "list --addon office offline: embedded versions with slot states and a warning",
 		root: { version: V.R3 },
 		steps: [
-			{ argv: ["list", "--addon", "office"], serve: { indexStatus: 503 }, code: 0, stderr: [/^warning: .*HTTP 503.*\n$/], stdout: [V.P3, "in slot", "out of slot", "--force", "embedded"], requests: [INDEX], unchanged: true },
+			{ argv: ["list", "--addon", "office"], serve: { indexStatus: 503 }, code: 0, stderr: [/^warning: .*HTTP 503.*\n$/], stdout: [V.P3, "in slot", "out of slot", "--force", "embedded"], requests: INDEX_TRIES, unchanged: true },
 			{
 				argv: ["list", "--addon", "office", "--json"],
 				serve: { indexStatus: 503 },
 				code: 0,
-				requests: [INDEX],
+				requests: INDEX_TRIES,
 				check: (_r, r) => {
 					const d = json(r);
 					expect(d.index.ok).toBe(false);

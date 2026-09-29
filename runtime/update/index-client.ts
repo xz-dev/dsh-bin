@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import type { AddonRelease, AssetRef, Channel, Slot } from "../layout.ts";
 import { UserError } from "./context.ts";
+import { backoffMs, download, netTuning, RETRYABLE_STATUSES } from "./download.ts";
 
 export const INDEX_URL = "https://raw.githubusercontent.com/xz-dev/dsh-bin/releases/index.json";
 export const DOWNLOAD_BASE = "https://github.com/xz-dev/dsh-bin/releases/download";
@@ -93,17 +94,34 @@ export function parseIndex(text: string): ReleaseIndex {
 	return data as ReleaseIndex;
 }
 
+/** Index attempts on a transient failure (network error, timeout, 408/425/429/5xx). */
+export const INDEX_ATTEMPTS = 3;
+
 export async function fetchIndex(env = process.env): Promise<ReleaseIndex> {
 	const url = endpoints(env).index;
-	let res: Response;
-	try {
-		res = await fetch(url, { signal: AbortSignal.timeout(30_000), headers: { "cache-control": "no-cache" } });
-	} catch (error) {
-		throw new UserError(`could not read the release index ${url}: ${error instanceof Error ? error.message : String(error)}`);
+	const tuning = netTuning(env);
+	let text: string | undefined;
+	for (let failures = 1; text === undefined; failures++) {
+		let problem: string;
+		let retryAfter: string | null = null;
+		try {
+			const res = await fetch(url, { signal: AbortSignal.timeout(tuning.inactivityMs), headers: { "cache-control": "no-cache" } });
+			if (res.ok) {
+				text = await res.text();
+				break;
+			}
+			problem = `HTTP ${res.status}`;
+			retryAfter = res.headers.get("retry-after");
+			if (!RETRYABLE_STATUSES.has(res.status)) throw new UserError(`could not read the release index ${url}: ${problem}`);
+		} catch (error) {
+			if (error instanceof UserError) throw error;
+			problem = error instanceof Error ? error.message : String(error);
+		}
+		if (failures >= INDEX_ATTEMPTS) throw new UserError(`could not read the release index ${url}: ${problem}`);
+		await Bun.sleep(backoffMs(failures, tuning.retryDelayMs, retryAfter));
 	}
-	if (!res.ok) throw new UserError(`could not read the release index ${url}: HTTP ${res.status}`);
 	try {
-		return parseIndex(await res.text());
+		return parseIndex(text);
 	} catch (error) {
 		throw new UserError(`invalid release index ${url}: ${(error as Error).message}`);
 	}
@@ -127,21 +145,10 @@ export async function sha256File(path: string): Promise<string> {
 	return hash.digest("hex");
 }
 
-/** Download an exact-tag asset to `dest` and check its size and SHA-256. */
-export async function downloadAsset(tag: string, asset: AssetRef, dest: string, log: (line: string) => void, env = process.env) {
-	const url = assetUrl(tag, asset.name, env);
-	log(`Downloading ${asset.name} (${(asset.size / 1048576).toFixed(1)} MiB) from ${tag}...`);
-	let res: Response;
-	try {
-		res = await fetch(url, { redirect: "follow" });
-	} catch (error) {
-		throw new UserError(`download failed: ${url}: ${error instanceof Error ? error.message : String(error)}`);
-	}
-	if (!res.ok) throw new UserError(`download failed: ${url}: HTTP ${res.status}`);
-	await Bun.write(dest, res);
-	const size = Bun.file(dest).size;
-	const digest = await sha256File(dest);
-	if (digest !== asset.sha256 || size !== asset.size) {
-		throw new UserError(`sha256 mismatch for ${asset.name}: expected ${asset.sha256} (${asset.size} bytes), got ${digest} (${size} bytes)`);
-	}
+/**
+ * Download an exact-tag asset to `dest` (resumable, with retries and progress; see download.ts) and check
+ * its size and SHA-256. `root` is the install root that keeps a partial download between runs.
+ */
+export async function downloadAsset(tag: string, asset: AssetRef, dest: string, root: string, log: (line: string) => void, env = process.env) {
+	await download({ url: assetUrl(tag, asset.name, env), asset, root, dest, from: tag, log, tuning: netTuning(env), sha256File });
 }

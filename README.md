@@ -75,7 +75,16 @@ dsh list [--addon <name>] [--channel <live|release>] [--json]
 
 Startup cache: the launcher sends Bun's transpiler cache to dsh-bin's own user cache instead of `~/.bun/install/cache`. The locations are `$XDG_CACHE_HOME/dsh-bin/transpiler` (or `~/.cache/dsh-bin/transpiler`), `~/Library/Caches/dsh-bin/transpiler` on macOS, and `%LOCALAPPDATA%\dsh-bin\cache\transpiler` on Windows. A `BUN_RUNTIME_TRANSPILER_CACHE_PATH` you set yourself wins. Each bundle ships a cache prebuilt at build time, and it is copied in on that version's first start, so a new version starts warm.
 
-Updates download one asset by its exact tag, check its SHA-256 against the index, unpack it safely, and activate it atomically: first the bundle, then the root launcher. Running sessions keep their old bundle until they exit. `dsh plugin --profile <name> …` still manages plugins as upstream designed. upstream's own `dsh update` never runs, and the bundle is read-only, so its self-update cannot write.
+Updates download one asset by its exact tag, check its SHA-256 against the index, unpack it safely, and activate it atomically: first the bundle, then the root launcher.
+
+Downloads are built for weak networks:
+- **Progress:** a progress bar with bytes, speed and ETA on a terminal; one plain line per second otherwise.
+- **Timeout:** a download that receives no data for 30 s is aborted and retried.
+- **Retry:** network errors and HTTP 408/425/429/5xx are retried with exponential backoff (honouring `Retry-After`). The index is tried up to 3 times.
+- **Resume:** each retry resumes with an HTTP `Range` request. An interrupted run keeps its partial file in `<root>/.downloads/<sha256>.part`, and the next `dsh update` continues from there. `dsh update --clean` removes it.
+- **Verification:** the finished file is checked against the index size and SHA-256. A resumed file that fails the check is downloaded once more from the start.
+
+`dsh --help` shows upstream's launcher help followed by these dsh-bin commands. Running sessions keep their old bundle until they exit. `dsh plugin --profile <name> …` still manages plugins as upstream designed. upstream's own `dsh update` never runs, and the bundle is read-only, so its self-update cannot write.
 
 ### The office addon and slots
 

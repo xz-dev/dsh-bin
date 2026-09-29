@@ -8,9 +8,9 @@ import { UserError } from "./context.ts";
 import { crashPoint } from "./fsops.ts";
 import { downloadAsset } from "./index-client.ts";
 
-export async function fetchAndExtract(tag: string, asset: AssetRef, staging: string, log: (line: string) => void) {
+export async function fetchAndExtract(tag: string, asset: AssetRef, staging: string, root: string, log: (line: string) => void) {
 	const zip = join(staging, "asset.zip");
-	await downloadAsset(tag, asset, zip, log);
+	await downloadAsset(tag, asset, zip, root, log);
 	crashPoint("after-download");
 	const tree = join(staging, "tree");
 	let entries: ZipEntry[];

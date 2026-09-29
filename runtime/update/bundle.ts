@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, st
 import { isAbsolute, join } from "node:path";
 import { addonDir, type BundleMeta, BUNDLE_META, type Channel, exeName, readAddonMeta, readAddonsState, readBundleMeta, USAGE_GUARD } from "../layout.ts";
 import { type Context, launcherPath, launcherVersion, launcherVersionOf, UserError } from "./context.ts";
+import { removePartials } from "./download.ts";
 import { installTree, newWorkDir, removeTree, retire, replaceLauncher, STAGING_PREFIX, writeFileAtomic } from "./fsops.ts";
 import { type BundleEntry, fetchIndex, isNewer, newestFor, type ReleaseIndex } from "./index-client.ts";
 import { checkRoots, fetchAndExtract, mismatch } from "./stage.ts";
@@ -41,7 +42,7 @@ async function activateBundle(ctx: Context, entry: BundleEntry): Promise<BundleM
 	const rel = `bundles/${entry.version}`;
 	const staging = newWorkDir(ctx.root, STAGING_PREFIX);
 	try {
-		const { tree, entries } = await fetchAndExtract(entry.tag, asset, staging, ctx.out);
+		const { tree, entries } = await fetchAndExtract(entry.tag, asset, staging, ctx.root, ctx.out);
 		checkRoots(entries, [launcher, `${rel}/`, "bundles/"], "bundle archive");
 		const staged = join(tree, rel);
 		const meta = readBundleMeta(staged);
@@ -148,6 +149,8 @@ export function clean(ctx: Context) {
 		}
 	}
 	if (addonsRemoved) ctx.out(`Removed ${addonsRemoved} old addon version(s)`);
+	const partials = removePartials(ctx.root);
+	if (partials) ctx.out(`Removed ${partials} partial download(s)`);
 
 	// dsh-bin's own transpiler cache (launcher-chosen; a user-set BUN_RUNTIME_TRANSPILER_CACHE_PATH is not
 	// ours). Entries are content-keyed, so old versions' files only accumulate; the kept bundle reseeds on
