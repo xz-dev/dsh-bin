@@ -575,3 +575,28 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   - a crash after the copy leaving no snapshot, with the staging swept and `n` not reused;
   - unreadable directories ignored.
 - Full suite: 308 pass / 0 fail.
+
+### Task 4.2: automatic snapshots
+
+- `runtime/snapshot/auto.ts` provides `previousSource` and `ensureSnapshot`.
+  - The previous version is the nearest earlier version in version order, read from `snapshot.json`, that
+    has a snapshot. The source is that version's newest snapshot; with no earlier version, the new
+    snapshot is empty.
+  - A later version is never a source.
+  - Creation takes the store lock; if the version already has a snapshot by then, nothing is created.
+- **At start.** `runtime/app.ts` calls it before the compat layer and `bin.js`, unless the launch names a
+  snapshot. A snapshot is named by the launch's `--snapshot`, or by the selection's when the version
+  comes from the selection or a managed install. `runtime/snapshot/launch.ts` reads that from
+  `DSH_BIN_LAUNCH`. The notice goes to stderr. A failed copy stops the launch with status 1.
+- **After install.** `updateSelf` calls it after activation, except for managed installs. A failed copy
+  only warns, because the install has succeeded and the next start retries.
+- Tests:
+  - `test/unit/snapshot-auto.test.ts`, 5 cases: Tumbleweed-style update, all removed, first install,
+    nearest previous version (not a later one), and a source whose bundle is uninstalled.
+  - `test/runtime/snapshot-start.test.ts`, 3 cases, run against the compiled entry with a stub `bin.js`:
+    the snapshot exists before `bin.js` runs; a start after an update copies the previous version's
+    snapshot; a named snapshot creates nothing.
+  - Contract changes: update with no profiles now shows `Created plugin snapshot <v>@1 (empty).` and
+    creates no `profiles/`. The first `--help` launch creates the snapshot, and the second leaves
+    everything unchanged.
+- Full suite: 316 pass / 0 fail. Leaked `dsh-*` test directories were removed from `/tmp`.

@@ -211,9 +211,13 @@ const cases: Case[] = [
 				argv: ["update"],
 				viaLauncher: true,
 				code: 0,
-				stdout: [`Updated dsh from ${V.R1} to ${V.R3}`],
+				stdout: [`Updated dsh from ${V.R1} to ${V.R3}`, `Created plugin snapshot ${V.R3}@1 (empty).`],
 				requests: [INDEX, bundleUrl("release", V.R3)],
-				check: (root) => expect(existsSync(join(root, ".dsh"))).toBe(false),
+				// No profile directory; the installed version gets its automatic (empty) snapshot.
+				check: (root) => {
+					expect(existsSync(join(root, ".dsh", "profiles"))).toBe(false);
+					expect(existsSync(join(root, ".dsh", "snapshots", `${V.R3}@1`, "snapshot.json"))).toBe(true);
+				},
 			},
 			{ argv: ["list", "--json"], viaLauncher: true, code: 0, stdout: [`"active": "${V.R3}"`], requests: [INDEX] },
 			{ argv: ["--profile", "update"], viaLauncher: true, code: 97, stdout: ["UPSTREAM-DSH", "--profile update"], requests: [] },
@@ -223,13 +227,15 @@ const cases: Case[] = [
 		name: "dsh --help and -h: upstream help, then the dsh-bin commands; a profile's help is the app's alone",
 		root: { version: V.R3 },
 		steps: [
-			...["--help", "-h"].map<Step>((flag) => ({
+			// A launch: the first one creates the version's automatic snapshot (plugin-snapshots); nothing else changes.
+			...["--help", "-h"].map<Step>((flag, i) => ({
 				argv: [flag],
 				viaLauncher: true,
 				code: 0,
 				stdout: [/^UPSTREAM-DSH [^\n]*\ndsh-bin commands/, "dsh update [self|dsh]", "dsh install --addon <name>", "dsh uninstall --addon <name>", "dsh list [--addon <name>]"],
 				requests: [],
-				unchanged: true,
+				unchanged: i > 0,
+				check: (root) => expect(existsSync(join(root, ".dsh", "snapshots", `${V.R3}@1`, "snapshot.json"))).toBe(true),
 			})),
 			{
 				argv: ["--profile", "tui", "--help"],

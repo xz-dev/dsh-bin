@@ -2,7 +2,8 @@
 // Verification before activation, Atomic activation and read-only result, Cleanup).
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { addonDir, type BundleMeta, BUNDLE_META, type Channel, exeName, readAddonMeta, readAddonsState, readBundleMeta, USAGE_GUARD } from "../layout.ts";
+import { addonDir, type BundleMeta, BUNDLE_META, type Channel, dshHome, exeName, readAddonMeta, readAddonsState, readBundleMeta, USAGE_GUARD } from "../layout.ts";
+import { createdLine, ensureSnapshot } from "../snapshot/auto.ts";
 import { type Context, launcherPath, launcherVersion, launcherVersionOf, UserError } from "./context.ts";
 import { removePartials } from "./download.ts";
 import { installTree, newWorkDir, removeTree, retire, replaceLauncher, STAGING_PREFIX, writeFileAtomic } from "./fsops.ts";
@@ -32,7 +33,23 @@ export async function updateSelf(ctx: Context, opts: { channel?: Channel; force:
 	const meta = await activateBundle(ctx, entry);
 	writeFileAtomic(join(ctx.root, "channel"), `${channel}\n`);
 	ctx.out(`Updated dsh from ${ctx.running} to ${entry.version}`);
+	snapshotAfterInstall(ctx, meta);
 	return { updated: true, index, version: entry.version, meta };
+}
+
+/**
+ * Automatic snapshot of a newly installed version (plugin-snapshots). The install itself has succeeded: a
+ * failed copy is reported, and the next start of that version tries again.
+ */
+export function snapshotAfterInstall(ctx: Context, meta: BundleMeta) {
+	if (ctx.managed) return;
+	try {
+		const r = ensureSnapshot(dshHome(), meta.version, meta, "install", () => ctx.out("Waiting for another dsh snapshot operation..."));
+		if (r.created) ctx.out(createdLine(r.snapshot));
+	} catch (error) {
+		ctx.err(`warning: could not create the plugin snapshot of dsh ${meta.version}: ${(error as Error).message}`);
+		ctx.err("The next start of this version creates it.");
+	}
 }
 
 async function activateBundle(ctx: Context, entry: BundleEntry): Promise<BundleMeta> {

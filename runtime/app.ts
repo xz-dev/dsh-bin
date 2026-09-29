@@ -8,7 +8,9 @@ import { degradedPlugin, HMR_DEGRADATION } from "./compat/degradations.ts";
 import { installHostPackages } from "./compat/host-packages.ts";
 import { installNodeModuleCompat } from "./compat/node-module-compat.ts";
 import { installRequireBuiltin } from "./compat/require-builtin.ts";
-import { USAGE_GUARD } from "./layout.ts";
+import { dshHome, isCommitTime, readBundleMeta, USAGE_GUARD } from "./layout.ts";
+import { createdLine, ensureSnapshot } from "./snapshot/auto.ts";
+import { namedSnapshot, readLaunch } from "./snapshot/launch.ts";
 import { seedTranspilerCache } from "./transpiler-cache.ts";
 import { holdSessionClaim } from "./usage-claim.ts";
 
@@ -19,6 +21,19 @@ if (existsSync(guard) && holdSessionClaim(guard) === "busy") {
 	process.stderr.write("dsh: this bundle is being removed by `dsh update`; start dsh again to use the active version\n");
 	process.exit(1);
 }
+// plugin-snapshots "Automatic snapshot by copy": a launch of a version with no snapshot, and no snapshot
+// named, first gets one. Only an installed bundle (bundle.json with its build order) takes part.
+const meta = readBundleMeta(bundleDir);
+if (meta && isCommitTime(meta.upstream?.commitTime) && namedSnapshot(readLaunch()) === null) {
+	try {
+		const r = ensureSnapshot(dshHome(), meta.version, meta, "start", () => process.stderr.write("dsh: waiting for another dsh snapshot operation...\n"));
+		if (r.created) process.stderr.write(`dsh: ${createdLine(r.snapshot)}\n`);
+	} catch (error) {
+		process.stderr.write(`dsh: cannot create the plugin snapshot of dsh ${meta.version}: ${(error as Error).message}\n`);
+		process.exit(1);
+	}
+}
+
 const appDir = realpathSync(join(bundleDir, "app"));
 if (process.env.DSH_BUNDLE_VERSION) seedTranspilerCache(bundleDir, process.env.DSH_BUNDLE_VERSION);
 const binJs = join(appDir, "lib", "bin.js");
