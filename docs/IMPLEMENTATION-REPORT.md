@@ -38,6 +38,13 @@ then failed on the next step, none of which had run before:
 - `build-target.mjs` never wrote its per-target release manifest;
 - the packaged E2E tested the host's default target instead of the matrix target.
 
+The second build of the same poll run, `dsh-v0.2.0-rc.1` in run 36514734022, then failed accept on
+2 of the 12 targets with "index already lists dsh-v0.1.7-rc.2 … with different content". upstream-poll
+calls `build.yml` once per build within a single workflow run, and artifact names are shared across
+the whole run, so `target-<id>` could resolve to the earlier build's artifact. a83dab6 prefixes every
+build's artifacts with `<channel>-<commit>`, including the addon's. The cancelled run's rc.1 was
+never published, and poll 36521166476 rebuilds rc.1 and then live.
+
 The index append, the scoop bucket (including `dsh-office`) and aggregation were rehearsed locally
 against a copy of the real `releases` branch before the poll reached them.
 
