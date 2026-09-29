@@ -108,6 +108,11 @@ test("packagingChanged ignores docs and tests, and sees runtime changes", () => 
 		git("commit", "-qm", "docs");
 		const docs = git("rev-parse", "HEAD");
 		expect(packagingChanged(base, docs, dir)).toBe(false);
+		mkdirSync(join(dir, "scripts"));
+		writeFileSync(join(dir, "scripts", "publish-release.mjs"), "x");
+		git("add", "-A");
+		git("commit", "-qm", "publish side");
+		expect(packagingChanged(base, git("rev-parse", "HEAD"), dir)).toBe(false);
 		writeFileSync(join(dir, "runtime", "a.ts"), "2");
 		git("commit", "-qam", "runtime");
 		expect(packagingChanged(base, git("rev-parse", "HEAD"), dir)).toBe(true);

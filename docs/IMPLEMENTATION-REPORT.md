@@ -20,8 +20,7 @@ upstream-poll run 36514734022:
 
 **The six open tasks.** Each has a check that has not been run yet:
 - **8.2:** GitHub plugin install in the packaged E2E.
-- **8.3:** GitHub computes a "Latest" release; see "Open decision" below. The first live
-  publication is also still pending.
+- **8.3:** the first live publication, which must leave Latest on the release channel.
 - **8.4:** concurrent live + release appends on GitHub.
 - **8.6:** the manual-dispatch no-op check.
 - **9.1 / 9.4:** `scoop install` on a Windows runner.
@@ -42,19 +41,23 @@ then failed on the next step, none of which had run before:
 The index append, the scoop bucket (including `dsh-office`) and aggregation were rehearsed locally
 against a copy of the real `releases` branch before the poll reached them.
 
-### Open decision: GitHub's "Latest" badge
+### GitHub's "Latest" = the release channel (your decision, 2026-09-29)
 
-Every publish sends `make_latest: "false"`, but GitHub still reports the newest non-prerelease
-release as Latest (`isLatest: true`). No release has ever been explicitly marked latest, so GitHub
-falls back to the newest one. xz-dev/pi behaves the same way: its Latest is simply its newest
-release.
+- `publish-release.mjs` sends `make_latest=true` for release-channel bundles and `false` for live
+  and addon releases.
+- The poll publishes in index `seq` order, so Latest is always what
+  `dsh update --channel release` would install.
+- `dsh-v0.1.7-rc.2` was marked Latest explicitly. Before that, GitHub had only computed it as
+  Latest because no release was marked.
+- Nothing reads Latest. Discovery stays on `index.json`.
+- Plain `dsh update` never changes channel: it uses the recorded channel, and only
+  `--channel` switches and records a new one. The contract cases "channel switch installs the
+  older-upstream live build and persists" and "failed channel switch keeps the recorded channel"
+  pin this behaviour.
 
-dsh-bin never reads Latest, since discovery goes through `index.json`. The only effect is the
-badge on the GitHub page. Two ways to remove it:
-- mark upstream prereleases (`-rc`) and live builds as GitHub prereleases;
-- keep one fixed, non-bundle release as the explicit Latest.
-
-Nothing has changed yet; this needs your call.
+Publish-side files (`scripts/publish-*`, `scripts/upstream-diff.mjs`, `upstream-poll.yml`) are
+now excluded from "packaging changed". Changing how releases are published does not rebuild
+bundles that are already published.
 
 ## Verified on GitHub Actions (2026-09-29)
 

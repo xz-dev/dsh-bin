@@ -1,7 +1,9 @@
 // Publish one immutable GitHub Release (8.3), ported from xz-dev/pi publish-github-release.mjs:
-// create or resume a draft → upload only missing assets → re-hash every asset → publish with
-// make_latest=false (both channels and addons; discovery uses the index, never "latest") → poll until
-// GitHub reports `immutable: true`. An already-published release with identical assets is a no-op.
+// create or resume a draft → upload only missing assets → re-hash every asset → publish → poll until
+// GitHub reports `immutable: true`. GitHub's Latest is the release channel: a release-channel bundle is
+// published with make_latest=true (the poll publishes in index `seq` order, so Latest is what
+// `dsh update --channel release` installs); live and addon releases use make_latest=false. Discovery
+// still reads only the index, never Latest. An already-published release with identical assets is a no-op.
 // Publishing-side only: the updater never calls the GitHub API.
 // usage: bun scripts/publish-release.mjs <manifest.json>   (release-manifest.json or addon-manifest.json)
 //   env: GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_SHA
@@ -92,14 +94,14 @@ export async function publishRelease(manifestPath, env = process.env, fetchImpl 
 	release = await json(`${api}/releases/${release.id}`);
 	if (!release.draft) fail(`release ${manifest.tag} is no longer a draft before publication`);
 	await checkAssets(release, false);
-	release = await json(`${api}/releases/${release.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ draft: false, prerelease: false, make_latest: "false" }) });
+	release = await json(`${api}/releases/${release.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ draft: false, prerelease: false, make_latest: String(manifest.channel === "release") }) });
 	for (let i = 0; i < 60 && !release.immutable; i++) {
 		await sleep(5000);
 		release = await json(`${api}/releases/${release.id}`);
 	}
 	if (!release.immutable) fail(`release ${manifest.tag} did not become immutable; is release immutability enabled for ${repository}?`);
 	await checkAssets(release, false);
-	console.log(`Published ${manifest.tag} (immutable, not latest)`);
+	console.log(`Published ${manifest.tag} (immutable, ${manifest.channel === "release" ? "latest" : "not latest"})`);
 	return { published: true, release };
 }
 
