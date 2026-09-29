@@ -469,3 +469,68 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
 - **Not pushed.** The build workflow reads the live schema-1 index, so any push that triggers a poll
   would fail until the one-time reset (7.1) empties it to schema 2. The code stays on local `main` until
   then.
+
+### Task 3.1: one launcher for every installed version
+
+- `launcher/src/select.zig` has no I/O, so it is unit tested (`zig build test`, 15 tests). It holds:
+  - the leading-option parser;
+  - version matching (exact version, tag, unique prefix; an ambiguous prefix is refused);
+  - version order;
+  - the `bundle.json` and `selection.json` readers (`std.json`, not a hand scan);
+  - resolution;
+  - the maintenance-bundle choice;
+  - `DSH_BIN_LAUNCH`;
+  - the Windows command-line tail.
+- `launcher/src/main.zig` does the I/O, then execs (POSIX) or waits for the child (Windows).
+- **`latest` follows the recorded channel.** It is the last bundle in version order whose `bundle.json`
+  channel is the install root's `channel` file, falling back to the channel the launcher was built for.
+  A bundle with an unreadable `bundle.json` is never skipped silently: `latest` refuses and names
+  `dsh install <v> --force`.
+- **Maintenance commands** (`update install uninstall list select snapshot`) run on the newest bundle
+  that this launcher can start, of any channel, without a usage claim. They still run when:
+  - the pinned version is missing;
+  - the selection file is broken;
+  - a bundle declares another protocol.
+
+  In those cases `DSH_BIN_LAUNCH.version` is `null`. When the leading options resolve, the command gets
+  that version, for example `dsh --use X snapshot new`. A broken selection is never read as `latest`.
+- **`DSH_BIN_LAUNCH`** is JSON with these keys:
+  - `protocol`;
+  - `version` and `source` (`use`, `snapshot`, `selection` or `managed`);
+  - the launch's `use`, `snapshot` and `addons`;
+  - the `selection` object the launcher read.
+
+  The runtime (4.3) resolves the snapshot and the addons from that same selection. An inherited value is
+  always replaced, so a `dsh` started inside a dsh session does not inherit the parent's pin.
+  `DSH_BUNDLE_VERSION` and `DSH_BUNDLE_CHANNEL` now describe the bundle that was started.
+- **Managed installs:**
+  - the one installed bundle starts, and the selection's `use` is ignored;
+  - `--use` and `--addon` exit 1, naming the manager;
+  - `--snapshot` and a snapshot-only selection work.
+- **The launcher markers stay readable from the bytes.** `DSH_BIN_LAUNCHER_VERSION=<build>` is kept, so
+  the updater's install check and the `--clean` keep rule keep working unchanged.
+  `DSH_BIN_LAUNCHER_PROTOCOL=2` is new. Tasks 5.3 and 5.4 change the updater to replace the launcher only
+  on a newer protocol, and to stop treating the launcher's build as "the active version". Those changes
+  belong to their own scenarios, not to 3.1.
+- **Restart.** The launcher test proves the launcher's part: a direct respawn of `dsh-native` (what
+  upstream's `restartTui` does) inherits `DSH_BIN_LAUNCH` with the same version, even after the selection
+  file was changed in between. That the restarted runtime reuses it is task 4.3.
+- **Launcher tests** use a small Zig fake runtime, `test/launcher/fake-native.zig`, instead of a shell
+  script, so the same 20 cases also run on Windows. They cover:
+  - pass-through and exit status;
+  - both option forms and prompt text;
+  - `--use` over `--snapshot`;
+  - `latest` per channel, and the rebuild order;
+  - a missing bundle or pin, and a protocol mismatch;
+  - a broken selection;
+  - maintenance commands with a missing pin;
+  - managed installs;
+  - restart after a selection change;
+  - the environment and `DSH_HOME` rules;
+  - the claim held or not held per command.
+
+  The tests now remove their temporary directories.
+- Verified on Linux: `zig build test` 15/15, and the full suite 298 pass / 0 fail. Cross-builds for
+  Windows x64/arm64, linux-musl and macOS arm64 succeed, and both markers are present in `dsh.exe`.
+  Earlier runs had filled `/tmp` with about 6 GB of leftover test directories (ENOSPC); those were
+  removed.

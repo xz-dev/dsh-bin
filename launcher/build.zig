@@ -20,4 +20,11 @@ pub fn build(b: *std.Build) void {
     module.addOptions("build_options", options);
     const exe = b.addExecutable(.{ .name = "dsh", .root_module = module });
     b.installArtifact(exe);
+
+    // `zig build test`: parser, resolver and Windows command-line tail (src/select.zig), on the host.
+    const tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/select.zig"),
+        .target = b.graph.host,
+    }) });
+    b.step("test", "run the launcher unit tests").dependOn(&b.addRunArtifact(tests).step);
 }
