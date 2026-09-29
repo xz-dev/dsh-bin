@@ -26,10 +26,14 @@ export function makeReadOnly(dir: string, platform = process.platform): void {
 	const strip = (path: string) => chmodSync(path, lstatSync(path).mode & 0o7555);
 	if (platform === "win32") {
 		walk(dir, (path, isDir) => isDir || strip(path));
-		// Deny writing, creating, deleting and re-attributing for Everyone (S-1-1-0), inherited by the tree.
-		// Specific rights only: the generic `W` also carries SYNCHRONIZE and READ_CONTROL, and denying those
-		// breaks reading, listing and opening the claim file.
-		icacls([dir, "/deny", "*S-1-1-0:(OI)(CI)(WD,AD,WEA,WA,D,DC)", "/q"]);
+		// Deny write-data/add-file, append/add-subdirectory, attribute writes and delete-child for Everyone
+		// (S-1-1-0), inherited by the tree. Measured on windows-2022: this blocks creating files or
+		// directories and renaming a file in place (dsh-tui's `.old` path), while reads still work. Denying
+		// the generic `W` or `D` (DELETE) breaks Bun's own reads, because Bun opens files and directories
+		// requesting DELETE access.
+		// ponytail: without a DELETE deny, a whole subdirectory can still be moved out of the bundle by its
+		// owner; closing that needs Bun to open without DELETE access.
+		icacls([dir, "/deny", "*S-1-1-0:(OI)(CI)(WD,AD,WEA,WA,DC)", "/q"]);
 		return;
 	}
 	walk(dir, (path) => strip(path));

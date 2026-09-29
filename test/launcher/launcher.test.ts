@@ -1,13 +1,14 @@
 // Launcher tests (5.1–5.3) on the host platform: a fake `dsh-native` shell script records what it gets.
 import { beforeAll, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { acquireClaim } from "../../runtime/usage-claim.ts";
 
 const LAUNCHER_DIR = resolve(import.meta.dir, "../../launcher");
-const hasZig = Bun.which("zig") !== null;
+// POSIX-only fixtures (sh fake runtimes, flock). On Windows the update contract drives the launcher.
+const hasZig = Bun.which("zig") !== null && process.platform !== "win32";
 let built: string;
 
 beforeAll(() => {
@@ -19,7 +20,8 @@ beforeAll(() => {
 
 /** An install root with the launcher and a fake runtime that dumps argv, env and holds-claim state. */
 function install(runtime = "") {
-	const root = mkdtempSync(join(tmpdir(), "dsh-launcher-"));
+	// Real path: the launcher resolves its own executable (macOS tmpdir is a /var -> /private/var symlink).
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "dsh-launcher-")));
 	const bundle = join(root, "bundles", "1.2.3-xz.1.1.gabcdef12");
 	mkdirSync(bundle, { recursive: true });
 	cpSync(built, join(root, "dsh"));
