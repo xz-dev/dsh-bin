@@ -268,7 +268,7 @@ export function snapshot(root: string): Record<string, string> {
 export function removeRoot(root: string) {
 	if (!existsSync(root)) return;
 	makeWritable(root);
-	rmSync(root, { recursive: true, force: true });
+	rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); // Windows: a just-killed process briefly holds handles
 	rmSync(`${root}-home`, { recursive: true, force: true });
 }
 
