@@ -680,3 +680,24 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
     `test/runtime/snapshot-start.test.ts` (4.3);
   - the pinned warning printed by `dsh update` is 5.4, and the out-of-slot launch warning is 5.5.
 - Full suite: 331 pass / 0 fail; `zig build test` passes.
+
+### Task 5.2: `dsh snapshot new/remove/list`
+
+- `runtime/update/snapshot.ts`, dispatched as a maintenance command (works in managed installs):
+  - `new [--target <id> | --empty] [--name <alias>]` creates a snapshot of the **effective version**
+    (`effectiveBundle` in select.ts: the launcher's `DSH_BIN_LAUNCH` version, else a leading `--use`/`--snapshot`
+    on a direct start, else the selection; managed installs refuse `--use`/`--addon`). Default source is the
+    effective version's newest; no source fails naming `--empty`. Prints `Created plugin snapshot <id> (...)`.
+  - `remove <id>...` resolves every id first, refuses one named by the selection (naming `dsh select`), then
+    `removeSnapshots` takes every exclusive claim under the store lock; any in use -> status 1, nothing removed.
+  - `list [--json]` marks newest / selected / in use (exclusive-claim probe) / bundle not installed.
+- Leading `--use/--snapshot/--addon` before a maintenance command on a direct `dsh-native` start are parsed
+  and recorded in `DSH_BIN_LAUNCH` (the launcher already strips them).
+- Spec fix (your decision, 2026-09-29): the "Snapshot before a risky change" scenario contradicted
+  "a new snapshot becomes the newest". It now reads: `snapshot new` creates `@n+1`, the plugin breaks it,
+  `snapshot remove @n+1` goes back to `@n`, the runtime as it was before the change.
+- Contract: 8 new cases (migrate with `--use ... snapshot new --target`, numbering/alias/`--empty`, risky
+  change and middle removal, in-use / selection-named / all-or-none refusal, argument errors, no-source
+  and bundle-not-installed marking, managed install, empty list). The `dsh uninstall <version>` half of
+  "Uninstall keeps snapshots" is added with the command in 5.3.
+- Full suite: 339 pass / 0 fail; `zig build test` passes.

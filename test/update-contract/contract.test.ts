@@ -190,19 +190,19 @@ const snapshotCases: Case[] = [
 		],
 	},
 	{
-		name: "snapshot: removing the broken newest falls back to the previous one; removing the middle closes the gap",
+		name: "snapshot before a risky change: removing the broken newest goes back to the previous one; removing the middle closes the gap",
 		root: { version: V.R1 },
 		arrange: (root) => {
-			snap(root, V.R1, 1, "before-caveman");
+			snap(root, V.R1, 1, "first");
 			snap(root, V.R1, 1);
-			snap(root, V.R1, 1);
-			plugin(root, `${V.R1}@3`, "broken-plugin");
 		},
 		steps: [
+			{ argv: ["snapshot", "new"], code: 0, stdout: [`Created plugin snapshot ${V.R1}@3 (copy of ${V.R1}@2).`], check: (root) => plugin(root, `${V.R1}@3`, "broken-plugin") },
+			{ argv: ["select"], code: 0, stdout: [`snapshot: ${V.R1}@3 (newest)`] },
 			{ argv: ["snapshot", "remove", `${V.R1}@3`], code: 0, stdout: [`Removed snapshot ${V.R1}@3.`], check: (root) => expect(snapIds(root)).toEqual([`${V.R1}@1`, `${V.R1}@2`]) },
+			{ argv: ["select"], code: 0, stdout: [`snapshot: ${V.R1}@2 (newest)`], check: (root) => expect(hasPlugin(root, `${V.R1}@2`, "broken-plugin")).toBe(false) },
 			{ argv: ["snapshot", "remove", `${V.R1}@2`], code: 0, check: (root) => expect(snapIds(root)).toEqual([`${V.R1}@1`]) },
-			{ argv: ["select"], code: 0, stdout: [`snapshot: ${V.R1}@1 (newest)`] },
-			{ argv: ["snapshot", "list"], code: 0, stdout: [`${V.R1}@1 (before-caveman)`, "[newest]"] },
+			{ argv: ["snapshot", "list"], code: 0, stdout: [`${V.R1}@1 (first)`, "[newest]"] },
 		],
 	},
 	{
