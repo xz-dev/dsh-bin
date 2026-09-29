@@ -627,7 +627,7 @@ const cases: Case[] = [
 					expect(existsSync(join(root, ".dsh", "snapshots", `${V.R3}@1`, "snapshot.json"))).toBe(true);
 				},
 			},
-			{ argv: ["list", "--json"], viaLauncher: true, code: 0, stdout: [`"active": "${V.R3}"`], requests: [INDEX] },
+			{ argv: ["list", "--json"], viaLauncher: true, code: 0, stdout: [`"effective": "${V.R3}"`], requests: [INDEX] },
 			{ argv: ["--profile", "update"], viaLauncher: true, code: 97, stdout: ["UPSTREAM-DSH", "--profile update"], requests: [] },
 		],
 	},
@@ -1222,7 +1222,7 @@ const cases: Case[] = [
 	})),
 	// ── Listing versions ─────────────────────────────────────────────────────────────────────────────
 	{
-		name: "list: newer version available, read-only, index only",
+		name: "list: newer version available; installed versions, the selection and a dsh update hint; read-only, index only",
 		root: { version: V.R1 },
 		steps: [
 			{
@@ -1232,22 +1232,71 @@ const cases: Case[] = [
 				unchanged: true,
 				check: (_root, r) => {
 					const d = json(r);
-					expect(d.dsh).toMatchObject({ version: V.R1, channel: "release", target: TARGET, slot: SLOT_A });
+					expect(d.selection).toEqual({ valid: true, stored: null, label: "--use latest", version: V.R1, snapshot: null, addons: { office: null } });
+					expect(d.dsh).toMatchObject({ version: V.R1, effective: V.R1, channel: "release", target: TARGET, slot: SLOT_A });
+					expect(d.dsh.installed).toEqual([{ version: V.R1, channel: "release", slot: SLOT_A, selected: true, latest: true, inUse: false }]);
 					expect(d.channels).toEqual([
-						{ channel: "release", current: true, newest: V.R3, newer: true, hint: "dsh update" },
-						{ channel: "live", current: false, newest: V.L1, newer: true, hint: "dsh update --channel live" },
+						{ channel: "release", current: true, newest: V.R3, installed: false, hint: "dsh update" },
+						{ channel: "live", current: false, newest: V.L1, installed: false, hint: "dsh update --channel live" },
 					]);
 					expect(d.addons[0]).toMatchObject({ name: "office", installed: [], default: V.Q, pinned: V.P1, hint: "dsh install --addon office" });
 					expect(d.index).toEqual({ ok: true });
 				},
 			},
-			{ argv: ["list"], code: 0, stdout: ["dsh", V.R1, V.R3, "dsh update", "addon office"], requests: [INDEX], unchanged: true },
+			{
+				argv: ["list"],
+				code: 0,
+				stdout: ["selection: --use latest", `version:  ${V.R1} (latest on the release channel)`, new RegExp(`${V.R1.replace(/\./g, "\\.")}\\s+release\\s+slot \\S+ \\(kit 0\\.1\\.2\\)\\s+\\[selected, latest\\]`), `newest ${V.R3}`, "dsh update", "addon office"],
+				requests: [INDEX],
+				unchanged: true,
+			},
 			{
 				argv: ["list", "--channel", "live", "--json"],
 				code: 0,
 				requests: [INDEX],
-				check: (_r, r) => expect(json(r).channels.map((c: any) => c.channel)).toEqual(["live"]),
+				check: (_r, r) => {
+					expect(json(r).channels.map((c: any) => c.channel)).toEqual(["live"]);
+					expect(json(r).dsh.installed).toEqual([]);
+				},
 			},
+			// Once the newest entry is installed, its hint is gone.
+			{ argv: ["update"], code: 0 },
+			{ argv: ["list", "--json"], code: 0, check: (_r, r) => expect(json(r).channels[0]).toEqual({ channel: "release", current: true, newest: V.R3, installed: true, hint: null }) },
+		],
+	},
+	{
+		name: "list: a pinned selection is visible; the markers are selected, latest and in use",
+		root: { version: V.R1, extra: [V.R2] },
+		arrange: (root) => {
+			writeSel(root, { schema: 1, use: "0.1.7-rc.2-xz.1", snapshot: null, addons: {} });
+			const held = holdShared(root, V.R2);
+			return () => held.release();
+		},
+		steps: [
+			{
+				argv: ["list", "--json"],
+				code: 0,
+				requests: [INDEX],
+				unchanged: true,
+				check: (_r, r) => {
+					const d = json(r);
+					expect(d.selection).toMatchObject({ valid: true, stored: { use: "0.1.7-rc.2-xz.1" }, label: "--use 0.1.7-rc.2-xz.1", version: V.R1 });
+					expect(d.dsh.installed.map((b: any) => [b.version, b.selected, b.latest, b.inUse])).toEqual([
+						[V.R1, true, false, false],
+						[V.R2, false, true, true],
+					]);
+				},
+			},
+			{ argv: ["list"], code: 0, stdout: ["selection: --use 0.1.7-rc.2-xz.1", /xz\.1\.1\.g11111111 .*\[selected\]\n/, /xz\.2\.1\.g22222222 .*\[latest, in use\]\n/], requests: [INDEX], unchanged: true },
+		],
+	},
+	{
+		name: "list: an unreadable selection is reported and the listing still exits 0",
+		root: { version: V.R1 },
+		arrange: (root) => writeSel(root, "{nope"),
+		steps: [
+			{ argv: ["list"], code: 0, stdout: ["selection: cannot read the selection", "dsh select --use latest", V.R1], requests: [INDEX], unchanged: true },
+			{ argv: ["list", "--json"], code: 0, requests: [INDEX], unchanged: true, check: (_r, r) => expect(json(r).selection).toMatchObject({ valid: false }) },
 		],
 	},
 	{
@@ -1299,7 +1348,7 @@ const cases: Case[] = [
 			{
 				argv: ["list"],
 				code: 0,
-				stdout: ["Upgrade dsh through portage instead.", V.R3],
+				stdout: ["Upgrade dsh through portage instead.", V.R3, "selection: managed by portage", /g11111111 .*\[selected, latest\]/],
 				requests: [INDEX],
 				unchanged: true,
 				check: (_r, r) => expect(r.stdout).not.toContain("dsh update"),

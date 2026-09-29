@@ -803,3 +803,39 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   and `scripts/e2e.mjs` still reads it (6.1).
 - Full suite: 349 pass / 0 fail; `zig build test` passes. CI run 36594662537 at 60ab9c9 (side branch
   `select-snapshots`) passed on ubuntu-24.04, macos-15 and windows-2022, including the addon claim.
+
+### Task 5.6: `dsh list`
+
+- Plain output has three blocks:
+  - **selection:** the stored selection and what a plain launch resolves it to, printed the same way as
+    `dsh select` (`resolveSelection`, shared by both); an unreadable selection is one error line, and
+    the listing still exits 0;
+  - **dsh:** every installed version in version order, with channel, slot and the `[selected, latest,
+    in use]` markers; then per channel its newest index entry, marked `installed`, with the `dsh update`
+    (current channel) or `dsh update --channel <c>` hint only when it is not installed;
+  - **addon office:** installed versions (in or out of slot), the effective version's default, and, with
+    `--addon office`, every installable version as before.
+- `--json` carries the same data: `selection {valid, stored, label, version, snapshot, addons}`,
+  `dsh {version, effective, channel, target, slot, installed[]}` and `channels[] {newest, installed,
+  hint}`. **Shape change:** `dsh.active` became `dsh.effective` (the effective version of the command:
+  launch options, else the selection), and `channels[].newer` became `installed`, since hints now depend
+  on whether the newest entry is installed.
+- `--channel <c>` filters both the installed versions and the channel rows.
+- `in use` probes each bundle's `.usage.lock` with a non-blocking exclusive try-lock, released at once
+  (`guardInUse`, which `snapshotInUse` now uses too). It opens the file read-only and changes nothing,
+  but it is a lock attempt. **Spec wording:** Listing versions says `list` "SHALL take no lock". The
+  probe keeps the intent (no `update.lock`, no waiting, no file change), but the wording should be
+  clarified. This is raised with you, not settled here.
+- A managed install's addon line in the selection block is now the newest **in-slot** installed version,
+  the same as `officeWiring` (it was the newest installed of any slot).
+- `activeMeta` is removed; nothing else used it.
+- Tests (contract):
+  - newer version available: selection, installed markers, hints and index-only requests, plain and
+    JSON; the hint disappears once the entry is installed;
+  - pinned selection visible: the older installed version, pinned, is `selected`; the newer one is
+    `latest`, and `in use` while the test holds its shared claim;
+  - an unreadable selection;
+  - `--channel` filtering;
+  - managed: the selection block and markers;
+  - the existing offline and digest-conflict cases, unchanged.
+- Full suite: 351 pass / 0 fail; `zig build test` passes.

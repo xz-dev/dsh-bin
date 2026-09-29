@@ -1,7 +1,7 @@
 // `dsh select` (version-selection "Persistent selection", "Managed installations are pre-selected"): set or
 // print what a plain `dsh` launch uses. Every named item must exist; a refusal changes nothing. Installing,
 // updating and uninstalling never touch the selection.
-import { type AddonName, ADDON_NAMES, type BundleMeta, defaultAddon, dshHome, installedAddons, installedBundles, latestOf, matchVersion } from "../layout.ts";
+import { type AddonName, ADDON_NAMES, type BundleMeta, defaultAddon, dshHome, installedAddons, installedBundles, latestOf, matchVersion, sameSlot } from "../layout.ts";
 import { DEFAULT_SELECTION, readSelection, type Selection, selectionPath, writeSelection } from "../selection.ts";
 import { listSnapshots, newestOf, requireSnapshot } from "../snapshot/store.ts";
 import { readLaunch } from "../snapshot/launch.ts";
@@ -102,46 +102,58 @@ const describe = (s: Selection) =>
 
 /** The selection and what a plain launch resolves it to now. */
 function print(ctx: Context, home: string, s: Selection) {
+	const r = resolveSelection(ctx, home, s);
+	ctx.out(`selection: ${r.label}`);
+	ctx.out(`  version:  ${r.version.line}`);
+	ctx.out(`  snapshot: ${r.snapshot.line}`);
+	for (const [name, a] of Object.entries(r.addons)) ctx.out(`  ${`${name}:`.padEnd(9)} ${a.line}`);
+}
+
+export type Resolved = { value: string | null; line: string };
+export type ResolvedSelection = { label: string; bundle?: BundleMeta; version: Resolved; snapshot: Resolved; addons: Record<string, Resolved> };
+
+/** What a plain launch resolves the selection `s` to now (shared by `dsh select` and `dsh list`). */
+export function resolveSelection(ctx: Context, home: string, s: Selection): ResolvedSelection {
 	const bundles = installedBundles(ctx.root);
 	const snapshots = listSnapshots(home);
-	let version: BundleMeta | undefined;
+	let bundle: BundleMeta | undefined;
 	let versionLine: string;
 	if (ctx.managed) {
-		version = latestOf(bundles, null);
-		versionLine = `${version?.version ?? "none installed"} (managed by ${ctx.managed})`;
+		bundle = latestOf(bundles, null);
+		versionLine = `${bundle?.version ?? "none installed"} (managed by ${ctx.managed})`;
 	} else if (s.use === "latest") {
-		version = latestOf(bundles, ctx.channel);
-		versionLine = version ? `${version.version} (latest on the ${ctx.channel} channel)` : `none installed on the ${ctx.channel} channel; run \`dsh update\``;
+		bundle = latestOf(bundles, ctx.channel);
+		versionLine = bundle ? `${bundle.version} (latest on the ${ctx.channel} channel)` : `none installed on the ${ctx.channel} channel; run \`dsh update\``;
 	} else {
 		const m = matchVersion(
 			bundles.map((b) => b.version),
 			s.use,
 		);
-		version = m.kind === "found" ? bundles.find((b) => b.version === m.version) : undefined;
-		versionLine = version ? version.version : `${s.use} is not installed; run \`dsh install ${s.use}\` or \`dsh select --use latest\``;
+		bundle = m.kind === "found" ? bundles.find((b) => b.version === m.version) : undefined;
+		versionLine = bundle ? bundle.version : `${s.use} is not installed; run \`dsh install ${s.use}\` or \`dsh select --use latest\``;
 	}
-	ctx.out(`selection: ${ctx.managed ? `managed by ${ctx.managed}${s.snapshot ? `, --snapshot ${s.snapshot}` : ""}` : describe(s)}`);
-	ctx.out(`  version:  ${versionLine}`);
-	let snapshotLine: string;
+	let snapshot: Resolved;
 	if (s.snapshot) {
-		const found = snapshots.find((x) => x.id === s.snapshot);
-		snapshotLine = found ? s.snapshot : `${s.snapshot} does not exist; run \`dsh snapshot list\``;
-	} else if (version) {
-		const newest = newestOf(snapshots, version.version);
-		snapshotLine = newest ? `${newest.id} (newest)` : "none yet (created at the next start)";
-	} else snapshotLine = "-";
-	ctx.out(`  snapshot: ${snapshotLine}`);
+		const found = snapshots.some((x) => x.id === s.snapshot);
+		snapshot = found ? { value: s.snapshot, line: s.snapshot } : { value: null, line: `${s.snapshot} does not exist; run \`dsh snapshot list\`` };
+	} else if (bundle) {
+		const newest = newestOf(snapshots, bundle.version);
+		snapshot = newest ? { value: newest.id, line: `${newest.id} (newest)` } : { value: null, line: "none yet (created at the next start)" };
+	} else snapshot = { value: null, line: "-" };
+	const addons: Record<string, Resolved> = {};
 	for (const name of ADDON_NAMES) {
 		const installed = installedAddons(ctx.root, name);
-		const managedAddon = ctx.managed ? installed.at(-1) : undefined;
+		const slot = bundle?.addons?.[name]?.slot;
+		const managedAddon = ctx.managed ? installed.filter((a) => sameSlot(a.slot, slot)).at(-1) : undefined;
 		const named = ctx.managed ? undefined : s.addons[name];
-		let line: string;
-		if (named) line = installed.some((a) => a.version === named) ? named : `${named} is not installed; run \`dsh install --addon ${name}:${named}\``;
-		else if (managedAddon) line = `${managedAddon.version} (managed)`;
+		if (named) {
+			addons[name] = installed.some((a) => a.version === named) ? { value: named, line: named } : { value: null, line: `${named} is not installed; run \`dsh install --addon ${name}:${named}\`` };
+		} else if (managedAddon) addons[name] = { value: managedAddon.version, line: `${managedAddon.version} (managed)` };
 		else {
-			const def = version ? defaultAddon(installed, version.addons?.[name]?.slot) : undefined;
-			line = def ? `${def.version} (default)` : `none installed for this version; run \`dsh install --addon ${name}\``;
+			const def = bundle ? defaultAddon(installed, slot) : undefined;
+			addons[name] = def ? { value: def.version, line: `${def.version} (default)` } : { value: null, line: `none installed for this version; run \`dsh install --addon ${name}\`` };
 		}
-		ctx.out(`  ${`${name}:`.padEnd(9)} ${line}`);
 	}
+	const label = ctx.managed ? `managed by ${ctx.managed}${s.snapshot ? `, --snapshot ${s.snapshot}` : ""}` : describe(s);
+	return { label, bundle, version: { value: bundle?.version ?? null, line: versionLine }, snapshot, addons };
 }

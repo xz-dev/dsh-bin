@@ -84,11 +84,3 @@ export function replacesLauncher(path: string, protocol: number): boolean {
 	return !existsSync(path) || protocol > launcherProtocolOf(readFileSync(path));
 }
 
-/**
- * `bundle.json` of the newest installed bundle of the recorded channel (where `latest` resolves), falling
- * back to the running one. The root launcher's build no longer names an active version (one launcher
- * starts every installed version).
- */
-export function activeMeta(ctx: Context): BundleMeta {
-	return latestOf(installedBundles(ctx.root), ctx.channel) ?? ctx.meta;
-}

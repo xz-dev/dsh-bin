@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { type BuildOrder, compareVersionOrder, isCommitTime, matchVersion, USAGE_GUARD } from "../layout.ts";
 import { crashPoint, discard, isShareViolation, newWorkDir, removeTree, renameDir, STAGING_PREFIX, TRASH_PREFIX, token, writeFileAtomic } from "../update/fsops.ts";
 import { UserError } from "../update/context.ts";
-import { acquireClaim, type Claim } from "../usage-claim.ts";
+import { acquireClaim, type Claim, guardInUse } from "../usage-claim.ts";
 
 export type SnapshotReason = "install" | "start" | "user";
 
@@ -266,14 +266,7 @@ export function claimSnapshot(home: string, id: string): Claim | "busy" | "missi
 
 /** Whether a process holds the snapshot's usage claim (a probe: the exclusive claim is released at once). */
 export function snapshotInUse(home: string, id: string): boolean {
-	try {
-		const claim = acquireClaim(join(snapshotDir(home, id), USAGE_GUARD), "exclusive");
-		if (claim === "busy") return true;
-		claim.release();
-	} catch {
-		// No guard: nothing can hold it.
-	}
-	return false;
+	return guardInUse(join(snapshotDir(home, id), USAGE_GUARD));
 }
 
 /**

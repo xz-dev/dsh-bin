@@ -101,6 +101,19 @@ export function acquireClaim(guardPath: string, mode: ClaimMode): Claim | "busy"
 	return getBackend().acquire(guardPath, mode);
 }
 
+/** Whether a process holds a claim on `guardPath` (a probe: the exclusive claim is released at once; a missing guard is not in use). */
+export function guardInUse(guardPath: string): boolean {
+	let claim: Claim | "busy";
+	try {
+		claim = acquireClaim(guardPath, "exclusive");
+	} catch {
+		return false;
+	}
+	if (claim === "busy") return true;
+	claim.release();
+	return false;
+}
+
 const held = new Map<string, Claim>();
 
 /** Hold the shared claim on a guard (this bundle, the addon version in use) for the rest of the process lifetime. */
