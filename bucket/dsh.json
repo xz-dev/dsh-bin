@@ -1,5 +1,5 @@
 {
-  "version": "0.1.7-rc.2-xz.7.1.g4e41a3f1",
+  "version": "0.2.0-rc.1-xz.10.1.ga83dab63",
   "description": "DeepSeek Harness (dsh), release channel, built from GitHub source by dsh-bin",
   "homepage": "https://github.com/xz-dev/dsh-bin",
   "license": "MIT",
@@ -14,12 +14,12 @@
   ],
   "architecture": {
     "64bit": {
-      "url": "https://github.com/xz-dev/dsh-bin/releases/download/dsh-v0.1.7-rc.2-xz.7.1.g4e41a3f1/dsh-windows-x64-modern.zip",
-      "hash": "1ed89c1edea6188798600821fa7987b85de5652178a8552330ddb5dd3f14a30c"
+      "url": "https://github.com/xz-dev/dsh-bin/releases/download/dsh-v0.2.0-rc.1-xz.10.1.ga83dab63/dsh-windows-x64-modern.zip",
+      "hash": "ca32300e35d23c9c69702b081f6ca16c79f536e9c50d67e67ef119cf37f67519"
     },
     "arm64": {
-      "url": "https://github.com/xz-dev/dsh-bin/releases/download/dsh-v0.1.7-rc.2-xz.7.1.g4e41a3f1/dsh-windows-arm64.zip",
-      "hash": "8c3bb5fcda12ae27480a94b46af9af7b81fc57062c533b0b591ebfabc023ef38"
+      "url": "https://github.com/xz-dev/dsh-bin/releases/download/dsh-v0.2.0-rc.1-xz.10.1.ga83dab63/dsh-windows-arm64.zip",
+      "hash": "b9d82c201b3079437fbaa43edfe618213b12a40c0fe6c4b42a7e6970c32a4548"
     }
   }
 }
