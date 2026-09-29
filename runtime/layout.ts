@@ -77,7 +77,7 @@ export type BundleMeta = {
 };
 
 /** `addon.json` inside an installed addon version. */
-export type AddonMeta = { name: AddonName; version: string; tag: string; kitVersion: string; slot: Slot; packages: string[] };
+export type AddonMeta = { name: AddonName; version: string; tag: string; kitVersion: string; slot: Slot; packages: string[]; seq?: number };
 export type AddonsState = Partial<Record<AddonName, { version: string; forced: boolean }>>;
 
 export const BUNDLE_META = "bundle.json";
@@ -103,6 +103,43 @@ export function readBundleMeta(bundleDir: string): BundleMeta | undefined {
 }
 
 export const addonDir = (root: string, name: AddonName, version: string) => join(root, "addons", name, version);
+
+/** Installed bundles with a readable `bundle.json` carrying the version order, in version order. */
+export function installedBundles(root: string): BundleMeta[] {
+	const dir = join(root, "bundles");
+	const out: BundleMeta[] = [];
+	for (const version of existsSync(dir) ? readdirSync(dir) : []) {
+		let meta: BundleMeta | undefined;
+		try {
+			meta = readBundleMeta(join(dir, version));
+		} catch {
+			continue;
+		}
+		if (meta?.version === version && isCommitTime(meta.upstream?.commitTime) && Number.isInteger(meta.run) && Number.isInteger(meta.attempt)) out.push(meta);
+	}
+	return out.sort(compareVersionOrder);
+}
+
+/** `latest` (version-selection): the last bundle of `channel` in version order; any channel when null. */
+export const latestOf = (bundles: readonly BundleMeta[], channel: Channel | null) => bundles.filter((b) => !channel || b.channel === channel).at(-1);
+
+/** Installed versions of an addon (directories with a valid `addon.json`), oldest first by index sequence. */
+export function installedAddons(root: string, name: AddonName): AddonMeta[] {
+	const dir = join(root, "addons", name);
+	const out: AddonMeta[] = [];
+	for (const version of existsSync(dir) ? readdirSync(dir) : []) {
+		try {
+			const meta = readAddonMeta(join(dir, version));
+			if (meta?.name === name && meta.version === version) out.push(meta);
+		} catch {
+			// Not an installed version.
+		}
+	}
+	return out.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0) || (a.version < b.version ? -1 : a.version > b.version ? 1 : 0));
+}
+
+/** Default addon of a bundle (version-selection): the installed in-slot version with the highest sequence. */
+export const defaultAddon = (installed: readonly AddonMeta[], slot: Slot | null | undefined) => installed.filter((a) => sameSlot(a.slot, slot)).at(-1);
 
 export function readAddonsState(root: string): AddonsState {
 	const path = join(root, "addons.json");

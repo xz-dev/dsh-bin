@@ -652,3 +652,31 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
 - Full suite: 320 pass / 0 fail.
 - The claim covers the runtime processes (the session, `dsh plugin`, restarts), as the revised spec
   requires. Children are out of scope by decision; see "Not verified yet".
+
+### Task 5.1: `dsh select`
+
+- `runtime/selection.ts` reads and writes `$DSH_HOME/dsh-bin/selection.json` (schema 1, `{use, snapshot, addons}`;
+  missing = `--use latest`), written atomically with `writeFileAtomic`. The launcher reads the same file.
+- `runtime/update/select.ts`:
+  - `--use` is required on an unmanaged install; the version is an exact version, tag or unique prefix of an
+    installed bundle, otherwise status 1 naming `dsh install <v>` (ambiguous prefixes are named too);
+  - `--snapshot` goes through `requireSnapshot` (id or alias, any version); `--addon name:ver` must name an
+    installed `addons/<name>/<ver>/`; any refusal leaves the file untouched;
+  - omitted options are stored as default (`snapshot: null`, no addon entry);
+  - with no options it prints the selection and the resolved version, snapshot (newest when default) and
+    each addon (default = newest installed in-slot version);
+  - managed: `--use`/`--addon` exit 1 naming the manager; `--snapshot` alone updates only the snapshot and
+    keeps a user install's `use`/`addons` in the shared `$DSH_HOME`;
+  - an unreadable selection is reported; only `--use` (unmanaged) replaces it.
+- `layout.ts` gains `installedBundles`, `latestOf`, `installedAddons`, `defaultAddon` (reused by 5.3/5.5/5.6).
+  Addon ordering by index `seq` needs `seq` in `addon.json`, which 5.5 writes; until then ties sort by version.
+- `--help` gains the `select` line (the full section rewrite is 5.7).
+- Coverage of the version-selection scenarios:
+  - contract (11 new cases): initial state after update, pin by prefix/tag and back to latest, missing `--use`,
+    version not installed / ambiguous, missing snapshot or addon, forced addon selection, unreadable file,
+    managed refusals and managed `--snapshot`, update while pinned keeps the selection;
+  - launch resolution, leading options, pinned version removed, managed pin ignored and version order are
+    covered by `test/launcher/launcher.test.ts`, `launcher/src/select.zig` tests (3.1) and
+    `test/runtime/snapshot-start.test.ts` (4.3);
+  - the pinned warning printed by `dsh update` is 5.4, and the out-of-slot launch warning is 5.5.
+- Full suite: 331 pass / 0 fail; `zig build test` passes.

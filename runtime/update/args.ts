@@ -4,7 +4,7 @@
 // in pi's order (unknown option, missing value, bad value, unexpected argument, conflicts).
 import { ADDON_NAMES, type AddonName, type Channel, CHANNELS } from "../layout.ts";
 
-export const MAINTENANCE_COMMANDS = ["update", "install", "uninstall", "list"] as const;
+export const MAINTENANCE_COMMANDS = ["update", "install", "uninstall", "list", "select"] as const;
 export type MaintenanceCommand = (typeof MAINTENANCE_COMMANDS)[number];
 
 export type UpdateTarget = { type: "self" } | { type: "all" } | { type: "addon"; name: AddonName };
@@ -14,7 +14,8 @@ export type ParsedCommand =
 	| { command: "update"; help: false; clean: false; target: UpdateTarget; force: boolean; channel?: Channel; version?: string }
 	| { command: "install"; help: false; addon: AddonName; version?: string; force: boolean }
 	| { command: "uninstall"; help: false; addon: AddonName }
-	| { command: "list"; help: false; addon?: AddonName; channel?: Channel; json: boolean };
+	| { command: "list"; help: false; addon?: AddonName; channel?: Channel; json: boolean }
+	| { command: "select"; help: false; use?: string; snapshot?: string; addons: { name: AddonName; version: string }[] };
 export type ParseError = { command: MaintenanceCommand; error: string; usage: string };
 export type ParseResult = ParsedCommand | ParseError;
 
@@ -27,6 +28,7 @@ export const USAGE: Record<MaintenanceCommand, string> = {
 	install: "dsh install --addon <name> [--version <v>] [--force]",
 	uninstall: "dsh uninstall --addon <name>",
 	list: "dsh list [--addon <name>] [--channel <live|release>] [--json]",
+	select: "dsh select [--use <version|latest> [--snapshot <id>] [--addon <name>:<version>]...]",
 };
 
 /** Options each command accepts: flags, and options that take a value. */
@@ -35,7 +37,11 @@ const GRAMMAR: Record<MaintenanceCommand, { flags: string[]; values: string[] }>
 	install: { flags: ["--force"], values: ["--addon", "--version"] },
 	uninstall: { flags: [], values: ["--addon"] },
 	list: { flags: ["--json"], values: ["--addon", "--channel"] },
+	select: { flags: [], values: ["--use", "--snapshot", "--addon"] },
 };
+
+/** Options that may be repeated. */
+const REPEATABLE: Partial<Record<MaintenanceCommand, string[]>> = { select: ["--addon"] };
 
 export const isMaintenance = (argv: readonly string[]) => (MAINTENANCE_COMMANDS as readonly string[]).includes(argv[0] ?? "");
 
@@ -60,6 +66,8 @@ export const MAINTENANCE_HELP = [
 	"      disable an addon and remove its unused files",
 	`  ${USAGE.list}`,
 	"      show installed and installable dsh and addon versions",
+	`  ${USAGE.select}`,
+	"      choose the version, snapshot and addons a plain `dsh` uses; no options: print the selection",
 	"",
 ].join("\n");
 
@@ -76,6 +84,7 @@ export function parseMaintenance(argv: readonly string[]): ParseResult | undefin
 	let conflict: string | undefined;
 	const flags = new Set<string>();
 	const values = new Map<string, string>();
+	const repeated: string[] = [];
 	const positionals: string[] = [];
 
 	for (let i = 0; i < rest.length; i++) {
@@ -97,6 +106,7 @@ export function parseMaintenance(argv: readonly string[]): ParseResult | undefin
 				}
 			}
 			if (!value) missing ??= name;
+			else if (REPEATABLE[cmd]?.includes(name)) repeated.push(value);
 			else if (values.has(name)) conflict ??= `${name} can only be provided once`;
 			else values.set(name, value);
 			continue;
@@ -119,6 +129,23 @@ export function parseMaintenance(argv: readonly string[]): ParseResult | undefin
 
 	const channel = values.get("--channel");
 	if (channel !== undefined && !(CHANNELS as readonly string[]).includes(channel)) return fail(`Invalid channel ${channel}; ${VALID_CHANNELS}.`);
+	if (cmd === "select") {
+		if (positionals.length) return fail(`Unexpected argument ${positionals[0]}.`);
+		if (conflict) return fail(conflict);
+		const addons: { name: AddonName; version: string }[] = [];
+		for (const spec of repeated) {
+			const colon = spec.indexOf(":");
+			const name = colon < 0 ? spec : spec.slice(0, colon);
+			const version = colon < 0 ? "" : spec.slice(colon + 1);
+			if (!(ADDON_NAMES as readonly string[]).includes(name)) return fail(`Unknown addon ${name}; ${VALID_ADDONS}.`);
+			if (!version) return fail(`--addon ${spec}: expected <name>:<version>`);
+			if (addons.some((a) => a.name === name)) return fail(`--addon ${name} can only be provided once`);
+			addons.push({ name: name as AddonName, version });
+		}
+		const use = values.get("--use");
+		const snapshot = values.get("--snapshot");
+		return { command: "select", help: false, addons, ...(use ? { use } : {}), ...(snapshot ? { snapshot } : {}) };
+	}
 	const addon = values.get("--addon");
 	if (addon !== undefined && !(ADDON_NAMES as readonly string[]).includes(addon)) return fail(`Unknown addon ${addon}; ${VALID_ADDONS}.`);
 	const version = values.get("--version");

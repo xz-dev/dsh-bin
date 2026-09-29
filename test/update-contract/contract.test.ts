@@ -24,10 +24,12 @@ import {
 	snapshot,
 	TARGET,
 	tagOf,
+	orderTime,
 	addonTag,
 	type World,
 } from "./harness.ts";
 import { buildWorld, SLOT_A2, V } from "./worlds.ts";
+import { createSnapshot } from "../../runtime/snapshot/store.ts";
 
 let world: World;
 let evilEntry: any;
@@ -105,6 +107,158 @@ const corrupt = (b: Uint8Array) => {
 };
 
 const UNCHANGED_UPDATE = { unchanged: true };
+
+// ── dsh select (version-selection) ────────────────────────────────────────────────────────────────────
+const homeOf = (root: string) => join(`${root}-home`, ".dsh");
+const selectionFile = (root: string) => join(homeOf(root), "dsh-bin", "selection.json");
+const selectionOf = (root: string) => (existsSync(selectionFile(root)) ? JSON.parse(readFileSync(selectionFile(root), "utf8")) : undefined);
+const writeSel = (root: string, s: unknown) => {
+	mkdirSync(join(homeOf(root), "dsh-bin"), { recursive: true });
+	writeFileSync(selectionFile(root), typeof s === "string" ? s : JSON.stringify(s));
+};
+const snap = (root: string, version: string, seq: number, alias?: string) =>
+	createSnapshot(homeOf(root), { version, order: { upstream: { commitTime: orderTime(seq) }, run: seq, attempt: 1 }, reason: "user", alias, source: () => null }).snapshot.id;
+/** The selection file is left exactly as it was. */
+const selectionKept = (before: unknown) => (root: string) => expect(selectionOf(root)).toEqual(before);
+
+const selectCases: Case[] = [
+	{
+		name: "select with no options prints the initial state: latest, the newest snapshot, default addons",
+		root: { version: V.R1, extra: [V.R2] },
+		arrange: (root) => void snap(root, V.R2, 2),
+		steps: [
+			{
+				argv: ["select"],
+				code: 0,
+				stdout: ["selection: --use latest", `version:  ${V.R2} (latest on the release channel)`, `snapshot: ${V.R2}@1 (newest)`, "office:   none installed for this version; run `dsh install --addon office`"],
+				requests: [],
+				unchanged: true,
+				check: (root) => expect(selectionOf(root)).toBeUndefined(),
+			},
+		],
+	},
+	{
+		name: "initial state follows the newest install",
+		root: { version: V.R1 },
+		steps: [
+			{ argv: ["update"], code: 0, stdout: [`Updated dsh from ${V.R1} to ${V.R3}`], requests: [INDEX, bundleUrl("release", V.R3)] },
+			{ argv: ["select"], code: 0, stdout: [`version:  ${V.R3} (latest on the release channel)`, `snapshot: ${V.R3}@1 (newest)`], requests: [] },
+		],
+	},
+	{
+		name: "pin a version by unique prefix; omitted options are stored as default",
+		root: { version: V.R1, extra: [V.R2] },
+		arrange: (root) => {
+			snap(root, V.R1, 1);
+			snap(root, V.R1, 1);
+			writeSel(root, { schema: 1, use: "latest", snapshot: `${V.R1}@1`, addons: {} });
+		},
+		steps: [
+			{
+				argv: ["select", "--use", "0.1.7-rc.2-xz.1"],
+				code: 0,
+				stdout: [`Selected --use ${V.R1}.`, `selection: --use ${V.R1}`, `version:  ${V.R1}`, `snapshot: ${V.R1}@2 (newest)`],
+				requests: [],
+				unchanged: true,
+				check: (root) => expect(selectionOf(root)).toEqual({ schema: 1, use: V.R1, snapshot: null, addons: {} }),
+			},
+			// The tag names the same version.
+			{ argv: ["select", `--use=dsh-v${V.R2}`], code: 0, stdout: [`Selected --use ${V.R2}.`], check: (root) => expect(selectionOf(root).use).toBe(V.R2) },
+			{ argv: ["select", "--use", "latest"], code: 0, stdout: ["Selected --use latest."], check: (root) => expect(selectionOf(root)).toEqual({ schema: 1, use: "latest", snapshot: null, addons: {} }) },
+		],
+	},
+	{
+		name: "select a snapshot of another version with an explicit version (migration)",
+		root: { version: V.R1, extra: [V.R2] },
+		arrange: (root) => void snap(root, V.R1, 1, "before-caveman"),
+		steps: [
+			{
+				argv: ["select", "--use", V.R2, "--snapshot", "0.1.7-rc.2-xz.1@before-caveman"],
+				code: 0,
+				stdout: [`Selected --use ${V.R2} --snapshot ${V.R1}@1.`, `version:  ${V.R2}`, `snapshot: ${V.R1}@1`],
+				unchanged: true,
+				check: (root) => expect(selectionOf(root)).toEqual({ schema: 1, use: V.R2, snapshot: `${V.R1}@1`, addons: {} }),
+			},
+		],
+	},
+	{
+		name: "missing --use is refused on an unmanaged install",
+		root: { version: V.R1 },
+		arrange: (root) => void snap(root, V.R1, 1),
+		steps: [{ argv: ["select", "--snapshot", `${V.R1}@1`], code: 1, stderr: ["dsh select requires --use <version|latest>"], unchanged: true, check: (root) => expect(selectionOf(root)).toBeUndefined() }],
+	},
+	{
+		name: "version not installed: names `dsh install`, the selection is unchanged",
+		root: { version: V.R1, extra: [V.R2] },
+		arrange: (root) => writeSel(root, { schema: 1, use: V.R2, snapshot: null, addons: {} }),
+		steps: [
+			{ argv: ["select", "--use", "0.1.5"], code: 1, stderr: ["dsh 0.1.5 is not installed", "dsh install 0.1.5"], requests: [], unchanged: true, check: selectionKept({ schema: 1, use: V.R2, snapshot: null, addons: {} }) },
+			{ argv: ["select", "--use", "0.1.7"], code: 1, stderr: ["version 0.1.7 is ambiguous"], check: selectionKept({ schema: 1, use: V.R2, snapshot: null, addons: {} }) },
+		],
+	},
+	{
+		name: "a snapshot or addon version that does not exist is refused; nothing changes",
+		root: { version: V.R1 },
+		steps: [
+			{ argv: ["select", "--use", "latest", "--snapshot", `${V.R1}@3`], code: 1, stderr: [`snapshot ${V.R1}@3 does not exist`, "dsh snapshot list"], unchanged: true, check: (root) => expect(selectionOf(root)).toBeUndefined() },
+			{ argv: ["select", "--use", "latest", "--addon", `office:${V.Q}`], code: 1, stderr: [`office addon ${V.Q} is not installed`, `dsh install --addon office:${V.Q}`], unchanged: true, check: (root) => expect(selectionOf(root)).toBeUndefined() },
+			{ argv: ["select", "--use", "latest", "--addon", "office"], code: 1, stderr: ["--addon office: expected <name>:<version>"] },
+			{ argv: ["select", "--use", "latest", "--addon", "word:1"], code: 1, stderr: ["Unknown addon word"] },
+			{ argv: ["select", "--use", "latest", "--use", "latest"], code: 1, stderr: ["--use can only be provided once"] },
+			{ argv: ["select", "latest"], code: 1, stderr: ["Unexpected argument latest"] },
+		],
+	},
+	{
+		name: "select an installed addon version, out of slot included",
+		root: { version: V.R1, addon: { version: V.B1, slot: SLOT_B, forced: true } },
+		steps: [
+			{
+				argv: ["select", "--use", "latest", "--addon", `office:${V.B1}`],
+				code: 0,
+				stdout: [`Selected --use latest --addon office:${V.B1}.`, `office:   ${V.B1}`],
+				check: (root) => expect(selectionOf(root)).toEqual({ schema: 1, use: "latest", snapshot: null, addons: { office: V.B1 } }),
+			},
+		],
+	},
+	{
+		name: "an unreadable selection is reported; only --use replaces it",
+		root: { version: V.R1 },
+		arrange: (root) => writeSel(root, "{not json"),
+		steps: [
+			{ argv: ["select"], code: 1, stderr: ["cannot read the selection", "dsh select --use latest"] },
+			{ argv: ["select", "--use", "latest"], code: 0, check: (root) => expect(selectionOf(root)).toEqual({ schema: 1, use: "latest", snapshot: null, addons: {} }) },
+		],
+	},
+	{
+		name: "managed: --use and --addon are refused naming the manager; --snapshot alone works and keeps the rest",
+		root: { version: V.R1, managed: "portage" },
+		arrange: (root) => {
+			snap(root, V.R1, 1);
+			snap(root, V.R1, 1);
+			writeSel(root, { schema: 1, use: V.R2, snapshot: null, addons: { office: V.Q } });
+		},
+		steps: [
+			{ argv: ["select", "--use", V.R1], code: 1, stderr: ["--use is not available: the dsh version and addons are managed by portage"], unchanged: true, check: selectionKept({ schema: 1, use: V.R2, snapshot: null, addons: { office: V.Q } }) },
+			{ argv: ["select", "--snapshot", `${V.R1}@1`, "--addon", `office:${V.Q}`], code: 1, stderr: ["--addon is not available", "portage"] },
+			{
+				argv: ["select", "--snapshot", `${V.R1}@1`],
+				code: 0,
+				stdout: [`selection: managed by portage, --snapshot ${V.R1}@1`, `version:  ${V.R1} (managed by portage)`, `snapshot: ${V.R1}@1`],
+				unchanged: true,
+				check: selectionKept({ schema: 1, use: V.R2, snapshot: `${V.R1}@1`, addons: { office: V.Q } }),
+			},
+		],
+	},
+	{
+		name: "updating while pinned installs without switching the selection",
+		root: { version: V.R1 },
+		arrange: (root) => writeSel(root, { schema: 1, use: V.R1, snapshot: null, addons: {} }),
+		steps: [
+			{ argv: ["update"], code: 0, stdout: [`Updated dsh from ${V.R1} to ${V.R3}`], check: selectionKept({ schema: 1, use: V.R1, snapshot: null, addons: {} }) },
+			{ argv: ["select"], code: 0, stdout: [`selection: --use ${V.R1}`, `version:  ${V.R1}`] },
+		],
+	},
+];
 
 const cases: Case[] = [
 	// ── Command surface ───────────────────────────────────────────────────────────────────────────────
@@ -876,7 +1030,7 @@ const cases: Case[] = [
 const allowed = () => new Set([INDEX, ...[...world.assets.keys()].map((k) => `/download/${k}`)]);
 
 describe("update contract", () => {
-	for (const c of cases) {
+	for (const c of [...cases, ...selectCases]) {
 		test(c.name, async () => {
 			const root = installRoot(world, c.root.version, { channelFile: c.root.channelFile, managed: c.root.managed });
 			roots.push(root);

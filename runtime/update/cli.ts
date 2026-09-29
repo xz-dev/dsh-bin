@@ -7,6 +7,7 @@ import { readAddonsState } from "../layout.ts";
 import { activeMeta, type Context, resolveContext, UserError } from "./context.ts";
 import { sweepLeftovers, withUpdateLock } from "./fsops.ts";
 import { list } from "./list.ts";
+import { select } from "./select.ts";
 
 const HELP: Record<string, string[]> = {
 	update: [
@@ -24,6 +25,15 @@ const HELP: Record<string, string[]> = {
 	install: [`Usage: ${USAGE.install}`, "", "Install an optional addon (office) for the active dsh bundle."],
 	uninstall: [`Usage: ${USAGE.uninstall}`, "", "Disable an installed addon and remove its unused files."],
 	list: [`Usage: ${USAGE.list}`, "", "Show installed and installable dsh and addon versions (read-only)."],
+	select: [
+		`Usage: ${USAGE.select}`,
+		"",
+		"Choose what a plain `dsh` launch uses; with no options, print the selection and what it resolves to.",
+		"  --use <version|latest>        installed version (exact, tag or unique prefix); latest follows new installs",
+		"  --snapshot <id>               plugin snapshot <version>@<n|name>, of any version (default: the version's newest)",
+		"  --addon <name>:<version>      installed addon version (default: the newest in-slot one)",
+		"Omitted options go back to their default. Managed installs accept only --snapshot.",
+	],
 };
 
 function refuseManaged(ctx: Context) {
@@ -34,6 +44,7 @@ function refuseManaged(ctx: Context) {
 async function run(cmd: ParsedCommand, ctx: Context) {
 	if (cmd.help) return;
 	if (cmd.command === "list") return list(ctx, cmd);
+	if (cmd.command === "select") return select(ctx, cmd);
 	refuseManaged(ctx);
 	await withUpdateLock(ctx.root, async () => {
 		// Staging/trash leftovers of an interrupted run are removed first (when no longer claimed).
