@@ -2,12 +2,12 @@ name: addon
 
 # Office addon release (8.8): kit closure from the frozen upstream deploy, engine tarballs checked
 # against the lockfile sha512, 5 platform zips, immutable release + `addons.office` index entry.
-# Called by `build` before a bundle whose slot has no addon; also manual (dry run by default).
+# Called by `build` before a bundle whose slot has no addon. A manual dispatch is always a dry run:
+# publication happens only through upstream-poll.
 on:
   workflow_dispatch:
     inputs:
       commit: { description: "upstream commit whose slot needs an addon", required: true, type: string }
-      publish: { description: "publish the release", required: false, type: boolean, default: false }
   workflow_call:
     inputs:
       commit: { required: true, type: string }

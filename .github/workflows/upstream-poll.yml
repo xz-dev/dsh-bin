@@ -1,11 +1,17 @@
 name: upstream-poll
 
-# Upstream tracking (release-distribution spec): the fixed cron was chosen once at random and is
-# committed as a literal; no delay is added at run time. The index on the `releases` branch is the
-# only state, so delayed, dropped, re-run and manual polls are all idempotent.
+# Fully automatic publication, like xz-dev/pi: every release comes from this workflow.
+# - schedule: upstream tracking. The fixed cron was chosen once at random and is committed as a
+#   literal; no delay is added at run time.
+# - push to main: a packaging change rebuilds the newest release tag and the observed master
+#   (upstream-diff --head); docs/test-only pushes rebuild nothing.
+# The index on the `releases` branch is the only state, so delayed, dropped, re-run and repeated polls
+# are all idempotent. workflow_dispatch only re-runs the same detection (no inputs).
 on:
   schedule:
     - cron: "29 0,6,12,18 * * *"
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions: {}
@@ -23,7 +29,8 @@ jobs:
       any: ${{ steps.diff.outputs.any }}
     steps:
       - uses: actions/checkout@v4
-        with: { persist-credentials: false }
+        # Full history: packaging changes are diffed against each entry's launcher commit.
+        with: { persist-credentials: false, fetch-depth: 0 }
       - uses: oven-sh/setup-bun@v2
         with: { bun-version: "1.4.2" }
       - name: Diff upstream refs against the release index
@@ -34,7 +41,7 @@ jobs:
           # git protocol and raw.githubusercontent.com only; no REST API. No branch yet = empty index.
           git ls-remote https://github.com/deepseek-ai/deepseek-harness refs/heads/master 'refs/tags/dsh-v*' > "$RUNNER_TEMP/ls-remote.txt"
           curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/releases/index.json" -o "$RUNNER_TEMP/index.json" || rm -f "$RUNNER_TEMP/index.json"
-          bun scripts/upstream-diff.mjs "$RUNNER_TEMP/index.json" < "$RUNNER_TEMP/ls-remote.txt" > "$RUNNER_TEMP/diff.json"
+          bun scripts/upstream-diff.mjs "$RUNNER_TEMP/index.json" --head "$GITHUB_SHA" < "$RUNNER_TEMP/ls-remote.txt" > "$RUNNER_TEMP/diff.json"
           cat "$RUNNER_TEMP/diff.json"
           echo "builds=$(jq -c '{include: [.builds[] | {channel, upstream: (.tag // .commit)}]}' "$RUNNER_TEMP/diff.json")" >> "$GITHUB_OUTPUT"
           echo "any=$(jq -r '.builds | length > 0' "$RUNNER_TEMP/diff.json")" >> "$GITHUB_OUTPUT"

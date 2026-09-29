@@ -2,13 +2,13 @@ name: build
 
 # One distribution build (8.1–8.4): 12 targets on native runners → acceptance + packaged E2E with no
 # Node on PATH → one immutable GitHub Release (make_latest=false) → append to the releases index →
-# Scoop bucket. `publish: false` is the dry run (builds and tests everything, publishes nothing).
+# Scoop bucket. Publication happens only when upstream-poll calls this with `publish: true`; a manual
+# dispatch is always the dry run (builds and tests everything, publishes nothing).
 on:
   workflow_dispatch:
     inputs:
       channel: { description: "live or release", required: true, type: choice, options: [live, release] }
       upstream: { description: "dsh-v* tag (release) or master / commit (live)", required: true, type: string }
-      publish: { description: "publish the release", required: false, type: boolean, default: false }
   workflow_call:
     inputs:
       channel: { required: true, type: string }

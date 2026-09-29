@@ -3,8 +3,27 @@
 // state. Returns the builds to dispatch: every unpublished tag from dsh-v0.1.7-rc.2 onward in version
 // order, then one live build for the observed master if the newest live entry is on another commit.
 // Office addon builds (D7b) are dispatched first for any build whose slot has no addon entry.
-// usage: git ls-remote <upstream> refs/heads/master 'refs/tags/dsh-v*' | bun scripts/upstream-diff.mjs <index.json> [--git-dir d]
+// Packaging changes (a push to dsh-bin main) rebuild the newest release tag and the observed master
+// when the packaging inputs changed since the launcher commit their newest entry was built from.
+// usage: git ls-remote <upstream> refs/heads/master 'refs/tags/dsh-v*' | bun scripts/upstream-diff.mjs <index.json> [--git-dir d] [--head <sha>]
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+
+/** Paths that do not change what is shipped; a commit touching only these rebuilds nothing. */
+export const NON_PACKAGING = [":!docs", ":!test", ":!*.md", ":!LICENSE", ":!.gitignore", ":!.github/workflows/ci.yml"];
+
+/** Whether packaging inputs differ between `from` and `head`; an unknown `from` counts as changed. Needs full history. */
+export function packagingChanged(from, head, cwd = process.cwd()) {
+	if (!from || from === head) return false;
+	try {
+		execFileSync("git", ["diff", "--quiet", from, head, "--", ".", ...NON_PACKAGING], { cwd, stdio: "ignore" });
+		return false;
+	} catch (error) {
+		// 1: differs. Otherwise `from` is unknown here (rewritten history): rebuild rather than stall.
+		if (error.status !== 1) console.error(`::warning::launcher commit ${from} is not in this history; rebuilding`);
+		return true;
+	}
+}
 
 export const FIRST_RELEASE = "0.1.7-rc.2";
 
@@ -48,11 +67,12 @@ export function compareVersions(a, b) {
 }
 
 /**
- * @param {{lsRemote: string, index: object, slotOf?: (commit: string) => ({commit,kitVersion}|null)}} input
+ * @param {{lsRemote: string, index: object, slotOf?: (commit: string) => ({commit,kitVersion}|null), stale?: (launcherCommit: string) => boolean}} input
+ *   `stale` says whether an entry built at that launcher commit predates a packaging change.
  * @returns {{builds: {channel, commit, tag?, upstreamVersion?}[], addons: {slot, for: string}[], notices: string[]}}
  * @throws when a tag already in the index now points to a different commit
  */
-export function upstreamDiff({ lsRemote, index, slotOf }) {
+export function upstreamDiff({ lsRemote, index, slotOf, stale = () => false }) {
 	const { master, tags } = parseLsRemote(lsRemote);
 	const notices = [];
 	const published = new Map();
@@ -71,10 +91,18 @@ export function upstreamDiff({ lsRemote, index, slotOf }) {
 		.filter((t) => parseVer(t.upstreamVersion) && compareVersions(t.upstreamVersion, FIRST_RELEASE) >= 0 && !published.has(t.tag))
 		.sort((a, b) => compareVersions(a.upstreamVersion, b.upstreamVersion));
 	for (const t of candidates) builds.push({ channel: "release", ...t });
+	// A packaging change rebuilds the newest release (by version) when nothing newer is pending anyway.
+	const newestRelease = [...(index.channels?.release ?? [])]
+		.filter((e) => e.upstream?.tag && tags.get(e.upstream.tag) === e.upstream.commit)
+		.sort((a, b) => compareVersions(b.upstream.tag.slice(5), a.upstream.tag.slice(5)) || b.seq - a.seq)[0];
+	if (!candidates.length && newestRelease && stale(newestRelease.launcherCommit)) {
+		const { tag, commit } = newestRelease.upstream;
+		builds.push({ channel: "release", tag, commit, upstreamVersion: tag.slice("dsh-v".length) });
+	}
 
 	const live = [...(index.channels?.live ?? [])].sort((a, b) => b.seq - a.seq)[0];
 	if (!master) notices.push("upstream master was not listed; no live build");
-	else if (live?.upstream?.commit !== master) builds.push({ channel: "live", commit: master });
+	else if (live?.upstream?.commit !== master || stale(live.launcherCommit)) builds.push({ channel: "live", commit: master });
 
 	const addons = [];
 	if (slotOf) {
@@ -102,7 +130,10 @@ if (import.meta.main) {
 		const gitDir = rest[g + 1];
 		slotOf = (commit) => addonSlot(ensureHistory(gitDir, commit), commit);
 	}
-	const r = upstreamDiff({ lsRemote: readFileSync(0, "utf8"), index, slotOf });
+	const h = rest.indexOf("--head");
+	const head = h >= 0 ? rest[h + 1] : undefined;
+	const stale = head ? (launcherCommit) => packagingChanged(launcherCommit, head) : undefined;
+	const r = upstreamDiff({ lsRemote: readFileSync(0, "utf8"), index, slotOf, stale });
 	for (const n of r.notices) console.error(`::notice::${n}`);
 	console.log(JSON.stringify(r));
 }
