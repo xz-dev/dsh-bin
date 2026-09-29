@@ -826,7 +826,10 @@ describe("update contract", () => {
 					expect(trash).toBeDefined();
 					const r = await dsh(root, "", ["update", "--force"], server.origin, {}, join(root, trash, `dsh-native${EXE}`));
 					expect(r.code).toBe(0);
-				} else expect((await launch(root, ["update", "--force"], server.origin)).code).toBe(0);
+				} else {
+					const r = await launch(root, ["update", "--force"], server.origin);
+					expect({ code: r.code, stderr: r.stderr }).toEqual({ code: 0, stderr: "" });
+				}
 				expect(runs(await launch(root, ["--version"], server.origin))).toBe(V.R3);
 				expect(bundles(root)).toEqual([V.R3]);
 				expect(await settledLeftovers(root, server.origin)).toEqual([]);

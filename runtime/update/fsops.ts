@@ -99,8 +99,9 @@ export function quarantine(root: string, dir: string, platform = process.platfor
 const isShareViolation = (error: unknown) => ["EBUSY", "EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "");
 
 /**
- * Rename a directory. Windows retries briefly: scanners and indexers hold short-lived handles inside new
- * trees, and a handle held by a dsh session outlasts the retries and surfaces as in use.
+ * Rename a directory. Windows retries for up to 3 s, as pi does: scanners, indexers and a just-killed
+ * process hold short-lived handles inside trees, while a handle held by a dsh session outlasts the retries
+ * and surfaces as in use.
  */
 function renameDir(src: string, dest: string, platform: string) {
 	for (let attempt = 0; ; attempt++) {
@@ -108,7 +109,7 @@ function renameDir(src: string, dest: string, platform: string) {
 			renameSync(src, dest);
 			return;
 		} catch (error) {
-			if (platform !== "win32" || attempt >= 9 || !isShareViolation(error)) throw error;
+			if (platform !== "win32" || attempt >= 29 || !isShareViolation(error)) throw error;
 			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
 		}
 	}
