@@ -196,6 +196,20 @@ What the first runs found and fixed:
 - **Host resolution** uses virtual modules plus an `onResolve` for host `<pkg>/package.json`
   (option a). The `_nodeModulePaths` patch was **not needed** and is not in the code. User
   directories are untouched.
+- **musl `createRequire` (found by the 8.9 addon probe, 2026-09-29).**
+  - Symptom: on musl, Bun (1.4.0 and 1.4.2) calls a replaced `Module._resolveFilename` from
+    `createRequire(...)` with no parent module; glibc passes one. dsh's installation scope replaces
+    `_resolveFilename`, so every `createRequire(import.meta.url)("../package.json")` failed with
+    `Cannot find module`. Result: 62 plugins "failed to import" and no real profile could start.
+  - Affected: the published **rc.2 and rc.1 musl assets** (linux-x64-musl-*, linux-arm64-musl).
+    Earlier acceptance only ran `--help` and could not see this.
+  - Diagnosis: reproduced in the musl container as root and as uid 1000, with and without the
+    addon. The glibc bundle in an Ubuntu container works.
+  - Fix (`runtime/compat/create-require.ts`): at startup, dsh-bin probes whether `createRequire`
+    passes a parent. Where it does not, `Module.createRequire` is replaced with one that resolves
+    through `_resolveFilename` with a real parent. Other platforms are unchanged.
+  - Verified: the full musl E2E passes locally in the pinned oven/bun musl image, and a unit test
+    fails on musl without the fix.
 - **pnpm 11**
   - Lifecycle scripts run only for packages approved under `allowBuilds`. This is the user's policy
     and is unchanged.
