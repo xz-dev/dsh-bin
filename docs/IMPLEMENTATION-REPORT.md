@@ -271,17 +271,10 @@ are yours, so you can widen their exact `0.1.7-rc.2` peer pins. Only `dsh-sessio
 depends on another author, or on an exact-version exemption (`dsh plugin allow-version`). Until then,
 stay on rc.2; `dsh update` will offer rc.1 each time.
 
-After every self-update that activates a new bundle, `dsh update` now warns about these cases (your
-decision: warn, never block):
-- It uses upstream's own `evaluatePluginCompatibility`, loaded from the new bundle, over every
-  profile's direct dependencies, and honours `compatibility.json` exemptions.
-- For each plugin startup will disable, it prints the newest version the new dsh accepts, and the
-  command to install it. It looks this up read-only: npm registry metadata for registry specs, and
-  the default-branch `package.json` for `github:` specs. Nothing is installed from these lookups.
-- If the check cannot run, it prints that; it is never read as "all compatible".
-
-Verified on a copy of your profiles: a patched rc.2 root updated to rc.1 from a fixture in 4 s and
-printed the 14 plugins, with dsh-tui → 0.11.2 suggested.
+`dsh update` does not check plugin compatibility (your decision, 2026-09-29). It manages only dsh and
+its addons, and contacts only the release index and exact-tag downloads. Plugin compatibility belongs
+to dsh itself: its startup check and `dsh plugin`. A post-update plugin warning was built and then
+removed for this reason.
 
 ## Startup performance (your decision, 2026-09-29)
 

@@ -7,8 +7,6 @@ import { readAddonsState } from "../layout.ts";
 import { activeMeta, type Context, resolveContext, UserError } from "./context.ts";
 import { sweepLeftovers, withUpdateLock } from "./fsops.ts";
 import { list } from "./list.ts";
-import { pluginCompatWarning } from "./plugin-compat.ts";
-import { join } from "node:path";
 
 const HELP: Record<string, string[]> = {
 	update: [
@@ -54,7 +52,6 @@ async function run(cmd: ParsedCommand, ctx: Context) {
 					return;
 				}
 				const self = await updateSelf(ctx, { channel: cmd.channel, force: cmd.force });
-				if (self.updated) for (const line of await pluginCompatWarning(join(ctx.root, "bundles", self.version))) ctx.err(line);
 				if (cmd.target.type === "all") {
 					const meta = self.updated ? self.meta : activeMeta(ctx);
 					for (const name of Object.keys(readAddonsState(ctx.root)) as "office"[]) {
