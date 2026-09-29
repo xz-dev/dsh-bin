@@ -43,10 +43,36 @@ export function createRequireWithParent(native: typeof Module.createRequire): ty
 		const filename = filenameOf(from);
 		const dir = dirname(filename);
 		const parent = { id: filename, filename, path: dir, paths: M._nodeModulePaths(dir), loaded: true, children: [] };
-		const resolve = ((request: string, options?: unknown) => M._resolveFilename(request, parent, false, options)) as NodeJS.RequireResolve;
-		resolve.paths = req.resolve.paths;
-		// Only the resolution needs the parent; loading the absolute result or a builtin does not.
-		const require = ((id: string) => req(Module.isBuiltin(id) ? id : resolve(id))) as NodeJS.Require;
+		const resolve = ((request: string, options?: unknown) => {
+			try {
+				return M._resolveFilename(request, parent, false, options);
+			} catch (error) {
+				try {
+					return req.resolve(request, options as never);
+				} catch {
+					throw error;
+				}
+			}
+		}) as NodeJS.RequireResolve;
+		// Bun's `resolve.paths` needs its own `this`: detached, it returns [].
+		resolve.paths = req.resolve.paths.bind(req.resolve);
+		// The native require goes first: it alone serves Bun plugin virtual modules (a path resolution would
+		// load the file on disk instead). Only what it cannot find is resolved again with the parent;
+		// loading that absolute result needs no parent.
+		const require = ((id: string) => {
+			try {
+				return req(id);
+			} catch (error) {
+				if ((error as { code?: string }).code !== "MODULE_NOT_FOUND" && !String(error).includes("Cannot find module")) throw error;
+				let path: string;
+				try {
+					path = M._resolveFilename(id, parent, false);
+				} catch {
+					throw error;
+				}
+				return req(path);
+			}
+		}) as NodeJS.Require;
 		return Object.assign(require, { resolve, cache: req.cache, main: req.main, extensions: req.extensions });
 	} as typeof Module.createRequire;
 }

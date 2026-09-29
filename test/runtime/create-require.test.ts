@@ -48,6 +48,25 @@ test("the replacement passes a real parent for paths and file URLs", () => {
 	expect(() => createRequire("relative/path.js")).toThrow(TypeError);
 });
 
+test("Bun plugin virtual modules still load by name", () => {
+	const name = "dsh-bin-test-virtual-create-require";
+	Bun.plugin({
+		name,
+		setup(build) {
+			build.module(name, () => ({ exports: { virtual: true }, loader: "object" }));
+		},
+	});
+	installScope([]);
+	expect(createRequireWithParent(Module.createRequire)(file)(name)).toEqual({ virtual: true });
+});
+
+test("resolve.paths keeps the native lookup paths", () => {
+	// dsh-app-boot finds profile bundles through `createRequire(anchor).resolve.paths(name)`.
+	const paths = createRequireWithParent(Module.createRequire)(file).resolve.paths("some-package");
+	expect(paths).toEqual(Module.createRequire(file).resolve.paths("some-package"));
+	expect(paths?.[0]).toBe(join(dir, "pkg", "lib", "node_modules"));
+});
+
 test("the probe restores the resolver and reports this Bun's behaviour", () => {
 	const passes = createRequirePassesParent(file);
 	expect(M._resolveFilename).toBe(original);
