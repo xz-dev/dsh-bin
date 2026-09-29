@@ -546,3 +546,32 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   Windows x64/arm64, linux-musl and macOS arm64 succeed, and both markers are present in `dsh.exe`.
   Earlier runs had filled `/tmp` with about 6 GB of leftover test directories (ENOSPC); those were
   removed.
+
+### Task 4.1: snapshot store
+
+- The store is `runtime/snapshot/store.ts`, laid out as design S3.
+  - **Lock.** The store `.lock` is an flock / LockFileEx, not a mkdir lock, so the kernel releases it
+    when its owner dies. A crashed creation never blocks the next one. Waiters retry every 50 ms.
+  - **Numbers.** `n` is written to `.counters.json` before the copy starts. Allocation also takes the
+    maximum with the existing directories, so a lost counters file cannot reuse a number.
+  - **Commit and removal.** A new snapshot is copied into `.staging-*`, then renamed into place. A
+    removal takes the exclusive claim, renames the snapshot to `.trash-*`, then deletes it. Leftovers
+    are swept under the lock by the next operation, or by `sweepSnapshotLeftovers` for `--clean`.
+  - **Copy.** `cpSync` with `COPYFILE_FICLONE` and `verbatimSymlinks`. strace on this machine shows one
+    `ioctl(FICLONE)` per file on ZFS. pnpm's relative `.bin` links stay relative.
+  - **Version order.** `snapshot.json` also records the version's build order (commit time, run,
+    attempt), so snapshots of uninstalled bundles still take part in version order (needed by 4.2).
+  - **Ids.** `<version>@<n|alias>` accepts any version form the selection accepts: exact, tag, or unique
+    prefix. `matchVersion` and `dshHome` now live in `runtime/layout.ts`, and follow the same rules as
+    the launcher.
+- Tests: `test/unit/snapshot-store.test.ts`, 10 cases, all passing. They cover:
+  - numbers never reused, including after every snapshot is removed;
+  - remove-middle;
+  - the alias rules;
+  - a full copy with symlinks, an independent copy, and source/reason recorded;
+  - four concurrent processes producing exactly one snapshot;
+  - removal of a held snapshot refused, and SIGKILL releasing the claim;
+  - stacked shared claims;
+  - a crash after the copy leaving no snapshot, with the staging swept and `n` not reused;
+  - unreadable directories ignored.
+- Full suite: 308 pass / 0 fail.

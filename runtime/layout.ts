@@ -8,7 +8,8 @@
 //   <root>/update.lock                       maintenance mutex (directory)
 //   <root>/.<manager>.managed.lock           package-manager ownership marker
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 
 export const ADDON_NAMES = ["office"] as const;
 export type AddonName = (typeof ADDON_NAMES)[number];
@@ -34,6 +35,28 @@ export const isCommitTime = (s: unknown): s is string => typeof s === "string" &
 export function compareVersionOrder(a: BuildOrder, b: BuildOrder): number {
 	const t = a.upstream.commitTime < b.upstream.commitTime ? -1 : a.upstream.commitTime > b.upstream.commitTime ? 1 : 0;
 	return t || a.run - b.run || a.attempt - b.attempt;
+}
+
+export type VersionMatch = { kind: "found"; version: string } | { kind: "none" } | { kind: "ambiguous"; versions: [string, string] };
+
+/**
+ * A version named by its exact version, its tag (`dsh-v<v>`, `dsh-live-<v>`) or a unique prefix, among
+ * `versions` (version-selection "Persistent selection"; the launcher's `matchVersion` is the same rule).
+ */
+export function matchVersion(versions: readonly string[], query: string): VersionMatch {
+	const q = query.replace(/^(?:dsh-v|dsh-live-)/, "");
+	if (versions.includes(q)) return { kind: "found", version: q };
+	const hits = q ? versions.filter((v) => v.startsWith(q)) : [];
+	if (hits.length > 1) return { kind: "ambiguous", versions: [hits[0]!, hits[1]!] };
+	return hits.length ? { kind: "found", version: hits[0]! } : { kind: "none" };
+}
+
+/** The harness home, as upstream resolves it: a non-blank `$DSH_HOME` (`~` expanded), else `~/.dsh`. */
+export function dshHome(env: NodeJS.ProcessEnv = process.env, home = homedir()): string {
+	const v = env.DSH_HOME;
+	const raw = v !== undefined && v.trim().length > 0 ? v : join(home, ".dsh");
+	if (raw === "~") return resolve(home);
+	return resolve(raw.startsWith("~/") || raw.startsWith("~\\") ? join(home, raw.slice(2)) : raw);
 }
 
 /** `bundle.json`: the bundle's identity and its embedded addon compatibility table. */

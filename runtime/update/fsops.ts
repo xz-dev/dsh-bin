@@ -96,14 +96,14 @@ export function quarantine(root: string, dir: string, platform = process.platfor
 	return trash;
 }
 
-const isShareViolation = (error: unknown) => ["EBUSY", "EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "");
+export const isShareViolation = (error: unknown) => ["EBUSY", "EPERM", "EACCES"].includes((error as NodeJS.ErrnoException).code ?? "");
 
 /**
  * Rename a directory. Windows retries for up to 3 s, as pi does: scanners, indexers and a just-killed
  * process hold short-lived handles inside trees, while a handle held by a dsh session outlasts the retries
  * and surfaces as in use.
  */
-function renameDir(src: string, dest: string, platform: string) {
+export function renameDir(src: string, dest: string, platform: string = process.platform) {
 	for (let attempt = 0; ; attempt++) {
 		try {
 			renameSync(src, dest);
