@@ -312,8 +312,8 @@ All figures below were measured on Linux x64 (Ryzen AI 9 365). The benchmark boo
   - Each release build warms the cache on its native runner. It boots all five shipped profile
     templates with `--help` and ships the result as `bundles/<v>/transpiler-cache/`: 347 entries,
     about 9 MB unpacked and about 4 MB in the zip.
-  - **Deviation from your choice.** You chose "copy at activation"; the copy runs on the first
-    start of each bundle version instead. It copies only the missing entries and writes a
+  - **Seeded at first start (you approved this, 2026-09-29).** You first chose "copy at
+    activation"; the copy runs on the first start of each bundle version instead. It copies only the missing entries and writes a
     `.seeded-<v>` stamp. I moved it because zip, Scoop and portage installs never run
     `dsh update`, so seeding at activation would miss them. Seeding at first start covers every
     install path and costs one directory listing on later starts.
