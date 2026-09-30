@@ -154,3 +154,7 @@ bun scripts/e2e.mjs <index.json> <assets-dir>   # packaged E2E, no JS runtime on
 ```
 
 Requires Bun 1.4.2 and Zig 0.15.2 (Node is used only at build time).
+
+## License
+
+The packaging (launcher, compat layer, scripts) is [MIT](LICENSE). The bundled DeepSeek Harness and its dependencies keep their own licenses; the office addon ships LibreOffice Kit under MPL-2.0.
