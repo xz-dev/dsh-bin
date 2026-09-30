@@ -1,3 +1,4 @@
+// Parked: task 8.3 replaces release-pipeline E2E probes; task 8.5 deletes this reference.
 // 8.9: the packaged E2E must have an acceptance probe for every addon, and must read dsh's
 // "did not activate" block exactly.
 import { expect, test } from "bun:test";

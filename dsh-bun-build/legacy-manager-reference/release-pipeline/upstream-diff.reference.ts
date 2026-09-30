@@ -1,3 +1,4 @@
+// Parked: task 8.3 replaces old index/polling checks; task 8.5 deletes this reference.
 // scripts/upstream-diff.mjs: index-based detection for upstream-poll (8.5) and addon dispatch (8.8).
 import { expect, test } from "bun:test";
 import { compareVersions, packagingChanged, upstreamDiff } from "../../scripts/upstream-diff.mjs";

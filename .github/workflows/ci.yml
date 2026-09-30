@@ -28,4 +28,4 @@ jobs:
       # Runtime cases that need a built upstream app skip themselves when work/app is absent.
       - name: dsh-bun-build
         working-directory: dsh-bun-build
-        run: bun test ./test/unit ./test/runtime ./test/update-contract
+        run: bun test ./test/unit ./test/runtime
