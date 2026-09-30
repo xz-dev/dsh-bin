@@ -91,3 +91,4 @@
     - 连接被拒时 Windows TCP 层的重试使测试超过 5 s；
     - RL-MANAGER-BUILD 在 Windows 上找不到 zig 路径。
   - 以上已转给正在运行的 sol 任务处理。
+- 2026-10-01 第三次 CI（2342523）：https://github.com/xz-dev/dsh-bin/actions/runs/36782463054。ubuntu-24.04、macos-15、windows-2022 全部通过。说明：CI 上没有 `work/app`，真实运行包组合测试在 CI 中会明确跳过；该组合只在本机验证过（67 pass / 0 skip）。
