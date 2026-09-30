@@ -940,3 +940,44 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   0.2.0-rc.2 each accept against the previously published version: the second-version install, copied
   snapshot, `--use`/`--snapshot` boots, select pin and running-version uninstall run on all 12 targets.
   The live build is the first of its channel (single path).
+
+### Task 7.1: the reset, as done (2026-09-30)
+
+- Backup first (`~/.cache/dsh-reset/backup-20260930T1027`: old index, release list, tags, branch heads).
+  Then deleted all five releases with their tags (`gh release delete --cleanup-tag`; immutable releases
+  can be deleted), and reset `releases:index.json` to empty schema 2 as a new commit (no force push).
+  `main` was pushed at 7fab7c4 (CI green), which triggered upstream-poll.
+- Poll 36660054356: both Windows build-targets failed. The windows-x64 LibreOffice Kit engine ships
+  `sources/scripts/stage-native.mjs` with a `join(dir, file)` look-alike, which the exact profile-site
+  check counted. Fixed in a32d0f6 (kit packages are not profile code), unit case added. Cancelled with
+  nothing published.
+- Poll 36662656525: 9/12 rc.2 accepts green; the three musl accepts failed the read-only probe because
+  the container runs as root, which bypasses permission bits. Fixed in d499269 (mode check under root).
+  Cancelled before publishing (rc.2 had no publish yet).
+- Poll 36665735681 (d499269): rc.2 accepted on all 12 targets and published:
+  `dsh-addon-office-v0.1.1-xz.28.1.gd499269a` (index office seq 1) and
+  `dsh-v0.1.7-rc.2-xz.28.1.gd499269a` (release seq 1, GitHub Latest), attested; the Scoop bucket
+  regenerated (`dsh.json` persists only `addons`). 0.2.0-rc.1, 0.2.0-rc.2 and the live build follow in the
+  same run (result below).
+
+### Task 7.2: migration of your machine (2026-09-30)
+
+- Backups: `~/.cache/dsh-migrate-backup-20260930T1034` (tui/headless manifests, lock, workspace, cordis
+  files, the old wrapper); the old install moved to `~/.cache/dsh-migrate/old-dsh-bin`.
+- `~/.local/share/dsh-bin` reinstalled from the published rc.2 linux-x64-modern archive (SHA-256 matches
+  the index; `gh attestation verify` passes), bundle made read-only.
+- Old runtime files deleted from `~/.dsh/profiles/{tui,headless}`; only `cordis.patch.yml` kept.
+- The first `dsh --version` created `0.1.7-rc.2-xz.28.1.gd499269a@1 (empty)`. The tui plugins were added
+  back with `dsh plugin --profile tui add`, into that snapshot: dsh-tui 0.11.1 first, then the 15 others.
+  The old `pnpm-workspace.yaml` (hoisted linker, `minimumReleaseAgeExclude`, `allowBuilds`) was restored
+  in the snapshot before the second add, and `dsh.profile.bundles` was reset to your original order (the
+  add order differed; the set was the same).
+- The hindsight tarball dependency is now `file:/home/xz/.dsh/artifacts/...tgz` (absolute): the old
+  `file:../../artifacts/...` resolved from `profiles/tui/` and breaks at the snapshot depth.
+- `~/.local/bin/dsh` now keeps leading `--use/--snapshot/--addon` first and inserts `--profile tui` after
+  them; maintenance commands (`update`, `install`, `select`, `snapshot`, `clean`, ...) pass through.
+  Tested against a stub (options with and without `=`, missing values, maintenance after options).
+- Checks: `dsh --dump-config` exits 0; the TUI boots (banner, `xl/claude-opus-5-5 · high`) with only the
+  declared hmr degradation. A one-shot `dsh -p` did not answer within 180 s, and the headless profile
+  stops at `MISSING_CREDENTIAL` for the `deepseek-official` route (your credentials are for the
+  `gateway` provider in the tui profile), so a model reply through dsh is still not verified.
