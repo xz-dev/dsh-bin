@@ -115,7 +115,8 @@ test.skipIf(!available)(`RB-INDEPENDENT / MC-ARGS: same real archive through two
 			for await (const chunk of proc.stdout) {
 				stdout += new TextDecoder().decode(chunk);
 				if (stdout.includes("DSH_HELD")) {
-					expect(acquireClaim(join(bundle, ".usage.lock"), "exclusive")).toBe("busy");
+					const claim = acquireClaim(join(bundle, ".usage.lock"), "exclusive");
+					try { expect(claim).toBe("busy"); } finally { if (claim !== "busy") claim.release(); }
 				}
 			}
 			const code = await proc.exited;
