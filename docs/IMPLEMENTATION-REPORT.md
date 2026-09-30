@@ -1016,3 +1016,69 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   linux-x64-modern failed on HTTP 500 from raw.githubusercontent.com while fetching the index, before e2e
   ran. The failed jobs are re-run (`gh run rerun --failed`); no code change.
 - All 17 tasks of dsh-bin-select-snapshots are complete.
+
+## Final verification and archive (2026-09-30)
+
+This section supersedes the pending-verification notes above; earlier entries remain a chronological record.
+
+### Main and publication
+
+- All feature, acceptance and report commits are on `main`. Commit 8a39d4f closes the Windows PATH gap:
+  the packaged E2E removes directories containing `node.exe`, `bun.exe` or `deno.exe` from the Windows
+  child's PATH, and asserts on every target that none of those runtimes can be resolved there.
+- Scheduled poll 36674777578 published `dsh-v0.2.0-rc.2-xz.30.1.g5cf33f29`; the pending failed-job
+  rerun was superseded, not left as unfinished publication. Two manual polls 12 seconds apart,
+  36681992263 and 36682009302, succeeded without starting any build after the index was current.
+- Following the user's choice to republish the test-harness change, upstream-poll 36685686997
+  (8a39d4f) passed **24/24 accepts**: release and live on all 12 targets. It published:
+  - `dsh-v0.2.0-rc.2-xz.34.1.g8a39d4f5` (release Latest);
+  - `dsh-live-639ed01-xz.34.1.g8a39d4f5` (not Latest).
+  Both are immutable. The Windows release accept (job 109798322033) passed the complete two-version
+  path from xz.30 to xz.34, including the no-JS-PATH assertion, headless boot, GitHub plugin install,
+  snapshot copy, addon cycle and uninstalling the running version.
+- Final index audit: schema 2; release sequences 1–4, live 1–2, office 1. All **77 indexed archive
+  assets** have the same size and SHA-256 as the corresponding GitHub release asset metadata (`digest`).
+  Every indexed release is non-draft and immutable. The generated Scoop manifests point to xz.34 for
+  release/live and `0.1.1-xz.28.1.gd499269a` for office.
+- Final local regression run: `bun test ./test/unit ./test/runtime ./test/launcher ./test/update-contract`
+  — **353 pass, 0 fail**; `cd launcher && zig build test` — exit 0. CI for 8a39d4f is green.
+
+### Specs and repository metadata
+
+- The original `dsh-bin` change has **54/54** tasks complete. Tasks 8.4 and 8.6 were closed with the
+  user's approval of explicit evidence notes, not a claim of concurrent GitHub publications:
+  publication is serialized by design; lease retry was exercised locally, and real detection,
+  repeated no-op dispatches and index integrity were checked separately.
+- Archived in dependency order under the external OpenSpec root (not this Git repository):
+  - `~/openspec/changes/archive/2026-09-30-dsh-bin/`;
+  - `~/openspec/changes/archive/2026-09-30-dsh-bin-select-snapshots/` (**17/17** tasks complete).
+- Before the second archive, the user approved reconciliation of omitted legacy scenarios. Their
+  current replacements explicitly reject removed `update` options, keep installed versions during
+  cleanup, use side-by-side addons and resolve defaults by slot. Historical scenario titles remain
+  for traceability; the obsolete behavior was not restored. Strict validation passed, all six delta
+  capabilities matched the merged main requirements, and all seven dsh-bin main specs passed strict
+  validation. The user also approved current Purpose descriptions for launcher and self-update.
+- GitHub's description and 12 topics are populated. The existing `LICENSE` and `package.json` are MIT,
+  and GitHub recognizes MIT. README documents the packaging license separately from the bundled
+  components' own licenses; the office manifest retains MPL-2.0.
+
+### Cleanup and retained local state
+
+- User-approved migration/reset backups, downloaded scratch fixtures and temporary verification logs
+  were removed. The active `~/.cache/dsh-bin` cache was retained.
+- The local selection remains pinned to `0.1.7-rc.2-xz.28.1.gd499269a`, because the user's tui plugins
+  declare 0.1.7 peer dependencies. Publishing 0.2.0-rc.2 does not switch that selection.
+- `~/.local/bin/dsh-trial` was not touched. `dsh.npm` remains as the npm-wrapper fallback.
+- `.serena/` is local navigation configuration, ignored through `.git/info/exclude`; it is not a
+  packaging input and is not committed.
+
+### Known dry-run limitation (recorded, not changed)
+
+Manual build dispatch 36682206215 uses `build.yml`'s own run counter (6), whereas published bundles
+use `upstream-poll`'s counter (then 30). On the same upstream commit, candidate xz.6 sorts before the
+published xz.30 in snapshot version order, even though the fixture appends the candidate last. All
+12 accepts therefore failed the later assertion that V2's snapshot copies V1; the no-JS-PATH,
+headless boot and plugin-install steps had passed. This was not a successful dry run and is not
+counted as complete acceptance evidence. The real xz.34 publication above supplied that evidence.
+A future dry-run harness fix must choose a genuinely earlier fixture predecessor (or otherwise
+align the fixture's version order); production snapshot ordering was not weakened to hide it.
