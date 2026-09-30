@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { COMPAT_SPECIFIER, RULES, rewriteProfileSites, transformApp } from "../../scripts/transform-app.mjs";
@@ -107,6 +107,28 @@ test("RB-HOME: profile paths follow the snapshot; only cordis.patch.yml is share
 	]);
 	// Re-running on an already transformed tree is a no-op, not a double prelude.
 	expect(rewriteProfileSites(readFileSync(join(app, BOOT_REL), "utf8")).counts).toBeNull();
+});
+
+test("RB-HOME: rebuilding an already transformed app replaces the old snapshot-relative shared path", async () => {
+	const sites = { [BOOT_REL]: { dir: 1, root: 1, file: 4 } };
+	const app = fixture({ [BOOT_REL]: BOOT + '\nexport const otherPatch = (dir) => join(dir, PROFILE_PATCH_FILENAME);\nexport const otherRoot = (dir) => join(dir, PROFILE_ROOT_FILENAME);\n' });
+	transformApp(app, [], sites);
+	const file = join(app, BOOT_REL);
+	writeFileSync(file, readFileSync(file, "utf8").replace('__dshBinJoin(home, "profiles")', '__dshBinJoin(process.env.DSH_BIN_SNAPSHOT_DIR, "..", "..", "profiles")'));
+	transformApp(app, [], sites);
+	const home = mkdtempSync(join(tmpdir(), "external-home-"));
+	const data = mkdtempSync(join(tmpdir(), "manager-data-"));
+	const snap = join(data, "snapshots", "runtime@1");
+	const probe = `import { readFileSync, writeFileSync } from "node:fs";
+		const m = await import(${JSON.stringify(file)});
+		const path = m.patchOf(m.resolveProfileDir("custom", ${JSON.stringify(home)}));
+		writeFileSync(path, "shared config");
+		console.log(readFileSync(path, "utf8"));`;
+	const p = Bun.spawn([process.execPath, "-e", probe], { env: { ...process.env, DSH_HOME: home, DSH_BIN_SNAPSHOT_DIR: snap }, stdout: "pipe", stderr: "pipe" });
+	expect(await p.exited).toBe(0);
+	expect(await new Response(p.stdout).text()).toContain("shared config");
+	expect(readFileSync(join(home, "profiles/custom/cordis.patch.yml"), "utf8")).toBe("shared config");
+	expect(existsSync(join(data, "profiles"))).toBe(false);
 });
 
 test("LibreOffice Kit packages are not profile code: their look-alike joins are left alone", () => {

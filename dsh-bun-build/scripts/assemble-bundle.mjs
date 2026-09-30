@@ -104,9 +104,8 @@ export function requiredPaths(t) {
 export function assembleBundle(spec) {
 	const t = targetById(spec.target);
 	const { id, tag, channel } = spec.identity;
-	const out = spec.out;
-	if (existsSync(out)) throw new Error(`output exists: ${out}`);
-	const bundle = out;
+	const bundle = spec.out;
+	if (existsSync(bundle)) throw new Error(`output exists: ${bundle}`);
 	mkdirSync(bundle, { recursive: true });
 
 	cpSync(spec.native, join(bundle, t.executable));
@@ -130,7 +129,6 @@ export function assembleBundle(spec) {
 	if (spec.warm) warmTranspilerCache(bundle);
 
 	const index = spec.index ? JSON.parse(readFileSync(spec.index, "utf8")) : { addons: { office: [] } };
-	const required = requiredPaths(t);
 	if (!isCommitTime(spec.upstream?.commitTime)) throw new Error(`upstream.commitTime must be an ISO UTC time: ${spec.upstream?.commitTime}`);
 	if (!(spec.run > 0 && spec.attempt > 0)) throw new Error("run and attempt must be positive integers");
 	if (!/^[0-9a-f]{40}$/.test(spec.builderCommit ?? "")) throw new Error(`builderCommit must be a 40-char sha: ${spec.builderCommit}`);
@@ -147,13 +145,13 @@ export function assembleBundle(spec) {
 		builderCommit: spec.builderCommit,
 		launchProtocol: LAUNCH_PROTOCOL,
 		entry: t.executable,
+		requiredPaths: requiredPaths(t),
 		addons: { office: officeTable(spec.slot ?? null, index) },
-		requiredPaths: required,
 	};
 	writeFileSync(join(bundle, "bundle.json"), `${JSON.stringify(meta, null, 2)}\n`);
-	const missing = required.filter((p) => !existsSync(join(out, p)));
+	const missing = meta.requiredPaths.filter((p) => !existsSync(join(bundle, p)));
 	if (missing.length) throw new Error(`assembled bundle misses required paths: ${missing.join(", ")}`);
-	return { out, bundle, meta, pruned: pruned.map((p) => p.split(sep).join("/")) };
+	return { out: bundle, bundle, meta, pruned: pruned.map((p) => p.split(sep).join("/")) };
 }
 
 if (import.meta.main) {

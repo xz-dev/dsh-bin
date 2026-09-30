@@ -4,7 +4,7 @@
 // usage: bun scripts/local-build.mjs <out-dir> <channel> <run> [--index runtime-index.json] [--upstream-commit sha] [--slot slot-json] [--native f]
 //   writes <out>/<tag>-<asset> and <out>/<tag>.json (runtime manifest)
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { sha256 } from "./fetch-pnpm.mjs";
 import { archive } from "./archive.mjs";
@@ -12,6 +12,7 @@ import { assembleBundle } from "./assemble-bundle.mjs";
 import { compileEntry } from "./compile-entry.mjs";
 import { hostTargetId, target } from "./targets.mjs";
 import { distribution } from "./versioning.mjs";
+import { transformApp } from "./transform-app.mjs";
 import { commitTime } from "./fetch-upstream.mjs";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -34,11 +35,16 @@ export function localBuild({ out, channel, run, attempt = 1, index, upstreamComm
 		native = join(scratch, t.executable);
 		compileEntry(t.bunTarget, native);
 	}
+	// Local work/app may have the old snapshot-relative prelude. Transform a private copy,
+	// leaving local inputs untouched and using the same path adaptation as source builds.
+	const app = join(scratch, "app");
+	cpSync(join(work, "app"), app, { recursive: true, dereference: true });
+	transformApp(app);
 	const root = join(scratch, "root");
 	const r = assembleBundle({
 		target: t.id,
 		out: root,
-		app: join(work, "app"),
+		app,
 		pnpm: join(work, `pnpm-${t.nodePlatform === "win32" ? "windows" : t.nodePlatform}-${t.arch}`),
 		native,
 		identity: id,

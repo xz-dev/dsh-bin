@@ -82,6 +82,13 @@ test("RB-HOME: the snapshot from the launch is the plugin dir; DSH_HOME is the g
 	expect(readdirSync(home)).toEqual([]);
 }, 60_000);
 
+test("RB-HOME: the resolved launch home wins; a null snapshot does not inherit an old plugin directory", async () => {
+	const home = mkdtempSync(join(root, "resolved-home-"));
+	const r = await start({ DSH_HOME: join(root, "stale-home"), DSH_BIN_SNAPSHOT_DIR: join(root, "stale-snapshot"), DSH_MANAGER_LAUNCH: launchOf(home, null) });
+	expect(r.code).toBe(0);
+	expect(r.reports).toEqual([{ args: [], dir: null, home, runtime: RUNTIME, shim: "-" }]);
+});
+
 test("RB-RESTART: an in-app restart keeps the launch, the snapshot and its claim", async () => {
 	const home = mkdtempSync(join(root, "home-"));
 	const dir = snapshot(`${RUNTIME}@2`);

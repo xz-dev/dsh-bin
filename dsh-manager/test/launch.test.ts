@@ -158,7 +158,8 @@ test.skipIf(!hasZig)("environment: launch payload and DSH_HOME in the data root;
 	expect(seen.KEEP).toBe("k");
 	for (const name of ["DSH_TUI_STANDALONE", "DSH_TUI_STANDALONE_BINARY", "BUN_BE_BUN", "DSH_BIN_LAUNCH"]) expect(seen[name]).toBeUndefined();
 	expect(seen.DSH_HOME).toBe(join(i.data, "home"));
-	expect(launchOf(i)).toMatchObject({ runtime: R2, dataRoot: i.data, home: join(i.data, "home") });
+	expect(launchOf(i)).toMatchObject({ runtime: R2, dataRoot: i.data, home: join(i.data, "home"), addons: {} });
+	expect(launchOf(i).addons).toEqual({});
 });
 
 test.skipIf(!hasZig)("DSH_HOME: a non-blank value wins (`~` expanded, relative to the cwd); blank means the default", () => {

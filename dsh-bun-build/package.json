@@ -2,9 +2,9 @@
   "name": "dsh-bin",
   "private": true,
   "type": "module",
-  "description": "Node-free Bun bundle and Zig launcher for DeepSeek Harness (dsh), built from GitHub source",
+  "description": "Standalone Bun runtime bundles for DeepSeek Harness (dsh); manager builds live in dsh-manager",
   "license": "MIT",
   "scripts": {
-    "test": "bun test ./test/unit ./test/runtime ./test/update-contract"
+    "test": "bun test ./test/unit ./test/runtime"
   }
 }

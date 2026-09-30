@@ -22,6 +22,10 @@ function pe(machine: number) {
 	return b;
 }
 
+test("RB-CONTENTS: inspecting small non-native files does not require a complete executable header", () => {
+	for (const bytes of [Buffer.alloc(0), Buffer.from("a"), Buffer.from("MZ"), Buffer.from("\\x7fELF")]) expect(binaryArch(bytes).format).toBe("unknown");
+});
+
 test("binaryArch reads ELF, Mach-O and PE headers", () => {
 	expect(binaryArch(elf(0x3e))).toEqual({ format: "elf", arch: "x64" });
 	expect(binaryArch(elf(0xb7))).toEqual({ format: "elf", arch: "arm64" });

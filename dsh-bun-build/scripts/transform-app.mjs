@@ -70,7 +70,10 @@ const ROOT_SITE = /const profilesDir = join\(home, PROFILES_DIR\);/g;
 
 /** Rewrite one file's profile-path sites; returns the new text and the counts found. */
 export function rewriteProfileSites(text) {
-	if (text.includes(PROFILE_HELPER)) return { text, counts: null };
+	if (text.includes(PROFILE_HELPER)) {
+		// Local work/app may already carry the retired snapshot/../../profiles prelude.
+		return { text: text.replace(/const __dshBinProfiles = \{[\s\S]*?\n\};\n/, PROFILE_PRELUDE.slice(PROFILE_PRELUDE.indexOf("const "))), counts: null };
+	}
 	const counts = { dir: 0, root: 0, file: 0 };
 	let out = text
 		.replace(DIR_SITE, () => (counts.dir++, `return ${PROFILE_HELPER}.dir(name) ?? join(home, PROFILES_DIR, name);`))
@@ -113,8 +116,11 @@ export function transformApp(app, rules = RULES, profileSites = PROFILE_SITES) {
 	for (const [rel, text] of texts) {
 		if (!FIRST_PARTY.test(rel)) continue;
 		const { text: out, counts } = rewriteProfileSites(text);
-		if (counts === null) found[rel] = PROFILE_SITES[rel]; // already rewritten (re-run)
-		else if (Object.keys(counts).length > 0) {
+		if (counts === null) {
+			found[rel] = profileSites[rel];
+			texts.set(rel, out);
+			rewritten.add(rel);
+		} else if (Object.keys(counts).length > 0) {
 			found[rel] = counts;
 			texts.set(rel, out);
 			rewritten.add(rel);

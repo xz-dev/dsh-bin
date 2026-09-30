@@ -78,7 +78,7 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
         .dataRoot = ctx.data,
         .home = ctx.home(),
         .snapshot = null,
-        .addons = .{},
+        .addons = struct {}{},
         .manager = options.version,
     }, .{}) catch util.oom();
     return .{ .runtime = resolved.version, .entry = entry, .consumed = opts.consumed, .payload = payload };

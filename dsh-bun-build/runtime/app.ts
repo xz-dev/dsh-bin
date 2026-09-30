@@ -1,7 +1,5 @@
-// Run dsh (D1): install the Bun compatibility layer (D3), then run dsh from the on-disk app tree next to
-// this executable (`<runtime>/dsh-native` + `<runtime>/app`). Under the manager, `DSH_MANAGER_LAUNCH` names
-// the plugin snapshot, the application home and the addon directories; the runtime only consumes them
-// (split-dsh-manager D3). Without the variable it runs as upstream would, with upstream's own paths.
+// Compiled entry (D1) loads the on-disk upstream app next to this executable. Under protocol v1,
+// consume manager-selected home/snapshot/addons only; direct starts retain upstream behavior.
 import { existsSync, realpathSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { dshArgv, userArgs } from "./argv.ts";
@@ -10,7 +8,7 @@ import { degradedPlugin, HMR_DEGRADATION } from "./compat/degradations.ts";
 import { installHostPackages } from "./compat/host-packages.ts";
 import { installNodeModuleCompat } from "./compat/node-module-compat.ts";
 import { installRequireBuiltin } from "./compat/require-builtin.ts";
-import { LaunchError, type ManagerLaunch, readManagerLaunch } from "./launch.ts";
+import { LaunchError, readManagerLaunch } from "./launch.ts";
 import { seedTranspilerCache } from "./transpiler-cache.ts";
 import { holdSessionClaim } from "./usage-claim.ts";
 
@@ -22,25 +20,30 @@ function fail(message: string): never {
 	process.exit(1);
 }
 
-let launch: ManagerLaunch | undefined;
-try {
-	launch = readManagerLaunch();
-} catch (error) {
-	if (!(error instanceof LaunchError)) throw error;
-	fail(`${error.message}; start dsh through the dsh manager`);
-}
+const launch = (() => {
+	try {
+		return readManagerLaunch();
+	} catch (error) {
+		if (!(error instanceof LaunchError)) throw error;
+		fail(`${error.message}; start dsh through the dsh manager`);
+	}
+})();
 
-// Usage claims (D4): the manager holds them for the processes it starts; a direct respawn (an in-app
-// restart) takes them again, so the runtime and its snapshot stay protected for the whole process tree.
-const claim = (guard: string, what: string) => {
-	if (existsSync(guard) && holdSessionClaim(guard) === "busy") fail(`${what} is being removed by the dsh manager; start dsh again`);
+// Reacquire claims after direct in-app respawn; no version/snapshot decisions here.
+const claim = (dir: string, label: string) => {
+	const guard = join(dir, USAGE_GUARD);
+	if (existsSync(guard) && holdSessionClaim(guard) === "busy") fail(`${label} is being removed by the dsh manager; start dsh again`);
 };
-claim(join(bundleDir, USAGE_GUARD), "this dsh runtime");
-if (launch?.snapshot) {
-	if (!existsSync(launch.snapshot.dir)) fail(`plugin snapshot ${launch.snapshot.id} does not exist; start dsh again`);
-	claim(join(launch.snapshot.dir, USAGE_GUARD), `plugin snapshot ${launch.snapshot.id}`);
-	// Profile plugin runtimes live in the snapshot; shared profile config stays under $DSH_HOME/profiles.
-	process.env.DSH_BIN_SNAPSHOT_DIR = launch.snapshot.dir;
+claim(bundleDir, "this dsh runtime");
+if (launch) {
+	process.env.DSH_HOME = launch.home;
+	delete process.env.DSH_BIN_SNAPSHOT_DIR;
+	const snapshot = launch.snapshot;
+	if (snapshot) {
+		if (!existsSync(snapshot.dir)) fail(`plugin snapshot ${snapshot.id} does not exist; start dsh again`);
+		claim(snapshot.dir, `plugin snapshot ${snapshot.id}`);
+		process.env.DSH_BIN_SNAPSHOT_DIR = snapshot.dir;
+	}
 }
 
 const appDir = realpathSync(join(bundleDir, "app"));

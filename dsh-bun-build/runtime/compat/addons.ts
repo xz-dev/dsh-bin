@@ -30,16 +30,14 @@ function kitPackages(dir: string): Map<string, string> {
  * holds the version's shared usage claim again, so an in-app restart keeps it protected.
  */
 export function officeWiring(office: { version: string; dir: string; warning?: string } | undefined): OfficeWiring {
-	if (!office) return { kind: "degraded", degradations: officeDegradations("the office addon is not installed for this dsh; run `dsh manager install --addon office`") };
-	const extra = kitPackages(office.dir);
-	if (extra.size === 0) {
-		return { kind: "degraded", degradations: officeDegradations(`office addon ${office.version} is incomplete; run \`dsh manager install --addon office:${office.version} --force\``) };
-	}
-	const guard = join(office.dir, USAGE_GUARD);
-	if (existsSync(guard) && holdSessionClaim(guard) === "busy") {
-		return { kind: "degraded", degradations: officeDegradations(`office addon ${office.version} is being removed; start dsh again`) };
-	}
-	return { kind: "enabled", version: office.version, dir: office.dir, extra, ...(office.warning ? { warning: office.warning } : {}) };
+	const degraded = (reason: string): OfficeWiring => ({ kind: "degraded", degradations: officeDegradations(reason) });
+	if (!office) return degraded("the office addon is not installed for this dsh; run `dsh manager install --addon office`");
+	const { version, dir, warning } = office;
+	const extra = kitPackages(dir);
+	if (!extra.size) return degraded(`office addon ${version} is incomplete; run \`dsh manager install --addon office:${version} --force\``);
+	const guard = join(dir, USAGE_GUARD);
+	if (existsSync(guard) && holdSessionClaim(guard) === "busy") return degraded(`office addon ${version} is being removed; start dsh again`);
+	return { kind: "enabled", version, dir, extra, ...(warning ? { warning } : {}) };
 }
 
 /**
