@@ -983,3 +983,11 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   through the gateway in about 40 s. (`dsh -p` is not a TUI option: the wrapper turned it into an
   interactive TUI with no terminal, which waited; the headless profile uses the `deepseek-official` route,
   for which you have no credentials.)
+- `dsh install 0.2.0-rc.1` (once it was published) installed it next to rc.2 with `0.2.0-rc.1@1 (copy of
+  0.1.7-rc.2@1)`; `dsh list` shows both versions, the selection and the markers.
+- `dsh --use 0.2.0-rc.1` starts 0.2.0-rc.1 unchanged, and upstream itself refuses every tui plugin
+  ("incompatible with dsh 0.2.0-rc.1: peerDependencies ... 0.1.7"), as the task expected. Because a
+  plain `dsh` follows `latest`, which is now 0.2.0-rc.1, the selection was pinned with
+  `dsh select --use 0.1.7-rc.2`: plain `dsh` boots the TUI on rc.2 again with all plugins.
+  `dsh select --use latest` switches back once the plugins support 0.2.0.
+- Your old install had no office addon, so none was installed.
