@@ -55,6 +55,10 @@ test("rewrites node:sea in skill-office alongside stripTypeScriptTypes", () => {
 	});
 	expect(transformApp(app, RULES, {})).toEqual([known, sea].sort());
 	expect(readFileSync(join(app, sea), "utf8")).toStartWith(`import { isSea } from "${COMPAT_SPECIFIER}";`);
+	// A second run over the rewritten tree (a stale local app) is a no-op, not a failure.
+	const before = readFileSync(join(app, sea), "utf8");
+	expect(transformApp(app, RULES, {})).toEqual([known, sea].sort());
+	expect(readFileSync(join(app, sea), "utf8")).toBe(before);
 });
 
 // A condensed dsh-app-boot: the profile dir, the profiles tree and the patch/root file sites.

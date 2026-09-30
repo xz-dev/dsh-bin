@@ -89,7 +89,8 @@ export function transformApp(app, rules = RULES, profileSites = PROFILE_SITES) {
 	const texts = new Map();
 	for (const file of codeFiles(app)) texts.set(relative(app, file).split(sep).join("/"), readFileSync(file, "utf8"));
 	for (const rule of rules) {
-		const found = [...texts].filter(([, text]) => text.includes(rule.marker)).map(([rel]) => rel).sort();
+		// A file already rewritten (a re-run) no longer holds a marker like `"node:sea"`; it still counts.
+		const found = [...texts].filter(([, text]) => text.includes(rule.marker) || text.includes(rule.to)).map(([rel]) => rel).sort();
 		if (JSON.stringify(found) !== JSON.stringify([...rule.files].sort())) {
 			throw new Error(`${rule.marker} occurrences changed: expected ${JSON.stringify(rule.files)}, found ${JSON.stringify(found)}`);
 		}
