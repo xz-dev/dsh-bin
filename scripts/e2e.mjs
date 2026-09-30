@@ -145,6 +145,13 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 		// A GitHub-hosted plugin lands in the resolved snapshot (embedded pnpm, only git and sh on PATH).
 		if (plugin) {
 			r = await run(["plugin", "--profile", "e2e", "add", plugin.spec]);
+			// The test plugin's peer dependencies pin one dsh release line; on another, upstream rejects it and
+			// prints its own risk-acceptance command. Taking that path still proves where the plugin lands.
+			const allow = /run: dsh (plugin --profile e2e allow-version \S+ --dsh-version \S+ --accept-risk)/.exec(r.out)?.[1];
+			if (r.code !== 0 && allow) {
+				check((await run(allow.split(" "))).code === 0, `plugin ${allow}`);
+				r = await run(["plugin", "--profile", "e2e", "add", plugin.spec]);
+			}
 			check(r.code === 0, `plugin add ${plugin.spec}`);
 			check(existsSync(join(snapshotDir(v1.version, 1), "profiles", "e2e", "node_modules", plugin.name, "package.json")), "the plugin is installed in the snapshot");
 			check(!existsSync(join(env.DSH_HOME, "profiles", "e2e", "node_modules")), "the plugin is not installed in $DSH_HOME/profiles");
