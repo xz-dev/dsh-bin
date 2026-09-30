@@ -1,1 +1,48 @@
-{"schemaVersion":2,"channels":{"release":[],"live":[]},"addons":{"office":[]}}
+{
+  "schemaVersion": 2,
+  "channels": {
+    "release": [],
+    "live": []
+  },
+  "addons": {
+    "office": [
+      {
+        "seq": 1,
+        "tag": "dsh-addon-office-v0.1.1-xz.28.1.gd499269a",
+        "version": "0.1.1-xz.28.1.gd499269a",
+        "slot": {
+          "commit": "8e816b7ea4950f53b7eeb4623d63d74bd1341491",
+          "kitVersion": "0.1.1"
+        },
+        "publishedAt": "2026-09-30T03:55:32Z",
+        "assets": {
+          "linux": {
+            "name": "dsh-addon-office-linux.zip",
+            "size": 49213843,
+            "sha256": "024ac5e69a5aaa7f03db788d6ca00382838a530dd89b67193768d66bf38942df"
+          },
+          "darwin-arm64": {
+            "name": "dsh-addon-office-darwin-arm64.zip",
+            "size": 67037301,
+            "sha256": "9a131d4d24884214611f6bcc40c891c708c04d9edc7d8778b7b40b02f6e5b7df"
+          },
+          "darwin-x64": {
+            "name": "dsh-addon-office-darwin-x64.zip",
+            "size": 69798058,
+            "sha256": "a518d5969eff72b6693eff7b11f28d14be2c89763bd5629702c0d0963b775340"
+          },
+          "windows-x64": {
+            "name": "dsh-addon-office-windows-x64.zip",
+            "size": 71232823,
+            "sha256": "a32fc5816c31d4f39b05d892856e4dd3a6d7bf91e056a8ca9a17bef31de9d853"
+          },
+          "windows-arm64": {
+            "name": "dsh-addon-office-windows-arm64.zip",
+            "size": 67460009,
+            "sha256": "abc195ec829b12b976989ec117a2534492e3bbd480da89625e097a7f039322a1"
+          }
+        }
+      }
+    ]
+  }
+}
