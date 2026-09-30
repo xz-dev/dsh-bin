@@ -376,6 +376,32 @@ const versionCases: Case[] = [
 		],
 	},
 	{
+		name: "uninstall the version that runs the command: removed; any leftover is swept and never restored",
+		root: { version: V.R3, extra: [V.R1] },
+		steps: [
+			{
+				// The command runs from bundles/R3 (the launcher runs maintenance on the newest bundle, without a claim).
+				argv: ["uninstall", V.R3],
+				code: 0,
+				stdout: [`Uninstalled dsh ${V.R3}; its plugin snapshots are kept`],
+				requests: [],
+				check: (root) => {
+					expect(bundles(root)).toEqual([V.R1]);
+					// Windows cannot delete the running executable: its tree may wait as marked trash.
+					const left = leftovers(root);
+					if (process.platform === "win32") for (const n of left) expect(existsSync(join(root, n, ".uninstalled"))).toBe(true);
+					else expect(left).toEqual([]);
+				},
+			},
+			// The next maintenance run (from R1) removes the leftover and never brings R3 back.
+			{ argv: ["clean", "--update"], from: V.R1, code: 0, check: (root) => {
+				expect(bundles(root)).toEqual([V.R1]);
+				expect(leftovers(root)).toEqual([]);
+			} },
+			{ argv: ["list", "--json"], from: V.R1, code: 0, check: (_r, r) => expect(json(r).dsh.installed.map((b: any) => b.version)).toEqual([V.R1]) },
+		],
+	},
+	{
 		name: "uninstall the last installed version is refused",
 		root: { version: V.R1 },
 		steps: [{ argv: ["uninstall", V.R1], code: 1, stderr: [`cannot uninstall dsh ${V.R1}, the last installed version`], requests: [], unchanged: true }],
