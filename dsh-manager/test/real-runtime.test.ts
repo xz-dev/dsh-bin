@@ -120,8 +120,10 @@ test.skipIf(!available)(`RB-INDEPENDENT / MC-ARGS: same real archive through two
 			for await (const chunk of proc.stdout) {
 				stdout += new TextDecoder().decode(chunk);
 				if (stdout.includes("DSH_HELD")) {
-					const claim = acquireClaim(join(bundle, ".usage.lock"), "exclusive");
-					try { expect(claim).toBe("busy"); } finally { if (claim !== "busy") claim.release(); }
+					for (const guard of [join(bundle, ".usage.lock"), join(root, "tools/dsh-bin/snapshots", `${id}@1`, ".usage.lock")]) {
+						const claim = acquireClaim(guard, "exclusive");
+						try { expect(claim).toBe("busy"); } finally { if (claim !== "busy") claim.release(); }
+					}
 				}
 			}
 			const code = await proc.exited;

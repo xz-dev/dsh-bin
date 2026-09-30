@@ -24,7 +24,7 @@ function rejected(i: ReturnType<typeof newInstall>, result: ReturnType<typeof ru
 function denyWrites(dir: string): () => void {
 	if (!WIN) { chmodSync(dir, 0o555); return () => chmodSync(dir, 0o755); }
 	const sid = execFileSync("whoami", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" }).match(/S-1-[0-9-]+/)![0];
-	execFileSync("icacls", [dir, "/deny", `*${sid}:(OI)(CI)(W)`], { stdio: "pipe" });
+	execFileSync("icacls", [dir, "/deny", `*${sid}:(OI)(CI)(WD,AD,WEA,WA)`], { stdio: "pipe" });
 	return () => { execFileSync("icacls", [dir, "/remove:d", `*${sid}`], { stdio: "pipe" }); };
 }
 
