@@ -991,3 +991,17 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   `dsh select --use 0.1.7-rc.2`: plain `dsh` boots the TUI on rc.2 again with all plugins.
   `dsh select --use latest` switches back once the plugins support 0.2.0.
 - Your old install had no office addon, so none was installed.
+
+### Publication, continued (2026-09-30)
+
+- 0.2.0-rc.1: accepted on all 12 targets on the two-version path (`e2e: ok (<target>, release
+  0.1.7-rc.2-xz.28.1.gd499269a -> 0.2.0-rc.1-xz.28.1.gd499269a)`), published as seq 2 and Latest.
+- `scoop-check.yml` run 36671172027 (windows-2022) passed against the regenerated bucket (dsh
+  0.2.0-rc.1, dsh-office 0.1.1-xz.28.1.gd499269a).
+- 0.2.0-rc.2 failed acceptance on every target at `dsh plugin --profile e2e add github:xz-dev/dsh-caveman`:
+  the test plugin declares 0.1.7 peer dependencies, so upstream rejects it on 0.2.x and prints its own
+  `allow-version ... --accept-risk` command. (On 0.2.0-rc.1 the plugin was added on V1 = rc.2 and only
+  copied, so this did not show.) Fixed in 5cf33f2: e2e runs upstream's printed command and adds again,
+  which still proves the plugin lands in the resolved snapshot. Checked by hand on the published
+  0.2.0-rc.1 first. Poll 36665735681 was cancelled during the live build; nothing half-published.
+  New poll 36673557770 rebuilds 0.2.0-rc.2 and the live build (result below).
