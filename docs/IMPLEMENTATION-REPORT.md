@@ -921,3 +921,22 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   that `scoop uninstall dsh-office` removes it. actionlint 1.7.7 is clean.
 - **Not yet verified:** the real `scoop install` needs published assets and the regenerated bucket; it
   runs after 7.1, and 6.2 is ticked only then.
+- Gentoo drift fixed in the same pass (b0e504c): `USE=office` and `gentoo-layout-check.sh` wrote
+  `addons.json`; they now place the version under `addons/office/<v>/` with its guard. The layout check
+  (gentoo/stage3, `--network=none`, the local fixture's archive and addon) passes, including the new
+  `--use` refusal and `dsh select` showing `office: <v> (managed)`.
+
+### Task 7.1: release reset (plan and approval)
+
+- **Approval:** after the checkpoint that asked for it explicitly, you replied "在 Windows 上卸载正在执行
+  命令的那个版本：现有 CI 用例没覆盖到 需要覆盖，然后你继续开始做吧，目前仓库暂无人使用" (2026-09-30).
+  The Windows case was covered first (see 5.4), then the reset proceeds.
+- **What the poll will build** (upstream-diff on an empty index, 2026-09-30): release `dsh-v0.1.7-rc.2`,
+  `dsh-v0.2.0-rc.1`, `dsh-v0.2.0-rc.2` (a new upstream tag since the plan), and one live build of
+  master `639ed01`.
+- **Two-version acceptance:** upstream-poll runs builds one at a time (`max-parallel: 1`) in version
+  order, each publishing before the next, and every accept job builds its fixture index from the
+  published index plus the candidate. So rc.2 takes e2e's first-publication path, and 0.2.0-rc.1 and
+  0.2.0-rc.2 each accept against the previously published version: the second-version install, copied
+  snapshot, `--use`/`--snapshot` boots, select pin and running-version uninstall run on all 12 targets.
+  The live build is the first of its channel (single path).
