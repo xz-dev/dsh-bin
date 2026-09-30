@@ -978,6 +978,8 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   them; maintenance commands (`update`, `install`, `select`, `snapshot`, `clean`, ...) pass through.
   Tested against a stub (options with and without `=`, missing values, maintenance after options).
 - Checks: `dsh --dump-config` exits 0; the TUI boots (banner, `xl/claude-opus-5-5 · high`) with only the
-  declared hmr degradation. A one-shot `dsh -p` did not answer within 180 s, and the headless profile
-  stops at `MISSING_CREDENTIAL` for the `deepseek-official` route (your credentials are for the
-  `gateway` provider in the tui profile), so a model reply through dsh is still not verified.
+  declared hmr degradation. **Model reply verified:** in the TUI (driven through a pty), the prompt
+  "Reply with exactly the word MIGRATION-PONG" was answered `MIGRATION-PONG` by `xl/claude-opus-5-5`
+  through the gateway in about 40 s. (`dsh -p` is not a TUI option: the wrapper turned it into an
+  interactive TUI with no terminal, which waited; the headless profile uses the `deepseek-official` route,
+  for which you have no credentials.)
