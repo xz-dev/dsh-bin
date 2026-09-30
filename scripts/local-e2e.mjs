@@ -2,7 +2,7 @@
 // from work/ (app, pnpm, addon tree of one upstream checkout), an index written by index.mjs, then e2e.mjs.
 // The two bundles share the upstream checkout and differ in run number and upstream commit time, so V2
 // is newer; CI accept runs the same e2e on the real previous release and candidate.
-// usage: bun scripts/local-e2e.mjs [--work dir] [--out dir] [--keep] [--reuse] [--no-plugin]
+// usage: bun scripts/local-e2e.mjs [--work dir] [--out dir] [--keep] [--reuse] [--no-plugin] [--fixture-only]
 //   --reuse: run e2e again on the fixture a previous `--keep` run left in <out>.
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -31,6 +31,7 @@ const targetId = hostTargetId();
 const assets = join(out, "assets");
 const indexPath = join(out, "index.json");
 if (!(rest.includes("--reuse") && existsSync(indexPath))) await buildFixture();
+if (rest.includes("--fixture-only")) process.exit(0);
 rmSync(join(out, "run"), { recursive: true, force: true });
 await e2e({ index: indexPath, assets, targetId, channel: "release", keep: rest.includes("--keep"), work: join(out, "run"), plugin: rest.includes("--no-plugin") ? null : E2E_PLUGIN });
 if (!rest.includes("--keep")) rmSync(out, { recursive: true, force: true });
