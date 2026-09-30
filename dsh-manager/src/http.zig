@@ -397,10 +397,11 @@ pub fn download(
         if (!std.mem.eql(u8, &digest, &expect.sha256) or done != expect.size) {
             std.fs.cwd().deleteFile(part_path) catch {};
             if (resumed_once) {
-                // One retry from zero when the resumed bytes were bad.
+                // One more try from zero when the resumed bytes were bad (the kept partial may be stale).
                 resumed_once = false;
                 offset = 0;
-                failures = 0;
+                failures += 1;
+                if (failures >= MAX_ATTEMPTS) return Error.HashMismatch;
                 continue;
             }
             return Error.HashMismatch;
