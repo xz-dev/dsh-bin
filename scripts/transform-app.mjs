@@ -56,8 +56,12 @@ export const PROFILE_SITES = {
 	"lib/profile-boot-BZ2ZjNWi.js": { file: 3 },
 	"lib/dump-config-BEDI-dNY.js": { file: 1 },
 };
-/** Upstream's own code: the app's `lib/` and its `@deepseek-ai/*` packages (third-party code has look-alike joins). */
-const FIRST_PARTY = /^(?:lib\/|node_modules\/@deepseek-ai\/)/;
+/**
+ * Upstream's own code: the app's `lib/` and its `@deepseek-ai/*` packages (third-party code has look-alike
+ * joins). The LibreOffice Kit packages are not profile code: they move to the office addon, and a native
+ * engine (e.g. `libreoffice-kit-win32-x64`) ships build scripts with look-alike joins.
+ */
+const FIRST_PARTY = /^(?:lib\/|node_modules\/@deepseek-ai\/(?!libreoffice-kit(?:-|\/)))/;
 const DIR_SITE = /return join\(home, PROFILES_DIR, name\);/g;
 const ROOT_SITE = /const profilesDir = join\(home, PROFILES_DIR\);/g;
 

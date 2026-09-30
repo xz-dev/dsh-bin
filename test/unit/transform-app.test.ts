@@ -108,6 +108,15 @@ test("profile paths follow the snapshot, and only cordis.patch.yml is shared", a
 	expect(rewriteProfileSites(readFileSync(join(app, BOOT_REL), "utf8")).counts).toBeNull();
 });
 
+test("LibreOffice Kit packages are not profile code: their look-alike joins are left alone", () => {
+	// windows-x64 build, 2026-09-30: the native engine ships sources/scripts/stage-native.mjs with join(dir, file).
+	const engine = "node_modules/@deepseek-ai/libreoffice-kit-win32-x64/sources/scripts/stage-native.mjs";
+	const text = 'import { join } from "node:path";\nexport const f = (dir, file) => join(dir, file);\n';
+	const app = fixture({ [BOOT_REL]: BOOT, [engine]: text, "node_modules/@deepseek-ai/libreoffice-kit/lib/index.js": text });
+	expect(transformApp(app, [], { [BOOT_REL]: { dir: 1, root: 1, file: 2 } })).toEqual([BOOT_REL]);
+	expect(readFileSync(join(app, engine), "utf8")).toBe(text);
+});
+
 test("a changed profile site list fails the build", () => {
 	const app = fixture({ [BOOT_REL]: BOOT });
 	expect(() => transformApp(app, [], { [BOOT_REL]: { dir: 1, root: 1, file: 3 } })).toThrow(/profile path sites changed/);
