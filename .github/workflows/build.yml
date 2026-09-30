@@ -22,6 +22,9 @@ env:
   BUN_VERSION: "1.4.2"
   ZIG_VERSION: "0.15.2"
 
+defaults:
+  run: { working-directory: dsh-bun-build }
+
 jobs:
   prepare:
     runs-on: ubuntu-24.04
@@ -232,4 +235,4 @@ jobs:
         run: scripts/publish-index.sh bundle "$RUNNER_TEMP/release/release-manifest.json"
       - name: Update the Scoop bucket
         env: { GITHUB_TOKEN: "${{ github.token }}" }
-        run: scripts/publish-scoop-bucket.sh
+        run: ../dsh-manager/scripts/publish-scoop-bucket.sh

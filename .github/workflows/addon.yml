@@ -19,6 +19,9 @@ on:
 
 permissions: {}
 
+defaults:
+  run: { working-directory: dsh-bun-build }
+
 jobs:
   addon:
     runs-on: ubuntu-24.04

@@ -5,6 +5,6 @@
   "description": "Node-free Bun bundle and Zig launcher for DeepSeek Harness (dsh), built from GitHub source",
   "license": "MIT",
   "scripts": {
-    "test": "bun test ./test/unit ./test/runtime ./test/launcher ./test/update-contract"
+    "test": "bun test ./test/unit ./test/runtime ./test/update-contract"
   }
 }

@@ -22,6 +22,10 @@ jobs:
         with: { bun-version: "1.4.2" }
       - uses: mlugg/setup-zig@v2
         with: { version: "0.15.2" }
-      # Unit, runtime, launcher and the golden update contract (runs against the compiled entry).
+      - name: dsh-manager
+        working-directory: dsh-manager
+        run: zig build test && bun test ./test
       # Runtime cases that need a built upstream app skip themselves when work/app is absent.
-      - run: bun test ./test/unit ./test/runtime ./test/launcher ./test/update-contract
+      - name: dsh-bun-build
+        working-directory: dsh-bun-build
+        run: bun test ./test/unit ./test/runtime ./test/update-contract

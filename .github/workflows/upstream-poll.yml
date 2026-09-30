@@ -20,6 +20,9 @@ concurrency:
   group: upstream-poll
   cancel-in-progress: false
 
+defaults:
+  run: { working-directory: dsh-bun-build }
+
 jobs:
   detect:
     runs-on: ubuntu-24.04

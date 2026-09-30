@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { gentooEbuild, gentooVersion } from "../../scripts/gentoo-ebuild.mjs";
+import { gentooEbuild, gentooVersion } from "../scripts/gentoo-ebuild.mjs";
 
-const TPL = readFileSync(join(import.meta.dir, "../../packaging/gentoo/dsh-bin-9999.ebuild.in"), "utf8");
+const TPL = readFileSync(join(import.meta.dir, "../packaging/gentoo/dsh-bin-9999.ebuild.in"), "utf8");
 const a = (name: string, c: string) => ({ name, size: 7, sha256: c.repeat(64) });
 
 test("9.2: release versions map to ordered Gentoo versions", () => {

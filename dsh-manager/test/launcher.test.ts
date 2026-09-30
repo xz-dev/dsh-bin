@@ -6,9 +6,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { acquireClaim } from "../../runtime/usage-claim.ts";
+import { acquireClaim } from "../../dsh-bun-build/runtime/usage-claim.ts";
 
-const LAUNCHER_DIR = resolve(import.meta.dir, "../../launcher");
+const LAUNCHER_DIR = resolve(import.meta.dir, "..");
 const WIN = process.platform === "win32";
 const EXE = WIN ? ".exe" : "";
 const hasZig = Bun.which("zig") !== null;
@@ -345,7 +345,7 @@ test.skipIf(!hasZig || WIN)("a symlinked launcher resolves the real install root
 });
 
 test.skipIf(!hasZig)("the launcher embeds byte-readable version and protocol markers", async () => {
-	const { launcherVersionOf } = await import("../../runtime/update/context.ts");
+	const { launcherVersionOf } = await import("../../dsh-bun-build/runtime/update/context.ts");
 	const bytes = readFileSync(built);
 	expect(launcherVersionOf(bytes)).toBe("1.2.3-xz.1.1.gabcdef12");
 	expect(bytes.includes("DSH_BIN_LAUNCHER_PROTOCOL=2\0")).toBe(true);

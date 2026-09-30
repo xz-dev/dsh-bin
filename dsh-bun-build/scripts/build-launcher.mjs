@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, renameSync, rmSync, mkdirSync } from "node:f
 import { join, resolve } from "node:path";
 import { TARGETS, target as targetById } from "./targets.mjs";
 
-const LAUNCHER_DIR = resolve(import.meta.dir, "../launcher");
+const LAUNCHER_DIR = resolve(import.meta.dir, "../../dsh-manager");
 
 /** `{format, arch}` of an ELF, Mach-O or PE executable, from its header. */
 export function binaryArch(bytes) {

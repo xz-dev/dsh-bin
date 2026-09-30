@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scoopManifests } from "../../scripts/create-scoop-manifest.mjs";
+import { scoopManifests } from "../scripts/create-scoop-manifest.mjs";
 
 const h = (c: string) => c.repeat(64);
 const bundle = (seq: number, version: string, channel: string, pinned: string) => ({
@@ -79,7 +79,7 @@ describe("scoop manifests (9.1, 9.4)", () => {
 			execFileSync("git", ["init", "-q", "--bare", join(t, "r.git")]);
 			writeFileSync(join(t, "index.json"), JSON.stringify(INDEX));
 			const env = { ...process.env, DSH_BIN_BUCKET_REMOTE: join(t, "r.git"), DSH_BIN_INDEX_FILE: join(t, "index.json"), GITHUB_REPOSITORY: "xz-dev/dsh-bin", RUNNER_TEMP: t };
-			const script = join(import.meta.dir, "../../scripts/publish-scoop-bucket.sh");
+			const script = join(import.meta.dir, "../scripts/publish-scoop-bucket.sh");
 			expect(execFileSync("bash", [script], { env, encoding: "utf8" })).toContain("updated");
 			expect(execFileSync("bash", [script], { env, encoding: "utf8" })).toContain("already current");
 			const files = execFileSync("git", ["--git-dir", join(t, "r.git"), "ls-tree", "-r", "--name-only", "scoop"], { encoding: "utf8" }).trim().split("\n");
