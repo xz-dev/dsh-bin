@@ -69,6 +69,9 @@ function noJsPath(dir) {
 	return dir;
 }
 
+/** Windows: the runner's PATH minus every directory holding a JavaScript runtime (Git's sh stays). */
+const noJsWinPath = () => process.env.PATH.split(";").filter((d) => d && !["node.exe", "bun.exe", "deno.exe"].some((x) => existsSync(join(d, x)))).join(";");
+
 /**
  * `corruptAddon`: self-test of the addon check. After install, break the installed addon's first package
  * entry point (a published addon whose hashes match but whose content is broken), so acceptance must fail.
@@ -95,7 +98,7 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 	mkdirSync(home, { recursive: true });
 	const srv = serveFixture(indexPath, assets);
 	const exe = join(root, t.os === "windows" ? "dsh.exe" : "dsh");
-	const env = { PATH: t.os === "windows" ? process.env.PATH : noJsPath(join(work, "path")), HOME: home, USERPROFILE: home, DSH_HOME: join(home, ".dsh"), NO_COLOR: "1", DSH_BIN_TEST: "1", DSH_BIN_TEST_ORIGIN: srv.origin };
+	const env = { PATH: t.os === "windows" ? noJsWinPath() : noJsPath(join(work, "path")), HOME: home, USERPROFILE: home, DSH_HOME: join(home, ".dsh"), NO_COLOR: "1", DSH_BIN_TEST: "1", DSH_BIN_TEST_ORIGIN: srv.origin };
 	for (const k of ["TMPDIR", "TEMP", "TMP", "SystemRoot", "LANG"]) if (process.env[k]) env[k] = process.env[k];
 	// Async spawn: the fixture server runs in this process and must keep serving meanwhile.
 	const run = async (args, extra = {}) => {
@@ -112,6 +115,7 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 	const bundles = () => readdirSync(join(root, "bundles")).filter((n) => !n.startsWith("."));
 	const snapshotDir = (version, n) => join(env.DSH_HOME, "snapshots", `${version}@${n}`);
 	try {
+		for (const js of ["node", "bun", "deno"]) check(!Bun.which(js, { PATH: env.PATH }), `${js} must not be on the E2E PATH`);
 		// Manual install of V1: unzip, read-only bundle tree.
 		const v1Asset = v1.assets[t.id].name;
 		const zip = [join(assets, v1.tag, v1Asset), join(assets, `${v1.tag}-${v1Asset}`)].find((p) => existsSync(p));
