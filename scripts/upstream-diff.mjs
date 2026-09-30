@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 
 /** Paths that do not change what is shipped; a commit touching only these rebuilds nothing. The
  * publish side (release/index/bucket publication, this diff, the poll) acts on already-built bundles. */
-export const NON_PACKAGING = [":!docs", ":!test", ":!*.md", ":!LICENSE", ":!.gitignore", ":!.github/workflows/ci.yml", ":!.github/workflows/upstream-poll.yml", ":!scripts/publish-*", ":!scripts/upstream-diff.mjs"];
+export const NON_PACKAGING = [":!docs", ":!test", ":!*.md", ":!LICENSE", ":!install.sh", ":!.gitignore", ":!.github/workflows/ci.yml", ":!.github/workflows/upstream-poll.yml", ":!scripts/publish-*", ":!scripts/upstream-diff.mjs"];
 
 /** Whether packaging inputs differ between `from` and `head`; an unknown `from` counts as changed. Needs full history. */
 export function packagingChanged(from, head, cwd = process.cwd()) {
