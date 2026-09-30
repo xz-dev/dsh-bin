@@ -7,7 +7,7 @@
 // `--snapshot` works). Asserts exit codes, directory state and recorded requests.
 // usage: bun scripts/e2e.mjs <index.json> <assets-dir> [--work dir] [--keep] [--no-plugin]
 //   <assets-dir> holds every indexed asset as `<tag>/<asset-name>` or `<tag>-<asset-name>`.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { degradationDetail, OFFICE_PACKAGES, officeDegradations } from "../runtime/compat/degradations.ts";
@@ -150,16 +150,22 @@ export async function e2e({ index: indexPath, assets, work, keep = false, log = 
 			check(!existsSync(join(env.DSH_HOME, "profiles", "e2e", "node_modules")), "the plugin is not installed in $DSH_HOME/profiles");
 		}
 
-		// Read-only runtime: the running bundle cannot be written (upstream's self-updaters fail on it).
-		const probe = join(root, "bundles", v1.version, ".e2e-write-probe");
-		let writable = true;
-		try {
-			writeFileSync(probe, "");
-			rmSync(probe);
-		} catch {
-			writable = false;
+		// Read-only runtime: the running bundle cannot be written (upstream's self-updaters fail on it). Root
+		// (the musl accept runs in a container as root) bypasses permission bits, so only the modes are checked.
+		const bundleDir = join(root, "bundles", v1.version);
+		if (process.getuid?.() === 0) {
+			check((statSync(bundleDir).mode & 0o222) === 0, "the installed bundle must be read-only (mode)");
+		} else {
+			const probe = join(bundleDir, ".e2e-write-probe");
+			let writable = true;
+			try {
+				writeFileSync(probe, "");
+				rmSync(probe);
+			} catch {
+				writable = false;
+			}
+			check(!writable, "the installed bundle must be read-only");
 		}
-		check(!writable, "the installed bundle must be read-only");
 
 		r = await run(["update", "--models"]);
 		check(r.code === 1 && /Unknown option --models/.test(r.out), "update --models must be rejected");
