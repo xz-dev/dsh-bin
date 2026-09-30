@@ -42,7 +42,9 @@ describe("scoop manifests (9.1, 9.4)", () => {
 		expect(m.dsh.architecture["64bit"]).toEqual({ url: "https://github.com/xz-dev/dsh-bin/releases/download/dsh-v0.1.7-rc.2-xz.5.1.g00000005/dsh-windows-x64-modern.zip", hash: h("2") });
 		expect(m.dsh.architecture.arm64.url).toEndWith("/dsh-windows-arm64.zip");
 		expect(m.dsh.post_install[0]).toContain(".scoop.managed.lock");
-		expect(m.dsh.persist).toEqual(["addons", "addons.json"]);
+		// Installed addon versions survive `scoop update dsh`; there is no addons.json record any more.
+		expect(m.dsh.persist).toEqual(["addons"]);
+		expect(JSON.stringify(m.dsh)).not.toContain("addons.json");
 	});
 
 	test("dsh-live.json follows the newest live entry", () => {
@@ -55,9 +57,14 @@ describe("scoop manifests (9.1, 9.4)", () => {
 		expect(o.version).toBe("0.1.1-xz.1.1.g00000001");
 		expect(o.depends).toBe("dsh");
 		expect(o.architecture["64bit"].url).toBe("https://github.com/xz-dev/dsh-bin/releases/download/dsh-addon-office-v0.1.1-xz.1.1.g00000001/dsh-addon-office-windows-x64.zip");
-		expect(o.post_install.join("\n")).toContain("addons\\office\\0.1.1-xz.1.1.g00000001");
-		expect(o.post_install.join("\n")).toContain("forced = $false");
-		expect(o.pre_uninstall.join("\n")).toContain("Remove('office')");
+		const post = o.post_install.join("\n");
+		// The one installed version is the packaged one: older versions go, the new one gets its usage guard.
+		expect(post).toContain("current\\addons\\office'; if (Test-Path $o) { Remove-Item -Recurse -Force $o }");
+		expect(post).toContain("addons\\office\\0.1.1-xz.1.1.g00000001");
+		expect(post).toContain(".usage.lock");
+		expect(JSON.stringify(o)).not.toContain("addons.json");
+		expect(JSON.stringify(o)).not.toContain("forced");
+		expect(o.pre_uninstall.join("\n")).toContain("addons\\office\\0.1.1-xz.1.1.g00000001");
 	});
 
 	test("a missing Windows asset fails instead of writing a broken manifest", () => {

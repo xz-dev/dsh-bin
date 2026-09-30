@@ -903,3 +903,21 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   builds of one rc.2 checkout (building rc.1 needs Node, which this host lacks). The real pair and the
   12-target matrix are verified by CI accept once 7.1 publishes; 6.1 is ticked only then.
 - Full suite: 352 pass / 0 fail.
+
+### Task 6.2: Scoop manifests
+
+- `dsh.json` / `dsh-live.json` persist only `addons/`; `addons.json` and its empty-file fix-up are gone.
+- `dsh-office.json` installs its version into the `dsh` app's `addons/office/<version>/` with the usage
+  guard, the same end state as `dsh install --addon office:<v>`, and removes other office versions left
+  by an older `dsh-office`, so the one installed version is the packaged one (a managed launch uses the
+  newest installed in-slot version; version-selection "Managed installations are pre-selected").
+  Uninstall removes that directory. No record is written.
+- Unit tests: `persist` is `["addons"]`, no manifest mentions `addons.json` or `forced`, and the office
+  install/uninstall scripts target `addons\office\<v>` with its guard.
+- New manual workflow `scoop-check.yml` (windows-2022): installs Scoop, adds this repo's bucket
+  (branch input, default `scoop`), `scoop install dsh-bin/dsh` and `dsh-office`, then checks the
+  managed lock, no `addons.json`, exactly one office version with its guard, `dsh --version`, `update`
+  and `--use` refused naming scoop, `dsh select` and `dsh list --json` showing the packaged office, and
+  that `scoop uninstall dsh-office` removes it. actionlint 1.7.7 is clean.
+- **Not yet verified:** the real `scoop install` needs published assets and the regenerated bucket; it
+  runs after 7.1, and 6.2 is ticked only then.

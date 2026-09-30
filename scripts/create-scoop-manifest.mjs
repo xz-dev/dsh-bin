@@ -2,8 +2,9 @@
 //   bucket/dsh.json        newest release-channel entry
 //   bucket/dsh-live.json   newest live-channel entry
 //   bucket/dsh-office.json office addon pinned by the newest release entry; depends on `dsh`
-// Every install drops `.scoop.managed.lock`, so `dsh update` / `install --addon` refuse and name scoop.
-// `addons/` and `addons.json` are persisted, so `scoop update dsh` keeps installed addons.
+// Every install drops `.scoop.managed.lock`, so `dsh update` / `install` and `--use`/`--addon` refuse and name
+// scoop. `addons/` is persisted, so `scoop update dsh` keeps the installed addon version; that one version is
+// what a managed launch uses (version-selection "Managed installations are pre-selected"), no record needed.
 // usage: bun scripts/create-scoop-manifest.mjs <index.json> <bucket-dir> [--repo owner/name]
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -36,9 +37,8 @@ export function scoopManifests(index, repo = "xz-dev/dsh-bin") {
 		homepage: `https://github.com/${repo}`,
 		license: "MIT",
 		bin: "dsh.exe",
-		persist: ["addons", "addons.json"],
-		// Scoop creates a missing persisted file empty; the updater expects JSON.
-		post_install: [managedLock, "$s = Join-Path $dir 'addons.json'; if ((Get-Item $s).Length -eq 0) { Set-Content -NoNewline -Path $s -Value '{}' }"],
+		persist: ["addons"],
+		post_install: [managedLock],
 	};
 	for (const [name, channel] of [["dsh", "release"], ["dsh-live", "live"]]) {
 		const e = newest(index.channels?.[channel]);
@@ -57,17 +57,15 @@ export function scoopManifests(index, repo = "xz-dev/dsh-bin") {
 			license: "MPL-2.0",
 			depends: "dsh",
 			architecture: architecture(addon, ADDON_ARCH, repo),
-			// Same end state as `dsh install --addon office`: files under addons/office/<v>, recorded in addons.json.
+			// Same end state as `dsh install --addon office:<v>`: the files under addons/office/<v>. Other versions
+			// left by an older dsh-office are removed, so the one installed version is the packaged one.
 			post_install: [
-				`$t = ${target}; if (Test-Path $t) { Remove-Item -Recurse -Force $t }; New-Item -ItemType Directory -Force $t | Out-Null`,
+				`$o = Join-Path (appdir dsh $global) 'current\\addons\\office'; if (Test-Path $o) { Remove-Item -Recurse -Force $o }`,
+				`$t = ${target}; New-Item -ItemType Directory -Force $t | Out-Null`,
 				"Get-ChildItem -Force $dir | Where-Object Name -NotIn @('manifest.json','install.json') | Copy-Item -Recurse -Destination $t",
-				`$s = Join-Path (appdir dsh $global) 'current\\addons.json'; $j = @{}; if ((Test-Path $s) -and (Get-Item $s).Length) { (Get-Content -Raw $s | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $j[$_.Name] = $_.Value } }`,
-				`$j['office'] = @{ version = '${addon.version}'; forced = $false }; $j | ConvertTo-Json | Set-Content -NoNewline -Path $s`,
+				"New-Item -Force -ItemType File (Join-Path $t '.usage.lock') | Out-Null",
 			],
-			pre_uninstall: [
-				`$s = Join-Path (appdir dsh $global) 'current\\addons.json'; if (Test-Path $s) { $j = Get-Content -Raw $s | ConvertFrom-Json; $j.PSObject.Properties.Remove('office'); $j | ConvertTo-Json | Set-Content -NoNewline -Path $s }`,
-				`$t = ${target}; if (Test-Path $t) { Remove-Item -Recurse -Force $t }`,
-			],
+			pre_uninstall: [`$t = ${target}; if (Test-Path $t) { Remove-Item -Recurse -Force $t }`],
 		};
 	}
 	return out;

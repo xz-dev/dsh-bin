@@ -1,0 +1,54 @@
+name: scoop-check
+
+# Real `scoop install` of the published bucket on a Windows runner (task 6.2): dsh and dsh-office install,
+# the install is managed (`update` and `--use` refused naming scoop), the packaged office version is the one
+# under addons/office/, and uninstalling dsh-office removes it. Manual: it needs published assets.
+on:
+  workflow_dispatch:
+    inputs:
+      ref: { description: "bucket branch to install from", default: "scoop", required: false }
+
+permissions: { contents: read }
+
+jobs:
+  scoop:
+    runs-on: windows-2022
+    steps:
+      - name: Install Scoop
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+          Invoke-RestMethod -Uri https://get.scoop.sh -OutFile install.ps1
+          .\install.ps1 -RunAsAdmin
+          "$env:USERPROFILE\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Install dsh and dsh-office from the bucket
+        shell: pwsh
+        env: { REF: "${{ inputs.ref }}" }
+        run: |
+          $ErrorActionPreference = 'Stop'
+          scoop bucket add dsh-bin "https://github.com/$env:GITHUB_REPOSITORY"
+          git -C (Join-Path (scoop prefix scoop) '..\..\..\buckets\dsh-bin') checkout $env:REF
+          scoop install dsh-bin/dsh
+          scoop install dsh-bin/dsh-office
+      - name: Check the managed install
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $root = scoop prefix dsh
+          function Check($cond, $what) { if (-not $cond) { Write-Error "scoop-check: $what"; exit 1 } }
+          Check (Test-Path (Join-Path $root '.scoop.managed.lock')) 'managed lock'
+          Check (-not (Test-Path (Join-Path $root 'addons.json'))) 'no addons.json'
+          $office = Get-ChildItem (Join-Path $root 'addons\office') -Directory
+          Check ($office.Count -eq 1) "one office version, found $($office.Count)"
+          Check (Test-Path (Join-Path $office[0].FullName '.usage.lock')) 'office usage guard'
+          dsh --version; Check ($LASTEXITCODE -eq 0) 'dsh --version'
+          $out = dsh update 2>&1 | Out-String; Check ($LASTEXITCODE -ne 0 -and $out -match 'scoop') "update refused naming scoop: $out"
+          $out = dsh --use latest --version 2>&1 | Out-String; Check ($LASTEXITCODE -ne 0 -and $out -match 'managed by scoop') "--use refused: $out"
+          $out = dsh select 2>&1 | Out-String; Check ($out -match "office:\s+$([regex]::Escape($office[0].Name)) \(managed\)") "select shows the packaged office: $out"
+          $out = dsh list --json | ConvertFrom-Json; Check ($out.addons[0].installed[0].version -eq $office[0].Name) 'list shows the packaged office'
+      - name: Uninstall dsh-office
+        shell: pwsh
+        run: |
+          scoop uninstall dsh-office
+          $root = scoop prefix dsh
+          if (Get-ChildItem (Join-Path $root 'addons\office') -Directory -ErrorAction SilentlyContinue) { Write-Error 'office left behind'; exit 1 }
