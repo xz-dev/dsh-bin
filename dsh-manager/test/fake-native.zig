@@ -49,6 +49,16 @@ pub fn main() !void {
         });
     };
 
+    if (env.get("FAKE_WRITE_STATE") != null) {
+        // CI's fake probes the public child environment by really writing each declared cache/temp dir.
+        const names = [_][]const u8{ "DSH_HOME", "BUN_INSTALL_CACHE_DIR", "BUN_RUNTIME_TRANSPILER_CACHE_PATH", "npm_config_cache", "pnpm_config_store_dir", "pnpm_config_cache_dir", "pnpm_config_state_dir", "PNPM_HOME", "TMPDIR", "TEMP", "TMP" };
+        for (names) |name| {
+            const target = env.get(name) orelse continue;
+            try std.fs.cwd().makePath(target);
+            try std.fs.cwd().writeFile(.{ .sub_path = try std.fs.path.join(a, &.{ target, try std.fmt.allocPrint(a, "{s}.probe", .{name}) }), .data = "contained" });
+        }
+    }
+
     if (env.get("FAKE_HOLD") != null) {
         try dir.writeFile(.{ .sub_path = "started", .data = "" });
         std.Thread.sleep(30 * std.time.ns_per_s);

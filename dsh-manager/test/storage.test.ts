@@ -1,9 +1,10 @@
 // Section 2 acceptance: real manager process, isolated user dirs, no host JS runtime on PATH.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { addRuntime, build, cleanup, EXE, hasZig, launchOf, newInstall, run, started, tempDir, tree, WIN } from "./harness.ts";
+import { acquireClaim } from "./claim-probe.ts";
+import { addRuntime, baseEnv, build, cleanup, envOf, EXE, hasZig, launchOf, newInstall, run, started, tempDir, tree, WIN } from "./harness.ts";
 
 beforeAll(() => { if (hasZig) build(); }, 300_000);
 afterAll(cleanup);
@@ -92,10 +93,9 @@ test.skipIf(!hasZig)("PS-READONLY: denied portable prefix or data directory fail
 		if (existingData) mkdirSync(i.data);
 		const restore = denyWrites(existingData ? i.data : i.dir);
 		try {
-			const xdg = tempDir("dsh-unused-xdg-");
-			rejected(i, run(i, [], { env: { XDG_DATA_HOME: xdg, LOCALAPPDATA: xdg } }), "not writable");
+			rejected(i, run(i, [], { env: { XDG_DATA_HOME: i.out, LOCALAPPDATA: i.out } }), "not writable");
 			expect(existsSync(join(i.data, DATA_MARKER))).toBe(false);
-			expect(tree(xdg)).toEqual([]);
+			expect(tree(i.out)).toEqual([]);
 			for (const args of [["manager", "list"], ["--help"], ["--version"]]) expect(run(i, args).status).toBe(0);
 		} finally { restore(); }
 	}
@@ -112,16 +112,16 @@ test.skipIf(!hasZig)("PS-MANAGED: portage writes absolute XDG data or HOME fallb
 		const xdg = tempDir("dsh-user-data-");
 		const data = absoluteXdg ? join(xdg, "dsh-bin") : join(i.home, ".local", "share", "dsh-bin");
 		managed(i, "portage", data);
+		const env = { XDG_DATA_HOME: absoluteXdg ? xdg : "relative-data" };
+		const info = run(i, ["manager", "info"], { env });
+		expect(info.status).toBe(0);
+		expect(info.stdout).toContain("portage");
+		expect(info.stdout).toContain(data);
+		expect(info.stdout).toContain(join(data, "home"));
+		expect(existsSync(data)).toBe(false); // info is read-only
 		const before = tree(i.dir);
 		const restore = denyWrites(i.dir);
 		try {
-			const env = { XDG_DATA_HOME: absoluteXdg ? xdg : "relative-data" };
-			const info = run(i, ["manager", "info"], { env });
-			expect(info.status).toBe(0);
-			expect(info.stdout).toContain("portage");
-			expect(info.stdout).toContain(data);
-			expect(info.stdout).toContain(join(data, "home"));
-			expect(existsSync(data)).toBe(false); // info is read-only
 			run(i, [], { env });
 			expect(JSON.parse(readFileSync(join(data, DATA_MARKER), "utf8"))).toEqual(OWNED);
 			expect(tree(i.dir)).toEqual(before);
@@ -185,4 +185,134 @@ test.skipIf(!hasZig)("PS-OVERRIDE: manager info reports resolved app home and ex
 	expect(result.stdout).toContain("outside the portability guarantee");
 	expect(existsSync(i.data)).toBe(false);
 	expect(tree(i.home)).toEqual([]);
+});
+
+const CACHE_PATHS = {
+	BUN_INSTALL_CACHE_DIR: "cache/bun",
+	BUN_RUNTIME_TRANSPILER_CACHE_PATH: "cache/transpiler",
+	npm_config_cache: "cache/npm",
+	pnpm_config_store_dir: "cache/pnpm/store",
+	pnpm_config_cache_dir: "cache/pnpm/cache",
+	pnpm_config_state_dir: "state/pnpm",
+	PNPM_HOME: "cache/pnpm/home",
+	TMPDIR: "tmp", TEMP: "tmp", TMP: "tmp",
+};
+
+test.skipIf(!hasZig)("PS-CONTAIN / RB-HOME: first launch supplies real empty snapshot with guard and relative metadata, then reuses newest", () => {
+	const i = newInstall();
+	addRuntime(i.data, ID);
+	expect(run(i, []).status).toBe(0);
+	const snapshot = { id: `${ID}@1`, dir: join(i.data, "snapshots", `${ID}@1`) };
+	expect(launchOf(i).snapshot).toEqual(snapshot);
+	expect(existsSync(join(snapshot.dir, ".usage.lock"))).toBe(true);
+	const meta = JSON.parse(readFileSync(join(snapshot.dir, "snapshot.json"), "utf8"));
+	expect(meta).toMatchObject({ id: snapshot.id, version: ID, n: 1, source: "empty", reason: "start" });
+	expect(JSON.stringify(meta)).not.toContain(i.dir);
+	expect(tree(snapshot.dir)).toEqual([".usage.lock", "profiles", "snapshot.json"]);
+	expect(meta.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+	const newest = join(i.data, "snapshots", `${ID}@3`);
+	mkdirSync(newest);
+	writeFileSync(join(newest, ".usage.lock"), "");
+	writeFileSync(join(newest, "snapshot.json"), JSON.stringify({ ...meta, id: `${ID}@3`, n: 3 }));
+	writeFileSync(join(newest, "plugin-data"), "keep");
+	const before = tree(i.data);
+	expect(run(i, []).status).toBe(0);
+	expect(launchOf(i).snapshot).toEqual({ id: `${ID}@3`, dir: newest });
+	expect(tree(i.data)).toEqual(before);
+	expect(readFileSync(join(newest, "plugin-data"), "utf8")).toBe("keep");
+});
+
+test.skipIf(!hasZig)("PS-CONTAIN: fake runtime file audit uses controlled Bun/pnpm/temp paths, never inherited global caches", () => {
+	const i = newInstall();
+	addRuntime(i.data, ID);
+	const poisoned = Object.fromEntries(Object.keys(CACHE_PATHS).map((k) => [k, join(i.home, k)]));
+	expect(run(i, [], { env: { ...poisoned, FAKE_WRITE_STATE: "1" } }).status).toBe(0);
+	const env = envOf(i);
+	for (const [key, relative] of Object.entries(CACHE_PATHS)) {
+		expect(env[key]).toBe(join(i.data, relative));
+		expect(readFileSync(join(env[key], `${key}.probe`), "utf8")).toBe("contained");
+	}
+	expect(launchOf(i)).toMatchObject({ home: join(i.data, "home"), cache: join(i.data, "cache"), tmp: join(i.data, "tmp") });
+	expect(env.HOME).toBe(i.home);
+	expect(env.USERPROFILE).toBe(i.home);
+	expect(tree(i.home)).toEqual([]);
+});
+
+// Task 6.2 owns explicit snapshot selection; this slice only hands off and protects the initial/newest one.
+test.skipIf(!hasZig)("RB-HOME: initial snapshot usage claim stays held until runtime exits", async () => {
+	const i = newInstall();
+	addRuntime(i.data, ID);
+	const proc = Bun.spawn([i.exe], { env: { ...baseEnv(i), FAKE_HOLD: "1" }, stdout: "ignore", stderr: "pipe" });
+	try {
+		for (let n = 0; n < 250 && !started(i); n++) await Bun.sleep(20);
+		expect(started(i)).toBe(true);
+		const guard = join(launchOf(i).snapshot.dir, ".usage.lock");
+		const claim = acquireClaim(guard, "exclusive");
+		try { expect(claim).toBe("busy"); } finally { if (claim !== "busy") claim.release(); }
+	} finally { proc.kill("SIGKILL"); await proc.exited; }
+	const guard = join(i.data, "snapshots", `${ID}@1`, ".usage.lock");
+	let claim = acquireClaim(guard, "exclusive");
+	for (let n = 0; n < 50 && claim === "busy"; n++) {
+		await Bun.sleep(100);
+		claim = acquireClaim(guard, "exclusive");
+	}
+	try { expect(claim).not.toBe("busy"); } finally { if (claim !== "busy") claim.release(); }
+});
+
+test.skipIf(!hasZig)("PS-MOVE / DL-NO-MIGRATION: stopped binary+data relocate offline; moving only binary starts fresh", () => {
+	const i = newInstall();
+	addRuntime(i.data, ID);
+	addRuntime(i.data, "0.3.0-b2.1.gcafefeed", { run: 2 });
+	mkdirSync(join(i.data, "state"));
+	const selection = JSON.stringify({ schema: 1, use: ID, snapshot: null, addons: {} });
+	writeFileSync(join(i.data, "state/selection.json"), selection);
+	expect(run(i, []).status).toBe(0); // stopped before move
+	const first = launchOf(i).snapshot;
+	writeFileSync(join(first.dir, "saved-plugin-state"), "survives move");
+	mkdirSync(join(i.data, "home"));
+	writeFileSync(join(i.data, "home/session"), "session survives");
+	const oldDir = i.dir;
+	const moved = join(tempDir("dsh-relocated-"), "install with spaces");
+	renameSync(oldDir, moved);
+	writeFileSync(oldDir, "old path inaccessible: not a directory");
+	i.dir = moved; i.exe = join(moved, `dsh${EXE}`); i.data = join(moved, "dsh-bin");
+	expect(run(i, [], { env: { DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: "http://127.0.0.1:1", HTTP_PROXY: "http://127.0.0.1:1", HTTPS_PROXY: "http://127.0.0.1:1" } }).status).toBe(0);
+	expect(launchOf(i)).toMatchObject({ runtime: ID, dataRoot: i.data, home: join(i.data, "home"), snapshot: { id: `${ID}@1`, dir: join(i.data, "snapshots", `${ID}@1`) } });
+	expect(readFileSync(join(launchOf(i).snapshot.dir, "saved-plugin-state"), "utf8")).toBe("survives move");
+	expect(readFileSync(join(i.data, "home/session"), "utf8")).toBe("session survives");
+	expect(readFileSync(join(i.data, "state/selection.json"), "utf8")).toBe(selection);
+	const metadata = readFileSync(join(launchOf(i).snapshot.dir, "snapshot.json"), "utf8");
+	expect(metadata).not.toContain(oldDir);
+	expect(metadata).not.toContain(moved);
+
+	const fresh = newInstall();
+	// Replace an existing executable explicitly; Node rename-over-file is not uniform on Windows.
+	rmSync(fresh.exe);
+	renameSync(i.exe, fresh.exe);
+	mkdirSync(join(fresh.home, ".dsh"));
+	writeFileSync(join(fresh.home, ".dsh/legacy-data"), "do not adopt");
+	const result = run(fresh, []);
+	expect(result.status).toBe(1);
+	expect(result.stderr).toContain("no release-channel dsh runtime");
+	expect(started(fresh)).toBe(false);
+	expect(JSON.parse(readFileSync(join(fresh.data, DATA_MARKER), "utf8"))).toEqual(OWNED);
+	expect(existsSync(join(fresh.data, "bundles"))).toBe(false);
+	expect(readFileSync(join(fresh.home, ".dsh/legacy-data"), "utf8")).toBe("do not adopt");
+	expect(readFileSync(join(i.data, "home/session"), "utf8")).toBe("session survives");
+});
+
+test.skipIf(!hasZig)("PS-CONFLICT / PS-CONTAIN: directory links cannot redirect managed data/cache outside root", () => {
+	for (const child of [false, true]) {
+		const i = newInstall();
+		const external = tempDir("dsh-do-not-write-");
+		if (child) addRuntime(i.data, ID);
+		else writeFileSync(join(external, DATA_MARKER), JSON.stringify(OWNED));
+		symlinkSync(external, child ? join(i.data, "cache") : i.data, WIN ? "junction" : "dir");
+		const before = tree(external);
+		const result = run(i, []);
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain(i.data);
+		expect(started(i)).toBe(false);
+		expect(tree(external)).toEqual(before);
+	}
 });

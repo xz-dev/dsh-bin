@@ -41,6 +41,7 @@ pub const Ctx = struct {
             self.writeError(err);
         };
         defer dir.close();
+        if ((dir.stat() catch |err| self.writeError(err)).kind != .directory) self.conflict();
         const bytes = dir.readFileAlloc(self.a, data_marker, 4096) catch |err| switch (err) {
             error.FileNotFound => null,
             else => self.conflict(),
@@ -63,6 +64,19 @@ pub const Ctx = struct {
         }
         file.close(); // Close before rename, including Windows.
         if (bytes == null) dir.rename(temp, data_marker) catch |err| self.writeError(err);
+    }
+
+    /// Create manager-controlled descendants without following directory links out of the data root.
+    pub fn ensureDir(self: *const Ctx, parts: []const []const u8) std.fs.Dir {
+        var dir = std.fs.cwd().openDir(self.data, .{ .iterate = true, .no_follow = true }) catch |err| self.writeError(err);
+        for (parts) |part| {
+            dir.makeDir(part) catch |err| if (err != error.PathAlreadyExists) self.writeError(err);
+            const next = dir.openDir(part, .{ .iterate = true, .no_follow = true }) catch |err| self.writeError(err);
+            if ((next.stat() catch |err| self.writeError(err)).kind != .directory) self.conflict();
+            dir.close();
+            dir = next;
+        }
+        return dir;
     }
 
     fn conflict(self: *const Ctx) noreturn {

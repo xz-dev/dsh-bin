@@ -8,6 +8,7 @@ const select = @import("select.zig");
 const runtimes = @import("runtimes.zig");
 const state = @import("state.zig");
 const lock = @import("lock.zig");
+const snapshot = @import("snapshot.zig");
 const options = @import("build_options");
 const Ctx = @import("context.zig").Ctx;
 const is_windows = builtin.os.tag == .windows;
@@ -22,6 +23,7 @@ pub const Plan = struct {
     /// Leading arguments consumed by `--use/--snapshot/--addon`.
     consumed: usize,
     payload: []const u8,
+    snapshot: snapshot.Snapshot,
 };
 
 pub fn parseLeading(a: std.mem.Allocator, args: []const []const u8) select.Options {
@@ -71,17 +73,20 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
         .ok => |p| p,
         else => |p| runtimes.report(resolved.version, p),
     };
+    const snap = snapshot.prepare(ctx, resolved.version, runtimes.metaOf(bundles, resolved.version).?);
     const payload = std.json.Stringify.valueAlloc(ctx.a, .{
         .protocol = select.protocol,
         .runtime = resolved.version,
         .source = @tagName(resolved.source),
         .dataRoot = ctx.data,
         .home = ctx.home(),
-        .snapshot = null,
+        .snapshot = snap,
         .addons = struct {}{},
+        .cache = ctx.path(&.{"cache"}),
+        .tmp = ctx.path(&.{"tmp"}),
         .manager = options.version,
     }, .{}) catch util.oom();
-    return .{ .runtime = resolved.version, .entry = entry, .consumed = opts.consumed, .payload = payload };
+    return .{ .runtime = resolved.version, .entry = entry, .consumed = opts.consumed, .payload = payload, .snapshot = snap };
 }
 
 fn childEnv(ctx: *Ctx, p: Plan) void {
@@ -89,6 +94,25 @@ fn childEnv(ctx: *Ctx, p: Plan) void {
     ctx.env.remove("DSH_BIN_LAUNCH");
     ctx.env.put("DSH_HOME", ctx.home()) catch util.oom();
     ctx.env.put("DSH_MANAGER_LAUNCH", p.payload) catch util.oom();
+    // Bun 1.4.2 and bundled pnpm honour these specific variables (real-runtime acceptance probes them).
+    const paths = .{
+        .{ "BUN_INSTALL_CACHE_DIR", &.{ "cache", "bun" } },
+        .{ "BUN_RUNTIME_TRANSPILER_CACHE_PATH", &.{ "cache", "transpiler" } },
+        .{ "npm_config_cache", &.{ "cache", "npm" } },
+        .{ "pnpm_config_store_dir", &.{ "cache", "pnpm", "store" } },
+        .{ "pnpm_config_cache_dir", &.{ "cache", "pnpm", "cache" } },
+        .{ "pnpm_config_state_dir", &.{ "state", "pnpm" } },
+        .{ "PNPM_HOME", &.{ "cache", "pnpm", "home" } },
+        .{ "TMPDIR", &.{"tmp"} },
+        .{ "TEMP", &.{"tmp"} },
+        .{ "TMP", &.{"tmp"} },
+    };
+    inline for (paths) |pair| {
+        var dir = ctx.ensureDir(pair[1]);
+        dir.close();
+        ctx.env.remove(pair[0]); // Windows EnvMap preserves spelling; canonical keys matter to pnpm.
+        ctx.env.put(pair[0], ctx.path(pair[1])) catch util.oom();
+    }
 }
 
 /// Shared claim on the runtime's guard; a busy guard means it is being replaced or removed.
@@ -113,6 +137,8 @@ pub fn run(ctx: *Ctx, args: []const []const u8) noreturn {
     ctx.ensureData();
     const p = plan(ctx, args);
     claim(ctx, p.runtime);
+    _ = lock.tryAcquire(util.join(ctx.a, &.{ p.snapshot.dir, ".usage.lock" }), .shared, false) catch |err|
+        util.fatal("cannot claim snapshot {s}: {s}", .{ p.snapshot.id, @errorName(err) });
     childEnv(ctx, p);
     if (is_windows) runWindows(ctx, p) else runPosix(ctx, p);
 }

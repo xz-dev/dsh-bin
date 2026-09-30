@@ -6,6 +6,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { acquireClaim } from "./claim-probe.ts";
+import { tree } from "./harness.ts";
 import { MANAGER_DIR, EXE } from "./harness.ts";
 
 const RUNTIME_PROJECT = resolve(MANAGER_DIR, "../dsh-bun-build");
@@ -51,6 +52,8 @@ const env = () => ({ PATH: path, HOME: home, USERPROFILE: home, DSH_HOME: home, 
 const run = (exe: string, args: string[]) => spawnSync(exe, ["--use", id, ...args], { cwd, env: env(), encoding: "utf8", timeout: 30_000 });
 
 test.skipIf(!available)(`RB-HOME: real app reads shared cordis.patch.yml from external home, not snapshot/../../profiles${available ? "" : ` — SKIP: ${skipReason}`}`, () => {
+	const first = run(managers[0]!, ["--version"]);
+	expect(first.status).toBe(0);
 	const snapshot = join(root, "tools/dsh-bin/snapshots", `${id}@1`);
 	const profile = join(snapshot, "profiles", "split-probe");
 	mkdirSync(profile, { recursive: true });
@@ -59,8 +62,7 @@ test.skipIf(!available)(`RB-HOME: real app reads shared cordis.patch.yml from ex
 	const shared = join(home, "profiles", "split-probe");
 	mkdirSync(shared, { recursive: true });
 	writeFileSync(join(shared, "cordis.patch.yml"), "- insert:\n    - id: from-external-home\n      name: dsh-acceptance-probe\n");
-	const launch = { protocol: 1, runtime: id, dataRoot: join(root, "tools/dsh-bin"), home, snapshot: { id: `${id}@1`, dir: snapshot }, addons: {}, cache: null, manager: "1.0.0" };
-	const result = spawnSync(join(bundle, `dsh-native${EXE}`), ["--profile", "split-probe", "--dump-config"], { cwd, env: { ...env(), DSH_MANAGER_LAUNCH: JSON.stringify(launch) }, encoding: "utf8", timeout: 30_000 });
+	const result = run(managers[0]!, ["--profile", "split-probe", "--dump-config"]);
 	if (result.status !== 0) console.error(result.stdout, result.stderr);
 	expect(result.status).toBe(0);
 	expect(result.stdout).toContain("from-external-home");
@@ -96,13 +98,15 @@ test.skipIf(!available)(`RB-INDEPENDENT / MC-ARGS: same real archive through two
 		expect(help.stdout).toContain("dsh: boot a DeepSeek Harness profile");
 		expect(spawnSync(exe, ["manager", "--version"], { env: env(), encoding: "utf8" }).stdout).toContain(n ? "2.0.0" : "1.0.0");
 	}
-	const profile = join(home, "profiles", "probe");
+	const profile = join(root, "tools/dsh-bin/snapshots", `${id}@1`, "profiles", "probe");
+	const shared = join(home, "profiles", "probe");
+	mkdirSync(shared, { recursive: true });
 	const plugin = join(profile, "node_modules", "dsh-acceptance-probe");
 	mkdirSync(plugin, { recursive: true });
 	writeFileSync(join(profile, "package.json"), JSON.stringify({ name: "acceptance-profile", private: true, dsh: { profile: { bundles: [] } } }));
 	writeFileSync(join(plugin, "package.json"), JSON.stringify({ name: "dsh-acceptance-probe", version: "1.0.0", type: "module", main: "index.js" }));
 	writeFileSync(join(plugin, "index.js"), PROBE);
-	writeFileSync(join(profile, "cordis.patch.yml"), "- insert:\n    - id: acceptance-probe\n      name: dsh-acceptance-probe\n");
+	writeFileSync(join(shared, "cordis.patch.yml"), "- insert:\n    - id: acceptance-probe\n      name: dsh-acceptance-probe\n");
 	const args = ["-p", "manager update --use latest", "with space", "", "--use", "app-tail"];
 	const input = "stdin belongs to real dsh\n第二行\n";
 	for (const [n, exe] of managers.entries()) {
@@ -124,7 +128,7 @@ test.skipIf(!available)(`RB-INDEPENDENT / MC-ARGS: same real archive through two
 			if (code !== 7 || !stdout.includes("DSH_PROBE ")) console.error(stdout, await stderr);
 			expect(code).toBe(7);
 			const report = JSON.parse(stdout.split("\n").find((l) => l.startsWith("DSH_PROBE "))!.slice(10));
-			expect(report).toMatchObject({ args, cwd, input, launch: { protocol: 1, runtime: id, home, snapshot: null, manager: n ? "2.0.0" : "1.0.0" } });
+			expect(report).toMatchObject({ args, cwd, input, launch: { protocol: 1, runtime: id, home, snapshot: { id: `${id}@1`, dir: join(root, "tools/dsh-bin/snapshots", `${id}@1`) }, manager: n ? "2.0.0" : "1.0.0" } });
 			expect(stdout).toContain("DSH_HELD");
 			expect(await stderr).not.toContain("failed to load");
 		} finally { clearTimeout(timer); if (proc.exitCode === null) { proc.kill("SIGKILL"); await proc.exited; } }
@@ -134,3 +138,105 @@ test.skipIf(!available)(`RB-INDEPENDENT / MC-ARGS: same real archive through two
 	}
 	expect(readFileSync(join(bundle, `dsh-native${EXE}`)).equals(nativeBefore)).toBe(true);
 }, 120_000);
+
+// Real pinned Bun + embedded pnpm, using the environment seen by a plugin in a real manager start.
+// Local registry supplies deterministic bytes; no public registry or host Bun/Node in tested PATH.
+test.skipIf(!available)(`PS-CONTAIN: isolated HOME file-change audit over real runtime, Bun caches, embedded pnpm and temp${available ? "" : ` — SKIP: ${skipReason}`}`, async () => {
+	const audit = join(root, "audit");
+	const tools = join(audit, "tools");
+	const data = join(tools, "dsh-bin");
+	const userHome = join(audit, "isolated-home");
+	mkdirSync(tools, { recursive: true });
+	mkdirSync(userHome);
+	cpSync(join(root, "tools/dsh-bin"), data, { recursive: true });
+	rmSync(join(data, "cache"), { recursive: true, force: true });
+	const exe = join(tools, `dsh${EXE}`);
+	cpSync(managers[0]!, exe);
+	const inherited = { PATH: path, HOME: userHome, USERPROFILE: userHome, NO_COLOR: "1", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) };
+	const initialize = spawnSync(exe, ["--use", id, "--version"], { cwd, env: inherited, encoding: "utf8", timeout: 30_000 });
+	if (initialize.status !== 0) console.error(initialize.stdout, initialize.stderr);
+	expect(initialize.status).toBe(0);
+	const profile = join(data, "snapshots", `${id}@1`, "profiles", "audit");
+	const plugin = join(profile, "node_modules", "dsh-audit-probe");
+	mkdirSync(plugin, { recursive: true });
+	writeFileSync(join(profile, "package.json"), JSON.stringify({ name: "audit-profile", private: true, dsh: { profile: { bundles: [] } } }));
+	const shared = join(data, "home", "profiles", "audit");
+	mkdirSync(shared, { recursive: true });
+	writeFileSync(join(shared, "cordis.patch.yml"), "- insert:\n    - id: audit-probe\n      name: dsh-audit-probe\n");
+	writeFileSync(join(plugin, "package.json"), JSON.stringify({ name: "dsh-audit-probe", type: "module", main: "index.js" }));
+	writeFileSync(join(plugin, "index.js"), `export function apply(ctx) {
+		ctx.appReady.onReady(() => { console.log("DSH_AUDIT_ENV " + JSON.stringify(process.env)); ctx.appExit(0); });
+	}`);
+	const start = spawnSync(exe, ["--profile", "audit"], { cwd, env: inherited, encoding: "utf8", timeout: 30_000 });
+	if (start.status !== 0) console.error(start.stdout, start.stderr);
+	expect(start.status).toBe(0);
+	const childEnv = JSON.parse(start.stdout.split("\n").find((l) => l.startsWith("DSH_AUDIT_ENV "))!.slice(14));
+	expect(childEnv.HOME).toBe(userHome);
+	expect(childEnv.DSH_HOME).toBe(join(data, "home"));
+	const native = join(data, "bundles", id, `dsh-native${EXE}`);
+	const embedded = (args: string[], workingDir = cwd) => spawnSync(native, args, { cwd: workingDir, env: { ...childEnv, BUN_BE_BUN: "1" }, encoding: "utf8", timeout: 30_000 });
+	const pnpm = (args: string[]) => embedded([join(data, "bundles", id, "pnpm/dist/pnpm.mjs"), ...args]);
+	expect(embedded(["--version"]).stdout.trim()).toBe("1.4.2");
+	expect(pnpm(["--version"]).stdout.trim()).toBe("11.7.0");
+	for (const [key, value] of [["store-dir", join(data, "cache/pnpm/store")], ["cache-dir", join(data, "cache/pnpm/cache")], ["state-dir", join(data, "state/pnpm")]]) {
+		const config = pnpm(["config", "get", key]);
+		expect(config.status).toBe(0);
+		expect(config.stdout.trim()).toBe(value);
+	}
+	const store = pnpm(["store", "path"]);
+	expect(store.status).toBe(0);
+	expect(store.stdout.trim()).toBe(join(data, "cache/pnpm/store/v11"));
+	const tmp = embedded(["-e", "console.log(require('node:os').tmpdir())"]);
+	expect(tmp.status).toBe(0);
+	expect(tmp.stdout.trim()).toBe(join(data, "tmp"));
+	const transpiler = join(data, "cache/transpiler");
+	const cacheBefore = tree(transpiler);
+	const source = join(data, "tmp/transpiler-probe.ts");
+	writeFileSync(source, `${"// real Bun transpiler cache probe\n".repeat(4000)}const value: string = 'cached'; console.log(value);\n`);
+	const compiled = embedded([source]);
+	expect(compiled.status).toBe(0);
+	expect(compiled.stdout.trim()).toBe("cached");
+	expect(tree(transpiler).length).toBeGreaterThan(cacheBefore.length);
+
+	const bytes = await new Bun.Archive({
+		"package/package.json": JSON.stringify({ name: "dsh-cache-probe", version: "1.0.0", main: "index.js" }),
+		"package/index.js": "module.exports = 'local-registry-probe';\n",
+	}, { compress: "gzip" }).bytes();
+	const requests: string[] = [];
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+		const url = new URL(req.url);
+		requests.push(url.pathname);
+		if (url.pathname.endsWith(".tgz")) return new Response(bytes, { headers: { "Content-Type": "application/octet-stream" } });
+		if (url.pathname === "/dsh-cache-probe") return Response.json({ name: "dsh-cache-probe", "dist-tags": { latest: "1.0.0" }, versions: { "1.0.0": { name: "dsh-cache-probe", version: "1.0.0", dist: { tarball: `${url.origin}/dsh-cache-probe/-/probe.tgz`, shasum: new Bun.CryptoHasher("sha1").update(bytes).digest("hex") } } } });
+		return new Response("not found", { status: 404 });
+	} });
+	const install = async (args: string[], workingDir: string) => {
+		const proc = Bun.spawn([native, ...args], { cwd: workingDir, env: { ...childEnv, BUN_BE_BUN: "1" }, stdout: "pipe", stderr: "pipe" });
+		const timer = setTimeout(() => proc.kill("SIGKILL"), 30_000);
+		try {
+			const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+			if (code !== 0) console.error(stdout, stderr);
+			expect(code).toBe(0);
+		} finally { clearTimeout(timer); if (proc.exitCode === null) { proc.kill("SIGKILL"); await proc.exited; } }
+	};
+	try {
+		const registry = `http://127.0.0.1:${server.port}`;
+		const bunProject = join(data, "tmp/bun-install");
+		const pnpmProject = join(data, "tmp/pnpm-install");
+		for (const dir of [bunProject, pnpmProject]) {
+			mkdirSync(dir);
+			writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "cache-audit", private: true, dependencies: { "dsh-cache-probe": "1.0.0" } }));
+		}
+		await install(["install", "--registry", registry, "--ignore-scripts", "--no-progress"], bunProject);
+		await install([join(data, "bundles", id, "pnpm/dist/pnpm.mjs"), "install", "--registry", registry, "--ignore-scripts", "--no-frozen-lockfile", "--config.update-notifier=false"], pnpmProject);
+		expect(requests.some((p) => p.endsWith(".tgz"))).toBe(true);
+		expect(tree(join(data, "cache/bun"))).not.toEqual([]);
+		expect(tree(join(data, "cache/pnpm/store"))).not.toEqual([]);
+		expect(tree(join(data, "cache/pnpm/cache"))).not.toEqual([]);
+		expect(tree(join(data, "cache/transpiler"))).not.toEqual([]);
+		expect(existsSync(join(bunProject, "node_modules/dsh-cache-probe/index.js"))).toBe(true);
+		expect(existsSync(join(pnpmProject, "node_modules/dsh-cache-probe/index.js"))).toBe(true);
+		expect(tree(userHome)).toEqual([]);
+		expect(tree(audit).filter((p) => !p.startsWith("tools/dsh-bin/"))).toEqual(["isolated-home", "tools", `tools/dsh${EXE}`, "tools/dsh-bin"].sort());
+	} finally { await server.stop(true); }
+}, 180_000);
