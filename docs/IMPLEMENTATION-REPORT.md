@@ -866,3 +866,40 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   check (`scripts/e2e.mjs`) was updated to require `select`, `snapshot`, `install <version>` and
   `--use`, but it runs only against published assets, so it has **not** run yet (6.1 / after 7.1).
 - Full suite: 351 pass / 0 fail; `zig build test` passes.
+
+### Task 6.1: packaged acceptance (`scripts/e2e.mjs`)
+
+- `e2e.mjs` now follows the release-distribution "Packaged acceptance" list, on real archives, with the
+  real launcher, a fixture index origin and only `git` and `sh` on `PATH`:
+  - the first launch creates `<V1>@1 (empty)`; a headless boot runs on it and its runtime lives in the
+    snapshot, not in `$DSH_HOME/profiles`;
+  - `dsh plugin --profile e2e add github:xz-dev/dsh-caveman` lands in the snapshot (`--no-plugin` skips
+    it for offline runs);
+  - the installed bundle is read-only;
+  - `update` installs V2 next to V1; its snapshot is `copy of <V1>@1` and holds the plugin; plain,
+    `--use V2` and `--snapshot <V1>@1` boots; `select --use V1` pins it (`list` marks V1 `selected` and
+    V2 `latest`, `select` resolves to V1), then back to `latest`;
+  - `update --clean` is an unknown option; `update`, `update self|dsh|--self` are up to date;
+  - every addon: `install --addon <name>` (no `addons.json`), boot with the degradation gone,
+    `install --addon <name>:<v>` is a no-op, `list --addon` shows it, `uninstall --addon`, boot with
+    the degradation back; each probe boot uses a fresh `$DSH_HOME`;
+  - offline `list`; `clean` keeps every installed version and makes no request; same-version `--force`;
+    uninstalling the running version (V2) keeps its snapshots and V1 still starts;
+  - managed (portage lock): `update` refused with no request, `--use` refused by the launcher,
+    `--snapshot <V1>@1` boots.
+- `scripts/local-e2e.mjs` (new): builds the host's office addon (lockfile-pinned engine), two release
+  bundles from `work/` (runs 1 and 2 of one upstream checkout; V2's commit time is one minute later, so
+  it is newer), writes the index with `index.mjs`, and runs `e2e.mjs`. `--keep`/`--reuse` re-run on a
+  kept fixture.
+- Findings on the way:
+  - `work/app` predated the S1 profile-path transform, so the first local run put the headless runtime
+    in `$DSH_HOME/profiles`. CI builds apply the transform; the local tree did not.
+  - Re-applying it exposed a build bug: `transformApp` was not idempotent (a rewritten file no longer
+    holds the quoted `"node:sea"` marker, so the second run failed before the profile sites). Fixed in
+    d2bc006 with a re-run unit case.
+- Local result (linux-x64-modern): `e2e: ok (release 0.1.7-rc.2-xz.1.1.g9d1e7fb5 ->
+  0.1.7-rc.2-xz.2.1.g9d1e7fb5)`, every step listed above passing, including the GitHub plugin.
+- **Not yet verified:** the task's fixture is rc.2 → 0.2.0-rc.1 on all 12 targets. The local run used two
+  builds of one rc.2 checkout (building rc.1 needs Node, which this host lacks). The real pair and the
+  12-target matrix are verified by CI accept once 7.1 publishes; 6.1 is ticked only then.
+- Full suite: 352 pass / 0 fail.
