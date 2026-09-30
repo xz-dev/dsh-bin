@@ -18,24 +18,21 @@ test("exactly the 12 spec targets, no duplicates", () => {
 		"windows-arm64",
 	]);
 	expect(new Set(ids).size).toBe(12);
-	expect(new Set(TARGETS.map((x) => x.archive)).size).toBe(12);
+	// The runtime build compiles no Zig and ships no manager.
+	for (const t of TARGETS) expect(Object.keys(t).filter((k) => /zig|launcher|archive/i.test(k))).toEqual([]);
 });
 
-test("derived toolchain names", () => {
+test("RL-RUNTIME-BUILD: derived toolchain names; no manager or Zig fields", () => {
 	expect(target("linux-x64-musl-baseline")).toMatchObject({
 		bunTarget: "bun-linux-x64-musl-baseline",
-		zigTarget: "x86_64-linux-musl",
 		pnpmAsset: "pnpm-linux-x64-musl.tar.gz",
 	});
 	expect(target("windows-arm64")).toMatchObject({
 		bunTarget: "bun-windows-arm64",
-		zigTarget: "aarch64-windows-gnu",
 		pnpmAsset: "pnpm-win32-arm64.zip",
 		executable: "dsh-native.exe",
-		launcher: "dsh.exe",
 	});
 	expect(target("darwin-x64-modern")).toMatchObject({
-		zigTarget: "x86_64-macos",
 		pnpmAsset: "pnpm-darwin-arm64.tar.gz",
 		reflinkAsset: "reflink.darwin-x64.node",
 	});

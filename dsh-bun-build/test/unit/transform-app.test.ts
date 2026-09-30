@@ -78,13 +78,14 @@ export const rootOf = (dir) => join(dir, PROFILE_ROOT_FILENAME);
 `;
 const BOOT_REL = "node_modules/@deepseek-ai/dsh-app-boot/lib/index.js";
 
-test("profile paths follow the snapshot, and only cordis.patch.yml is shared", async () => {
+test("RB-HOME: profile paths follow the snapshot; only cordis.patch.yml is shared, from $DSH_HOME, wherever the snapshot is", async () => {
 	const app = fixture({ [BOOT_REL]: BOOT, "node_modules/express/lib/view.js": "const p = join(dir, file);\n" });
 	expect(transformApp(app, [], { [BOOT_REL]: { dir: 1, root: 1, file: 2 } })).toEqual([BOOT_REL]);
 	expect(readFileSync(join(app, "node_modules/express/lib/view.js"), "utf8")).toBe("const p = join(dir, file);\n");
+	// The snapshot lives in the manager's data root; the application home is elsewhere (an explicit DSH_HOME).
 	const home = mkdtempSync(join(tmpdir(), "snap-home-"));
-	const snap = join(home, "snapshots", "1.0.0@1");
-	const env = { ...process.env, DSH_BIN_SNAPSHOT_DIR: snap };
+	const snap = join(mkdtempSync(join(tmpdir(), "snap-data-")), "snapshots", "1.0.0@1");
+	const env = { ...process.env, DSH_HOME: home, DSH_BIN_SNAPSHOT_DIR: snap };
 	const probe = `const m = await import(${JSON.stringify(join(app, BOOT_REL))}); const d = m.resolveProfileDir("tui", ${JSON.stringify(home)});
 		console.log(JSON.stringify([d, m.tree(${JSON.stringify(home)}), m.patchOf(d), m.rootOf(d)]));`;
 	const run = async (e: Record<string, string | undefined>) => {

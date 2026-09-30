@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { binaryArch } from "../../scripts/build-launcher.mjs";
+import { binaryArch } from "../../scripts/binary-arch.mjs";
 
 function elf(machine: number) {
 	const b = Buffer.alloc(64);

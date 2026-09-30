@@ -1,6 +1,6 @@
 // Full source-to-archive build of one target on its native runner (8.1): fetch upstream by exact commit,
 // pnpm from its GitHub release, frozen build + deploy, output transforms, office split, compiled entry,
-// launcher, assembly, deterministic archive. The build workflow runs exactly this per matrix entry.
+// runtime assembly (no manager), deterministic archive. The build workflow runs exactly this per matrix entry.
 // usage: bun scripts/build-target.mjs <target-id> <channel> <upstream-ref|commit> <out-dir>
 //          --run N --attempt N --index index.json [--work dir] [--git-dir upstream.git]
 //   Writes <out>/<tag>-<asset>, <out>/<tag>.<target>.json (release manifest) and, for the linux-x64-modern

@@ -1,42 +1,35 @@
-// Automatic snapshot at runtime start (task 4.2): the compiled entry creates the version's snapshot before
-// app/lib/bin.js runs. The app here is a stub bin.js that reports it ran, so no upstream build is needed.
+// The runtime consumes `DSH_MANAGER_LAUNCH` (split-dsh-manager D3, runtime-bundles "应用仅消费已确定的启动环境"
+// and "重启保持当前运行上下文"). The app is a stub bin.js that reports what it sees, so no upstream build is
+// needed. Snapshot creation and selection belong to the manager; the runtime never creates, picks or
+// repairs anything.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { createSnapshot, removeSnapshot, snapshotDir } from "../../runtime/snapshot/store.ts";
 import { writeShims } from "../../scripts/shims.mjs";
 import { acquireClaim } from "../../runtime/usage-claim.ts";
 
 const ROOT = resolve(import.meta.dir, "../..");
 const EXE = process.platform === "win32" ? ".exe" : "";
-const V1 = { version: "0.1.7-rc.2-xz.7.1.g4e41a3f1", upstream: { commitTime: "2026-09-24T10:00:00.000Z" }, run: 7, attempt: 1 };
-const V2 = { version: "0.2.0-rc.1-xz.10.1.ga83dab63", upstream: { commitTime: "2026-09-28T10:00:00.000Z" }, run: 10, attempt: 1 };
+const RUNTIME = "0.2.0-rc.1-b10.1.ga83dab63";
 let root: string;
 let native: string;
 
-// Stub app: prints the snapshots present when it runs. With STUB_REPORT it also prints its argv, the
-// snapshot dir and resolved snapshot, and what the bundle's `node` shim sees; with STUB_RESTART_WRITE it
-// changes the selection, then respawns itself as upstream's restartTui does. Upstream spawns through
-// node:child_process (no upstream package calls Bun.spawn), which sees runtime changes to process.env.
+// Stub app: reports argv, the snapshot dir, DSH_HOME, what the bundle's `node` shim sees and the launch; with
+// STUB_HOLD it waits; with STUB_RESTART it respawns itself once as upstream's restartTui does (through
+// node:child_process, which sees runtime changes to process.env).
 const STUB_BIN = `import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 export async function runCli() {
-	const d = join(process.env.DSH_HOME, "snapshots");
-	process.stdout.write("BIN " + (existsSync(d) ? readdirSync(d).filter((n) => !n.startsWith(".")).join(",") : "-") + "\\n");
-	if (process.env.STUB_HOLD) { process.stdout.write("HELD\\n"); await Bun.sleep(30000); }
-	if (!process.env.STUB_REPORT) return;
-	const launch = JSON.parse(process.env.DSH_BIN_LAUNCH ?? "null");
+	const launch = JSON.parse(process.env.DSH_MANAGER_LAUNCH ?? "null");
 	const shim = spawnSync("node", ["-e", "process.stdout.write(process.env.DSH_BIN_SNAPSHOT_DIR ?? '-')"], { encoding: "utf8" }).stdout;
-	process.stdout.write("REPORT " + JSON.stringify({ args: process.argv.slice(2), dir: process.env.DSH_BIN_SNAPSHOT_DIR, resolved: launch?.resolved?.snapshot, version: launch?.version, addons: launch?.selection?.addons, shim }) + "\\n");
-	if (process.env.STUB_RESTART_WRITE) {
-		writeFileSync(process.env.STUB_RESTART_WRITE, process.env.STUB_RESTART_DATA);
+	process.stdout.write("REPORT " + JSON.stringify({ args: process.argv.slice(2), dir: process.env.DSH_BIN_SNAPSHOT_DIR ?? null, home: process.env.DSH_HOME ?? null, runtime: launch?.runtime ?? null, shim }) + "\\n");
+	if (process.env.STUB_HOLD) { process.stdout.write("HELD\\n"); await Bun.sleep(30000); }
+	if (process.env.STUB_RESTART) {
 		const env = { ...process.env };
-		delete env.STUB_RESTART_WRITE;
-		const p = Bun.spawnSync([process.execPath, ...process.execArgv, ...process.argv.slice(1)], { env, stdout: "inherit", stderr: "inherit" });
-		process.exitCode = p.exitCode;
+		delete env.STUB_RESTART;
+		const p = spawnSync(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { env, stdio: "inherit" });
+		process.exitCode = p.status ?? 1;
 	}
 }
 `;
@@ -45,8 +38,8 @@ beforeAll(() => {
 	// ~/.cache, not /tmp: the compiled entry is ~100 MB.
 	const base = join(homedir(), ".cache");
 	mkdirSync(base, { recursive: true });
-	root = mkdtempSync(join(base, "dsh-snapshot-start-"));
-	const bundle = join(root, "bundles", V2.version);
+	root = mkdtempSync(join(base, "dsh-runtime-launch-"));
+	const bundle = join(root, "data", "bundles", RUNTIME);
 	mkdirSync(join(bundle, "app", "lib"), { recursive: true });
 	mkdirSync(join(bundle, "app", "node_modules"));
 	writeFileSync(join(bundle, "app", "package.json"), '{"name":"stub-app","private":true}');
@@ -54,180 +47,105 @@ beforeAll(() => {
 	execFileSync("bun", [join(ROOT, "scripts/compile-entry.mjs"), `bun-${process.platform}-${process.arch}`, native], { stdio: "ignore" });
 	writeFileSync(join(bundle, "app", "lib", "bin.js"), STUB_BIN);
 	writeShims(bundle, process.platform === "win32" ? "windows" : process.platform);
-	writeFileSync(join(bundle, "bundle.json"), JSON.stringify({ schemaVersion: 2, name: "dsh-bin", version: V2.version, channel: "release", upstream: V2.upstream, run: V2.run, attempt: V2.attempt, addons: {} }));
+	writeFileSync(join(bundle, ".usage.lock"), "");
 }, 120_000);
 afterAll(() => {
 	if (root) rmSync(root, { recursive: true, force: true });
 });
 
-async function start(home: string, launch?: object, args: string[] = [], extra: Record<string, string> = {}) {
-	const env: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: home, DSH_HOME: join(home, ".dsh"), NO_COLOR: "1", ...extra };
-	if (launch) env.DSH_BIN_LAUNCH = JSON.stringify({ protocol: 2, addons: [], selection: null, use: null, snapshot: null, ...launch });
-	const proc = Bun.spawn([native, ...args], { env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+const data = () => join(root, "data");
+function snapshot(id: string) {
+	const dir = join(data(), "snapshots", id);
+	mkdirSync(join(dir, "profiles"), { recursive: true });
+	writeFileSync(join(dir, ".usage.lock"), "");
+	return dir;
+}
+const launchOf = (home: string, snap: { id: string; dir: string } | null, extra: object = {}) =>
+	JSON.stringify({ protocol: 1, runtime: RUNTIME, dataRoot: data(), home, snapshot: snap, addons: {}, cache: null, manager: "9.9.9", ...extra });
+
+async function start(env: Record<string, string>, args: string[] = []) {
+	const proc = Bun.spawn([native, ...args], { env: { PATH: process.env.PATH ?? "", HOME: root, NO_COLOR: "1", ...env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
 	const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-	return { code: await proc.exited, stdout, stderr };
+	const reports = stdout.split("\n").filter((l) => l.startsWith("REPORT ")).map((l) => JSON.parse(l.slice(7)));
+	return { code: await proc.exited, stdout, stderr, reports };
 }
 
-test("first start: an empty snapshot exists before bin.js runs; the next start reuses it", async () => {
+test("RB-HOME: the snapshot from the launch is the plugin dir; DSH_HOME is the given home; nothing is created", async () => {
 	const home = mkdtempSync(join(root, "home-"));
-	const r = await start(home);
+	const dir = snapshot(`${RUNTIME}@1`);
+	const before = readdirSync(data(), { recursive: true }).sort();
+	const r = await start({ DSH_HOME: home, DSH_MANAGER_LAUNCH: launchOf(home, { id: `${RUNTIME}@1`, dir }) }, ["--profile", "tui"]);
 	if (r.code !== 0) console.error(r.stderr);
 	expect(r.code).toBe(0);
-	expect(r.stdout).toBe(`BIN ${V2.version}@1\n`);
-	expect(r.stderr).toContain(`Created plugin snapshot ${V2.version}@1 (empty).`);
-	expect(readdirSync(join(home, ".dsh", "snapshots", `${V2.version}@1`, "profiles"))).toEqual([]);
-	const again = await start(home);
-	expect(again.stdout).toBe(`BIN ${V2.version}@1\n`);
-	expect(again.stderr).not.toContain("Created plugin snapshot");
+	expect(r.reports).toEqual([{ args: ["--profile", "tui"], dir, home, runtime: RUNTIME, shim: dir }]);
+	expect(readdirSync(data(), { recursive: true }).sort()).toEqual(before);
+	expect(readdirSync(home)).toEqual([]);
 }, 60_000);
 
-test("start after an update copies the previous version's newest snapshot, even with its bundle gone", async () => {
+test("RB-RESTART: an in-app restart keeps the launch, the snapshot and its claim", async () => {
 	const home = mkdtempSync(join(root, "home-"));
-	const dshHome = join(home, ".dsh");
-	createSnapshot(dshHome, { version: V1.version, order: V1, reason: "user", source: () => null });
-	const s = createSnapshot(dshHome, { version: V1.version, order: V1, reason: "user", source: () => null }).snapshot;
-	mkdirSync(join(snapshotDir(dshHome, s.id), "profiles", "tui"), { recursive: true });
-	writeFileSync(join(snapshotDir(dshHome, s.id), "profiles", "tui", "package.json"), '{"name":"kept"}');
-	const r = await start(home, { version: V2.version, source: "selection" });
-	expect(r.stderr).toContain(`Created plugin snapshot ${V2.version}@1 (copy of ${V1.version}@2).`);
-	expect(readFileSync(join(snapshotDir(dshHome, `${V2.version}@1`), "profiles", "tui", "package.json"), "utf8")).toBe('{"name":"kept"}');
-	expect(JSON.parse(readFileSync(join(snapshotDir(dshHome, `${V2.version}@1`), "snapshot.json"), "utf8"))).toMatchObject({ reason: "start", source: `${V1.version}@2` });
+	const dir = snapshot(`${RUNTIME}@2`);
+	const r = await start({ DSH_HOME: home, DSH_MANAGER_LAUNCH: launchOf(home, { id: `${RUNTIME}@2`, dir }), STUB_RESTART: "1" }, ["--profile", "tui"]);
+	expect(r.code).toBe(0);
+	expect(r.reports).toHaveLength(2);
+	for (const rep of r.reports) expect(rep).toMatchObject({ args: ["--profile", "tui"], dir, runtime: RUNTIME });
 }, 60_000);
 
-test("an explicitly named snapshot creates nothing; a missing one fails with one diagnostic", async () => {
+test("a running session holds the runtime's and the snapshot's claims until it exits", async () => {
 	const home = mkdtempSync(join(root, "home-"));
-	const dshHome = join(home, ".dsh");
-	const missing = await start(home, { version: V2.version, source: "snapshot", snapshot: `${V1.version}@1` });
+	const dir = snapshot(`${RUNTIME}@3`);
+	const proc = Bun.spawn([native], { env: { PATH: process.env.PATH ?? "", HOME: root, DSH_HOME: home, DSH_MANAGER_LAUNCH: launchOf(home, { id: `${RUNTIME}@3`, dir }), STUB_HOLD: "1" }, stdin: "ignore", stdout: "pipe", stderr: "inherit" });
+	const reader = proc.stdout.getReader();
+	let out = "";
+	while (!out.includes("HELD")) {
+		const { value, done } = await reader.read();
+		if (done) break;
+		out += new TextDecoder().decode(value);
+	}
+	expect(out).toContain("HELD");
+	const guards = [join(dir, ".usage.lock"), join(data(), "bundles", RUNTIME, ".usage.lock")];
+	for (const g of guards) expect(acquireClaim(g, "exclusive")).toBe("busy");
+	proc.kill("SIGKILL");
+	await proc.exited;
+	for (const g of guards) {
+		let c = acquireClaim(g, "exclusive");
+		for (let i = 0; i < 30 && c === "busy"; i++) {
+			await Bun.sleep(100);
+			c = acquireClaim(g, "exclusive");
+		}
+		expect(c).not.toBe("busy");
+		if (c !== "busy") c.release();
+	}
+}, 60_000);
+
+test("a snapshot being removed or missing fails the launch with one diagnostic, never another snapshot", async () => {
+	const home = mkdtempSync(join(root, "home-"));
+	const missing = await start({ DSH_HOME: home, DSH_MANAGER_LAUNCH: launchOf(home, { id: `${RUNTIME}@9`, dir: join(data(), "snapshots", `${RUNTIME}@9`) }) });
 	expect(missing.code).toBe(1);
 	expect(missing.stdout).toBe("");
-	expect(missing.stderr).toContain(`dsh: snapshot ${V1.version}@1 does not exist`);
-	expect(missing.stderr).toContain("dsh snapshot list");
-	createSnapshot(dshHome, { version: V1.version, order: V1, reason: "user", alias: "old", source: () => null });
-	const r = await start(home, { version: V2.version, source: "use", use: V2.version, snapshot: "0.1.7-rc.2@old" }, [], { STUB_REPORT: "1" });
-	expect(r.code).toBe(0);
-	expect(r.stderr).not.toContain("Created plugin snapshot");
-	expect(existsSync(join(dshHome, "snapshots", `${V2.version}@1`))).toBe(false);
-	expect(r.stdout).toContain(`"dir":${JSON.stringify(snapshotDir(dshHome, `${V1.version}@1`))}`);
+	expect(missing.stderr).toContain(`plugin snapshot ${RUNTIME}@9 does not exist`);
+	expect(existsSync(join(data(), "snapshots", `${RUNTIME}@9`))).toBe(false);
+	const dir = snapshot(`${RUNTIME}@4`);
+	const held = acquireClaim(join(dir, ".usage.lock"), "exclusive");
+	try {
+		const busy = await start({ DSH_HOME: home, DSH_MANAGER_LAUNCH: launchOf(home, { id: `${RUNTIME}@4`, dir }) });
+		expect(busy.code).toBe(1);
+		expect(busy.stderr).toContain("is being removed");
+	} finally {
+		if (held !== "busy") held.release();
+	}
 }, 60_000);
 
-test("the selection's snapshot is used only when the version came from the selection", async () => {
+test("an invalid launch payload is an error, not a direct start; `manager` is an app argument", async () => {
 	const home = mkdtempSync(join(root, "home-"));
-	const dshHome = join(home, ".dsh");
-	createSnapshot(dshHome, { version: V2.version, order: V2, reason: "user", source: () => null });
-	createSnapshot(dshHome, { version: V2.version, order: V2, reason: "user", source: () => null });
-	const selection = { use: V2.version, snapshot: `${V2.version}@1`, addons: {} };
-	const fromSel = await start(home, { version: V2.version, source: "selection", selection }, [], { STUB_REPORT: "1" });
-	expect(fromSel.stdout).toContain(`"resolved":"${V2.version}@1"`);
-	const fromUse = await start(home, { version: V2.version, source: "use", use: V2.version, selection }, [], { STUB_REPORT: "1" });
-	expect(fromUse.stdout).toContain(`"resolved":"${V2.version}@2"`);
-	// A stale selected snapshot fails and names the reset.
-	const stale = await start(home, { version: V2.version, source: "selection", selection: { ...selection, snapshot: `${V2.version}@9` } });
-	expect(stale.code).toBe(1);
-	expect(stale.stderr).toContain(`the selected snapshot ${V2.version}@9 does not exist`);
-	expect(stale.stderr).toContain("dsh select --use latest");
-}, 60_000);
-
-test("a restart keeps the snapshot after a selection change; the node shim inherits it", async () => {
-	const home = mkdtempSync(join(root, "home-"));
-	const dshHome = join(home, ".dsh");
-	createSnapshot(dshHome, { version: V2.version, order: V2, reason: "user", source: () => null });
-	createSnapshot(dshHome, { version: V2.version, order: V2, reason: "user", source: () => null });
-	const selPath = join(dshHome, "dsh-bin", "selection.json");
-	mkdirSync(join(dshHome, "dsh-bin"), { recursive: true });
-	// Two office versions side by side (out of slot: the stub bundle declares none, so each launch warns naming
-	// the version it resolved).
-	for (const v of ["0.1.1", "0.1.2"]) {
-		const kit = join(root, "addons", "office", v, "node_modules", "@deepseek-ai", "libreoffice-kit");
-		mkdirSync(kit, { recursive: true });
-		writeFileSync(join(kit, "package.json"), JSON.stringify({ name: "@deepseek-ai/libreoffice-kit", version: v, main: "index.js" }));
-		writeFileSync(join(kit, "index.js"), "module.exports = {};\n");
-		writeFileSync(join(root, "addons", "office", v, "addon.json"), JSON.stringify({ name: "office", version: v, tag: `dsh-addon-office-v${v}`, kitVersion: v, slot: { commit: "c".repeat(40), kitVersion: v }, packages: [] }));
+	for (const bad of ["{", JSON.stringify({ protocol: 2 }), launchOf(home, null, { dataRoot: "relative" })]) {
+		const r = await start({ DSH_HOME: home, DSH_MANAGER_LAUNCH: bad });
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain("DSH_MANAGER_LAUNCH");
+		expect(r.stdout).toBe("");
 	}
-	const selection = { schema: 1, use: V2.version, snapshot: `${V2.version}@1`, addons: { office: "0.1.1" } };
-	writeFileSync(selPath, JSON.stringify(selection));
-	const env = { STUB_REPORT: "1", STUB_RESTART_WRITE: selPath, STUB_RESTART_DATA: JSON.stringify({ ...selection, use: "latest", snapshot: `${V2.version}@2`, addons: { office: "0.1.2" } }), PATH: `/usr/bin:/bin` };
-	const r = await start(home, { version: V2.version, source: "selection", selection }, ["--profile", "tui"], env);
-	expect(r.code).toBe(0);
-	const reports = r.stdout.split("\n").filter((l) => l.startsWith("REPORT ")).map((l) => JSON.parse(l.slice(7)));
-	expect(reports).toHaveLength(2);
-	const dir = snapshotDir(dshHome, `${V2.version}@1`);
-	for (const rep of reports) expect(rep).toEqual({ args: ["--profile", "tui"], dir, resolved: `${V2.version}@1`, version: V2.version, addons: { office: "0.1.1" }, shim: dir });
-	// Both launches resolved office 0.1.1 from the launch record, not 0.1.2 from the rewritten selection.
-	const warned = r.stderr.split("\n").filter((l) => l.includes("office addon") && l.includes("out of slot"));
-	expect(warned).toHaveLength(2);
-	for (const l of warned) expect(l).toContain("office addon 0.1.1 ");
-	for (const v of ["0.1.1", "0.1.2"]) rmSync(join(root, "addons", "office", v), { recursive: true, force: true });
-}, 60_000);
-
-test("a running session holds the snapshot's claim; removal is refused until it exits", async () => {
-	const home = mkdtempSync(join(root, "home-"));
-	const dshHome = join(home, ".dsh");
-	const s = createSnapshot(dshHome, { version: V2.version, order: V2, reason: "user", source: () => null }).snapshot;
-	const proc = Bun.spawn([native], { env: { PATH: process.env.PATH ?? "", HOME: home, DSH_HOME: dshHome, STUB_HOLD: "1" }, stdin: "ignore", stdout: "pipe", stderr: "inherit" });
-	const reader = proc.stdout.getReader();
-	let out = "";
-	while (!out.includes("HELD")) {
-		const { value, done } = await reader.read();
-		if (done) break;
-		out += new TextDecoder().decode(value);
-	}
-	expect(out).toContain("HELD");
-	expect(removeSnapshot(dshHome, s.id)).toBe("busy");
-	proc.kill("SIGKILL");
-	await proc.exited;
-	let r = removeSnapshot(dshHome, s.id);
-	for (let i = 0; i < 30 && r === "busy"; i++) {
-		await Bun.sleep(100);
-		r = removeSnapshot(dshHome, s.id);
-	}
-	expect(r).toBe("removed");
-}, 60_000);
-
-test("a running session holds its office version's claim; uninstalling it is refused until it exits", async () => {
-	const home = mkdtempSync(join(root, "home-"));
-	const dir = join(root, "addons", "office", "0.1.1");
-	const kit = join(dir, "node_modules", "@deepseek-ai", "libreoffice-kit");
-	mkdirSync(kit, { recursive: true });
-	writeFileSync(join(kit, "package.json"), JSON.stringify({ name: "@deepseek-ai/libreoffice-kit", version: "0.1.1", main: "index.js" }));
-	writeFileSync(join(kit, "index.js"), "module.exports = {};\n");
-	writeFileSync(join(dir, "addon.json"), JSON.stringify({ name: "office", version: "0.1.1", tag: "dsh-addon-office-v0.1.1", kitVersion: "0.1.1", slot: { commit: "c".repeat(40), kitVersion: "0.1.1" }, packages: [] }));
-	writeFileSync(join(dir, ".usage.lock"), "");
-	const env = { PATH: process.env.PATH ?? "", HOME: home, DSH_HOME: join(home, ".dsh"), STUB_HOLD: "1", DSH_BIN_LAUNCH: JSON.stringify({ protocol: 2, version: V2.version, source: "use", use: V2.version, snapshot: null, addons: ["office:0.1.1"], selection: null }) };
-	const proc = Bun.spawn([native], { env, stdin: "ignore", stdout: "pipe", stderr: "inherit" });
-	const reader = proc.stdout.getReader();
-	let out = "";
-	while (!out.includes("HELD")) {
-		const { value, done } = await reader.read();
-		if (done) break;
-		out += new TextDecoder().decode(value);
-	}
-	expect(out).toContain("HELD");
-	const guard = join(dir, ".usage.lock");
-	expect(acquireClaim(guard, "exclusive")).toBe("busy");
-	proc.kill("SIGKILL");
-	await proc.exited;
-	let c = acquireClaim(guard, "exclusive");
-	for (let i = 0; i < 30 && c === "busy"; i++) {
-		await Bun.sleep(100);
-		c = acquireClaim(guard, "exclusive");
-	}
-	expect(c).not.toBe("busy");
-	if (c !== "busy") c.release();
-	rmSync(join(root, "addons"), { recursive: true, force: true });
-}, 60_000);
-
-test("direct start: leading options are stripped; another version is refused", async () => {
-	const home = mkdtempSync(join(root, "home-"));
-	const dshHome = join(home, ".dsh");
-	createSnapshot(dshHome, { version: V2.version, order: V2, reason: "user", alias: "a", source: () => null });
-	createSnapshot(dshHome, { version: V2.version, order: V2, reason: "user", source: () => null });
-	const r = await start(home, undefined, ["--snapshot", "0.2.0-rc.1@a", "--profile", "tui", "--use", "x"], { STUB_REPORT: "1" });
-	expect(r.code).toBe(0);
-	expect(r.stdout).toContain(`"args":["--profile","tui","--use","x"]`);
-	expect(r.stdout).toContain(`"resolved":"${V2.version}@1"`);
-	const other = await start(home, undefined, ["--use", "0.1.7-rc.2"]);
-	expect(other.code).toBe(1);
-	expect(other.stderr).toContain("names another dsh version");
-	const prompt = await start(home, undefined, ["-p", "--use 1"], { STUB_REPORT: "1" });
-	expect(prompt.stdout).toContain(`"args":["-p","--use 1"]`);
+	const direct = await start({ DSH_HOME: home }, ["manager", "update"]);
+	expect(direct.code).toBe(0);
+	expect(direct.reports).toEqual([{ args: ["manager", "update"], dir: null, home, runtime: null, shim: "-" }]);
+	expect(readdirSync(home)).toEqual([]);
 }, 60_000);

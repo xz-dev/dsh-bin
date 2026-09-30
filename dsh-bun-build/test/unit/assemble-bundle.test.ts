@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assembleBundle, foreignBinaries, officeTable, prunePrebuilds, requiredPaths } from "../../scripts/assemble-bundle.mjs";
@@ -55,9 +55,7 @@ function fixture() {
 	put(join(pnpm, "dist/vendor/fastlist-0.3.0-x86.exe"), pe(0x14c));
 	const native = join(dir, "dsh-native");
 	put(native, elf(0x3e));
-	const launcher = join(dir, "dsh");
-	put(launcher, elf(0x3e));
-	return { dir, app, pnpm, native, launcher };
+	return { dir, app, pnpm, native };
 }
 
 const slotA = { commit: "a".repeat(40), kitVersion: "0.1.2" };
@@ -98,26 +96,28 @@ describe("assemble (6.1)", () => {
 		app: f.app,
 		pnpm: f.pnpm,
 		native: f.native,
-		launcher: f.launcher,
-		identity: { version: "0.1.7-rc.2-xz.1.1.gabcdef12", tag: "dsh-v0.1.7-rc.2-xz.1.1.gabcdef12", channel: "release" },
+		identity: { id: "0.1.7-rc.2-b1.1.gabcdef12", tag: "runtime-v0.1.7-rc.2-b1.1.gabcdef12", channel: "release" },
 		upstream: { commit: "4".repeat(40), commitTime: "2026-09-24T13:39:59.000Z", tag: "dsh-v0.1.7-rc.2", version: "0.1.7-rc.2" },
 		run: 1,
 		attempt: 1,
-		launcherCommit: "abcdef12".repeat(5),
+		builderCommit: "abcdef12".repeat(5),
 		slot: slotA,
 		index: idx,
 	});
 
-	test("inventory: layout, bundle.json and required paths", () => {
+	test("RB-CONTENTS: the archive root is one runtime (no manager, no bundles/ tree); bundle.json v1 and required paths", () => {
 		const f = fixture();
 		const idx = join(f.dir, "index.json");
 		writeFileSync(idx, JSON.stringify(index));
 		const r = assembleBundle(spec(f, "linux-x64-modern", idx));
-		const v = "0.1.7-rc.2-xz.1.1.gabcdef12";
-		expect(r.meta.requiredPaths).toEqual(requiredPaths(target("linux-x64-modern"), v));
+		const id = "0.1.7-rc.2-b1.1.gabcdef12";
+		expect(r.bundle).toBe(r.out);
+		expect(readdirSync(r.out).sort()).toEqual([".usage.lock", "app", "bin", "bundle.json", "dsh-native", "pnpm"]);
+		expect(r.meta.requiredPaths).toEqual(requiredPaths(target("linux-x64-modern")));
 		for (const p of r.meta.requiredPaths) expect(existsSync(join(r.out, p))).toBe(true);
 		const meta = JSON.parse(readFileSync(join(r.bundle, "bundle.json"), "utf8"));
-		expect(meta).toMatchObject({ schemaVersion: 2, name: "dsh-bin", version: v, channel: "release", target: "linux-x64-modern", run: 1, attempt: 1, launcherProtocol: 2 });
+		expect(meta).toMatchObject({ kind: "dsh-runtime", schemaVersion: 1, id, channel: "release", target: "linux-x64-modern", run: 1, attempt: 1, launchProtocol: 1, entry: "dsh-native", builderCommit: "abcdef12".repeat(5) });
+		for (const legacy of ["launcherProtocol", "launcherCommit", "name", "version"]) expect(meta[legacy]).toBeUndefined();
 		expect(meta.upstream.commitTime).toBe("2026-09-24T13:39:59.000Z");
 		expect(meta.addons.office.pinned).toBe("0.1.2-xz.3.1.g33333333");
 		expect(meta.addons.office.known).toEqual(index.addons.office);
@@ -142,7 +142,6 @@ describe("assemble (6.1)", () => {
 		const f = fixture();
 		noLinuxOnly(f.app);
 		writeFileSync(f.native, macho(0x0100000c));
-		writeFileSync(f.launcher, macho(0x0100000c));
 		const r = assembleBundle(spec(f, "darwin-arm64"));
 		// darwin bundles are assembled on macOS runners; Windows has no exec bits to check.
 		if (process.platform !== "win32") expect(statSync(join(r.bundle, "app/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper")).mode & 0o111).toBe(0o111);
@@ -151,13 +150,13 @@ describe("assemble (6.1)", () => {
 		const w = fixture();
 		noLinuxOnly(w.app);
 		writeFileSync(w.native, pe(0xaa64));
-		writeFileSync(w.launcher, pe(0xaa64));
 		const rw = assembleBundle(spec(w, "windows-arm64"));
 		expect(existsSync(join(rw.bundle, "app/node_modules/node-pty/third_party/conpty/1.25/win10-arm64/conpty.dll"))).toBe(true);
 		expect(existsSync(join(rw.bundle, "app/node_modules/node-pty/third_party/conpty/1.25/win10-x64"))).toBe(false);
 		expect(existsSync(join(rw.bundle, "bin/pnpm.cmd"))).toBe(true);
 		expect(existsSync(join(rw.bundle, "pnpm/dist/vendor/fastlist-0.3.0-x86.exe"))).toBe(true);
-		expect(existsSync(join(rw.out, "dsh.exe"))).toBe(true);
+		expect(existsSync(join(rw.out, "dsh-native.exe"))).toBe(true);
+		expect(existsSync(join(rw.out, "dsh.exe"))).toBe(false);
 	});
 
 	test("a foreign native file that pruning cannot explain fails the build", () => {

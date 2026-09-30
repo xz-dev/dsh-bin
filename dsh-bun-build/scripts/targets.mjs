@@ -18,7 +18,6 @@ const MUSL_IMAGES = {
 	arm64: "docker.io/oven/bun@sha256:df7bf53d29008d89d195925aad82ca7e51dad114c6cd65b32cf8c3e0c186bb30",
 };
 
-const ZIG_ARCH = { x64: "x86_64", arm64: "aarch64" };
 const NODE_OS = { linux: "linux", darwin: "darwin", windows: "win32" };
 
 function t(id, os, arch, libc, cpu, runner) {
@@ -35,7 +34,6 @@ function t(id, os, arch, libc, cpu, runner) {
 		runner,
 		nodePlatform: NODE_OS[os],
 		bunTarget: `bun-${os}-${arch}${muslSuffix}${baselineSuffix}`,
-		zigTarget: `${ZIG_ARCH[arch]}-${os === "darwin" ? "macos" : os}${os === "linux" ? `-${libc}` : os === "windows" ? "-gnu" : ""}`,
 		// pnpm official GitHub release asset; only its platform-neutral dist/ is kept.
 		// pnpm ships no darwin-x64 asset: reuse darwin-arm64 dist/, drop its arm64
 		// reflink package and add reflink.darwin-x64.node from pnpm/reflink.
@@ -44,8 +42,6 @@ function t(id, os, arch, libc, cpu, runner) {
 			? { pnpmDrop: ["dist/node_modules/@reflink/reflink-darwin-arm64"], reflinkAsset: "reflink.darwin-x64.node" }
 			: {}),
 		executable: os === "windows" ? "dsh-native.exe" : "dsh-native",
-		launcher: os === "windows" ? "dsh.exe" : "dsh",
-		archive: `dsh-${id}.zip`,
 		...(libc === "musl" ? { containerImage: MUSL_IMAGES[arch] } : {}),
 	});
 }

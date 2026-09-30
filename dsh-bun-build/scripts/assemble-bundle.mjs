@@ -1,22 +1,25 @@
-// Assemble one target's install root (6.1, design D9):
+// Assemble one target's runtime bundle (split-dsh-manager D3/D10). The archive root is the runtime itself:
 //
-//   <out>/dsh(.exe)
-//   <out>/bundles/<version>/{dsh-native(.exe), app/, pnpm/, bin/, bundle.json, .usage.lock}
+//   <out>/{dsh-native(.exe), app/, pnpm/, bin/, bundle.json, .usage.lock[, transpiler-cache/]}
 //
-// Target native addons stay inside app/node_modules (upstream's own layout); other-platform prebuilds
-// are pruned and every remaining native file must match the target. `bundle.json` carries the bundle
-// identity, the required-path inventory and the embedded office compatibility table (D7b).
+// It carries no manager: the standalone dsh manager installs it into `<data>/bundles/<id>/`. Target native
+// addons stay inside app/node_modules (upstream's own layout); other-platform prebuilds are pruned and every
+// remaining native file must match the target. `bundle.json` carries the runtime identity, the launch
+// protocol, the entry, the required-path inventory and the embedded office compatibility table.
 //
 // usage: bun scripts/assemble-bundle.mjs <spec.json>
-//   spec: {target, out, app, pnpm, native, launcher, identity:{version,tag,channel}, upstream:{commit,commitTime,tag?,version},
-//          run, attempt, launcherCommit, slot:{commit,kitVersion}|null, index?:<path to index.json snapshot>}
+//   spec: {target, out, app, pnpm, native, identity:{id,tag,channel}, upstream:{commit,commitTime,tag?,version},
+//          run, attempt, builderCommit, slot:{commit,kitVersion}|null, index?:<path to runtime-index.json snapshot>}
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { binaryArch } from "./build-launcher.mjs";
+import { binaryArch } from "./binary-arch.mjs";
 import { writeShims } from "./shims.mjs";
 import { target as targetById } from "./targets.mjs";
 import { warmTranspilerCache } from "./warm-transpiler-cache.mjs";
-import { isCommitTime, LAUNCHER_PROTOCOL } from "../runtime/layout.ts";
+
+/** Launch protocol between the manager and this runtime (`DSH_MANAGER_LAUNCH`, runtime/launch.ts). */
+export const LAUNCH_PROTOCOL = 1;
+const isCommitTime = (s) => typeof s === "string" && !Number.isNaN(Date.parse(s)) && new Date(s).toISOString() === s;
 
 const FORMAT = { linux: "elf", darwin: "macho", windows: "pe" };
 const PLATFORM_DIR = /^(linux|darwin|win32|win|windows|freebsd|android|openbsd|sunos|aix)[-_](x64|arm64|ia32|arm|x86_64|aarch64|ppc64|s390x|riscv64|loong64)(?:[-_](gnu|musl|glibc))?$/;
@@ -92,32 +95,20 @@ export function foreignBinaries(dir, t) {
 	return bad;
 }
 
-/** Files every installed bundle of target `t` must have (checked by acceptance and by the updater). */
-export function requiredPaths(t, version) {
-	const b = `bundles/${version}`;
+/** Files every installed runtime of target `t` must have, relative to the runtime root (checked by the manager). */
+export function requiredPaths(t) {
 	const shims = t.os === "windows" ? ["bin/node.cmd", "bin/pnpm.cmd"] : ["bin/node", "bin/pnpm"];
-	return [
-		t.launcher,
-		`${b}/${t.executable}`,
-		`${b}/bundle.json`,
-		`${b}/.usage.lock`,
-		`${b}/app/package.json`,
-		`${b}/app/lib/bin.js`,
-		`${b}/pnpm/dist/pnpm.mjs`,
-		...shims.map((s) => `${b}/${s}`),
-	];
+	return [t.executable, "bundle.json", ".usage.lock", "app/package.json", "app/lib/bin.js", "pnpm/dist/pnpm.mjs", ...shims];
 }
 
 export function assembleBundle(spec) {
 	const t = targetById(spec.target);
-	const { version, tag, channel } = spec.identity;
+	const { id, tag, channel } = spec.identity;
 	const out = spec.out;
 	if (existsSync(out)) throw new Error(`output exists: ${out}`);
-	const bundle = join(out, "bundles", version);
+	const bundle = out;
 	mkdirSync(bundle, { recursive: true });
 
-	cpSync(spec.launcher, join(out, t.launcher));
-	chmodSync(join(out, t.launcher), 0o755);
 	cpSync(spec.native, join(bundle, t.executable));
 	chmodSync(join(bundle, t.executable), 0o755);
 	cpSync(spec.app, join(bundle, "app"), { recursive: true, dereference: true });
@@ -139,21 +130,23 @@ export function assembleBundle(spec) {
 	if (spec.warm) warmTranspilerCache(bundle);
 
 	const index = spec.index ? JSON.parse(readFileSync(spec.index, "utf8")) : { addons: { office: [] } };
-	const required = requiredPaths(t, version);
+	const required = requiredPaths(t);
 	if (!isCommitTime(spec.upstream?.commitTime)) throw new Error(`upstream.commitTime must be an ISO UTC time: ${spec.upstream?.commitTime}`);
 	if (!(spec.run > 0 && spec.attempt > 0)) throw new Error("run and attempt must be positive integers");
+	if (!/^[0-9a-f]{40}$/.test(spec.builderCommit ?? "")) throw new Error(`builderCommit must be a 40-char sha: ${spec.builderCommit}`);
 	const meta = {
-		schemaVersion: 2,
-		name: "dsh-bin",
-		version,
+		kind: "dsh-runtime",
+		schemaVersion: 1,
+		id,
 		tag,
 		channel,
 		target: t.id,
 		upstream: spec.upstream,
 		run: spec.run,
 		attempt: spec.attempt,
-		launcherProtocol: LAUNCHER_PROTOCOL,
-		launcherCommit: spec.launcherCommit,
+		builderCommit: spec.builderCommit,
+		launchProtocol: LAUNCH_PROTOCOL,
+		entry: t.executable,
 		addons: { office: officeTable(spec.slot ?? null, index) },
 		requiredPaths: required,
 	};
@@ -167,5 +160,5 @@ if (import.meta.main) {
 	const [specPath] = process.argv.slice(2);
 	if (!specPath) throw new Error("usage: assemble-bundle.mjs <spec.json>");
 	const r = assembleBundle(JSON.parse(readFileSync(specPath, "utf8")));
-	console.log(JSON.stringify({ out: r.out, version: r.meta.version, pruned: r.pruned.length, requiredPaths: r.meta.requiredPaths.length }));
+	console.log(JSON.stringify({ out: r.out, id: r.meta.id, pruned: r.pruned.length, requiredPaths: r.meta.requiredPaths.length }));
 }

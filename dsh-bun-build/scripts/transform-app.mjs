@@ -24,12 +24,14 @@ export const RULES = [
 ];
 export const KNOWN_FILES = RULES.flatMap((r) => r.files);
 
-// Plugin snapshots (dsh-bin-select-snapshots S1): a profile's plugin runtime lives in the selected snapshot
-// (`$DSH_BIN_SNAPSHOT_DIR/profiles/<name>`), while its user config (`cordis.patch.yml`) stays shared in
-// `$DSH_HOME/profiles/<name>`; the snapshot dir is always `$DSH_HOME/snapshots/<id>`, so that is `<snapshot>/../../profiles`. `cordis.yml` stays in the snapshot: upstream anchors plugin resolution at
-// its directory and rewrites it on every boot. Upstream derives every profile path from resolveProfileDir and
-// `join(<profile dir>, <file>)`; each such site is rewritten to ask the injected helper first. The helper
-// reads the environment, so worker threads and child processes follow the same snapshot. Unset: upstream paths.
+// Plugin snapshots (split-dsh-manager D3): a profile's plugin runtime lives in the snapshot the manager
+// chose (`$DSH_BIN_SNAPSHOT_DIR/profiles/<name>`), while its user config (`cordis.patch.yml`) stays shared in
+// the application home, `$DSH_HOME/profiles/<name>` (the manager always exports the resolved DSH_HOME). The
+// snapshot's location says nothing about the home. `cordis.yml` stays in the snapshot: upstream anchors plugin
+// resolution at its directory and rewrites it on every boot. Upstream derives every profile path from
+// resolveProfileDir and `join(<profile dir>, <file>)`; each such site is rewritten to ask the injected helper
+// first. The helper reads the environment, so worker threads and child processes follow the same snapshot.
+// Unset: upstream paths.
 export const PROFILE_HELPER = "__dshBinProfiles";
 const PROFILE_PRELUDE = `import { isAbsolute as __dshBinIsAbs, join as __dshBinJoin, relative as __dshBinRel } from "node:path";
 import { mkdirSync as __dshBinMkdir } from "node:fs";
@@ -38,8 +40,9 @@ const ${PROFILE_HELPER} = {
 	dir(name) { const r = this.root(); return r ? __dshBinJoin(r, name) : undefined; },
 	sharedProfileFile(dir, file) {
 		const r = this.root();
-		if (!r || file !== "cordis.patch.yml") return undefined;
-		const shared = __dshBinJoin(process.env.DSH_BIN_SNAPSHOT_DIR, "..", "..", "profiles");
+		const home = process.env.DSH_HOME;
+		if (!r || file !== "cordis.patch.yml" || !home || !__dshBinIsAbs(home)) return undefined;
+		const shared = __dshBinJoin(home, "profiles");
 		const rel = __dshBinRel(r, dir);
 		if (!rel || rel.startsWith("..") || __dshBinIsAbs(rel)) return undefined;
 		__dshBinMkdir(__dshBinJoin(shared, rel), { recursive: true });
