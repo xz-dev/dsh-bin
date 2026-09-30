@@ -27,6 +27,7 @@ beforeAll(() => {
 	const data = join(tools, "dsh-bin");
 	bundle = join(data, "bundles", id);
 	mkdirSync(bundle, { recursive: true });
+	writeFileSync(join(data, ".dsh-bin-data.json"), JSON.stringify({ kind: "dsh-manager-data", schema: 1 }));
 	// Tiny Zig test driver uses the manager's own ZIP extraction, not an external unzip.
 	const driver = join(root, `extract${EXE}`);
 	execFileSync("zig", ["build-exe", "--dep", "zip", `-Mroot=${join(import.meta.dir, "extract-driver.zig")}`, `-Mzip=${join(MANAGER_DIR, "src/zip.zig")}`, `-femit-bin=${driver}`], { cwd: root, stdio: "inherit", timeout: 120_000 });

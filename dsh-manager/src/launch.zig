@@ -110,6 +110,7 @@ fn claim(ctx: *Ctx, runtime: []const u8) void {
 }
 
 pub fn run(ctx: *Ctx, args: []const []const u8) noreturn {
+    ctx.ensureData();
     const p = plan(ctx, args);
     claim(ctx, p.runtime);
     childEnv(ctx, p);

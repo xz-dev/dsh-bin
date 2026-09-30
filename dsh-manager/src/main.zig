@@ -39,6 +39,13 @@ pub fn main() void {
         util.flush();
         std.process.exit(code);
     }
+    const rest = args[opts.consumed..];
+    if (opts.consumed == 0 and rest.len == 1 and (std.mem.eql(u8, rest[0], "--help") or std.mem.eql(u8, rest[0], "-h") or std.mem.eql(u8, rest[0], "--version") or std.mem.eql(u8, rest[0], "-V"))) {
+        _ = manager.run(&ctx, opts, rest);
+        _ = manager.run(&ctx, opts, &.{"list"});
+        util.flush();
+        std.process.exit(0);
+    }
     launch.run(&ctx, args);
 }
 

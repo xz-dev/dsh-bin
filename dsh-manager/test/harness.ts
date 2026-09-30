@@ -92,6 +92,8 @@ export const bundleMeta = (id: string, spec: RuntimeSpec = {}) => ({
 
 /** An installed runtime `data/bundles/<id>/` whose entry is the recording fake. */
 export function addRuntime(data: string, id: string, spec: RuntimeSpec = {}) {
+	mkdirSync(data, { recursive: true });
+	writeFileSync(join(data, ".dsh-bin-data.json"), JSON.stringify({ kind: "dsh-manager-data", schema: 1 }));
 	const dir = join(data, "bundles", id);
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(join(dir, "bundle.json"), spec.raw ?? JSON.stringify(bundleMeta(id, spec)));
@@ -115,7 +117,7 @@ const emptyPath = () => (emptyBin ??= tempDir("dsh-empty-path-"));
 export type Run = SpawnSyncReturns<string>;
 export function run(i: Install, args: string[], opts: { env?: Record<string, string>; cwd?: string; input?: string; exe?: string } = {}): Run {
 	for (const g of ["1", "2"]) rmSync(join(i.out, `${g}.argv`), { force: true });
-	return spawnSync(opts.exe ?? i.exe, args, { encoding: "utf8", cwd: opts.cwd ?? i.home, input: opts.input, env: { ...baseEnv(i), ...opts.env } });
+	return spawnSync(opts.exe ?? i.exe, args, { encoding: "utf8", cwd: opts.cwd ?? i.home, input: opts.input, env: { ...baseEnv(i), ...opts.env }, timeout: 30_000 });
 }
 
 export const started = (i: Install) => existsSync(join(i.out, "1.argv"));
