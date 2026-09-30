@@ -66,8 +66,12 @@ test.skipIf(!hasZig)("RL-MANAGER-BUILD: `zig build` with only zig on PATH, from 
 	expect(out.stdout).toContain("1.0.0");
 }, 300_000);
 
-function realZig() {
-	const env = spawnSync("zig", ["env"], { encoding: "utf8" }).stdout;
-	const field = (k: string) => env.match(new RegExp(`\\.${k} = "([^"]+)"`))![1]!;
+test("RL-MANAGER-BUILD: zig env decodes escaped Windows paths", () => {
+	const exe = "D:\\tools\\zig\\zig.exe", lib = "D:\\tools\\zig\\lib";
+	expect(realZig(`.{ .zig_exe = ${JSON.stringify(exe)}, .lib_dir = ${JSON.stringify(lib)} }`)).toEqual({ exe, lib });
+});
+
+function realZig(env = spawnSync("zig", ["env"], { encoding: "utf8" }).stdout) {
+	const field = (k: string) => JSON.parse(env.match(new RegExp(`\\.${k} = ("(?:[^"\\\\]|\\\\.)*")`))![1]!);
 	return { exe: field("zig_exe"), lib: field("lib_dir") };
 }

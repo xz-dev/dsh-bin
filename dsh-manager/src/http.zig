@@ -248,8 +248,9 @@ fn getHead(c: *std.http.Client, env: *const std.process.EnvMap, req: *std.http.C
         // Also covers failures before receiveHead changes the connection's closing flag.
         req.connection.?.closing = true;
         errdefer req.deinit();
-        req.accept_encoding = @splat(false);
-        req.accept_encoding[@intFromEnum(std.http.ContentEncoding.identity)] = true;
+        // Inspect status before enforcing identity on a body we will consume.
+        // Encoded error/redirect bodies are discarded, not decompressed.
+        req.accept_encoding = @splat(true);
         try setSocketTimeout(req.connection.?, idle_ms);
         req.sendBodiless() catch |e| return networkError(e);
         var response = req.receiveHead(&.{}) catch |e| return switch (e) {
@@ -270,6 +271,7 @@ fn getHead(c: *std.http.Client, env: *const std.process.EnvMap, req: *std.http.C
             },
             else => {},
         }
+        if ((status == 200 or status == 206) and response.head.content_encoding != .identity) return Error.HttpStatus;
         var retry_after: ?u64 = null;
         var range: ?ContentRange = null;
         var range_count: usize = 0;

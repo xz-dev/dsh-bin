@@ -15,7 +15,7 @@ let dir: string;
 beforeAll(() => {
 	dir = mkdtempSync(join(tmpdir(), "dsh-http-test-"));
 	driver = join(dir, process.platform === "win32" ? "dl-driver.exe" : "dl-driver");
-	execFileSync("zig", ["build-exe", "--dep", "http", "-Mroot=" + join(import.meta.dir, "download-driver.zig"), "-Mhttp=" + join(DIR, "src/http.zig"), "-femit-bin=" + driver], { timeout: 120_000, stdio: "inherit", cwd: dir });
+	execFileSync("zig", ["build-exe", "-fsingle-threaded", "--dep", "http", "-Mroot=" + join(import.meta.dir, "download-driver.zig"), "-Mhttp=" + join(DIR, "src/http.zig"), "-femit-bin=" + driver], { timeout: 120_000, stdio: "inherit", cwd: dir });
 }, 120_000);
 afterAll(() => {
 	server.stop(true);
@@ -53,10 +53,10 @@ function runDriver(args: string[], extra: Record<string, string> = {}, deadline 
 	});
 }
 
-type Received = { path: string; host: string; range: string | null; encoding: string | null; at: number };
+type Received = { method: string; path: string; host: string; range: string | null; encoding: string | null; at: number };
 const requests: Received[] = [];
 function record(req: Request) {
-	requests.push({ path: new URL(req.url).pathname, host: req.headers.get("host") ?? "", range: req.headers.get("range"), encoding: req.headers.get("accept-encoding"), at: Date.now() });
+	requests.push({ method: req.method, path: new URL(req.url).pathname, host: req.headers.get("host") ?? "", range: req.headers.get("range"), encoding: req.headers.get("accept-encoding"), at: Date.now() });
 }
 type Handler = (req: Request) => Response | Promise<Response>;
 let handler: Handler = () => new Response(null, { status: 404 });
@@ -87,7 +87,7 @@ function disconnected(body: Uint8Array) {
 	return new Response(new ReadableStream({
 		start(c) {
 			c.enqueue(body);
-			setTimeout(() => { try { c.error(new Error("injected socket disconnect")); } catch {} }, 20);
+			setTimeout(() => { try { c.error(null); } catch {} }, 20);
 		},
 	}));
 }
@@ -248,7 +248,7 @@ describe("http.zig (black-box, real sockets)", () => {
 		for (const status of [408, 425, 429, 500, 502, 503, 504, 403, 404]) {
 			for (const mode of ["download", "fetch"] as const) {
 				requests.length = 0;
-				handler = (req) => requests.length === 1 ? new Response(null, { status, headers: { "retry-after": "0" } }) : okBody(req);
+				handler = (req) => requests.length === 1 ? new Response(null, { status, headers: { "retry-after": "0", "content-encoding": "gzip" } }) : okBody(req);
 				const path = dest(`status-${status}-${mode}`);
 				const res = mode === "download" ? await download(path) : await fetchSmall();
 				if (status !== 403 && status !== 404) { success(res, mode === "download" ? path : undefined); expect(requests).toHaveLength(2); }
@@ -358,12 +358,15 @@ describe("http.zig (black-box, real sockets)", () => {
 			writeFileSync(path + ".part", BODY.subarray(0, 100));
 			const started = Date.now();
 			success(await download(path), path);
-			expect(Date.now() - started).toBeLessThan(2000);
+			// Windows localhost may try refused IPv6 before IPv4 (~2s/connect).
+			// Measure the idle stall after the first redirected request, not TCP setup.
+			expect(requests[2]!.at - requests[1]!.at).toBeLessThan(2000);
+			expect(Date.now() - started).toBeLessThan(process.platform === "win32" ? 10_000 : 2000);
 			expect(requests.map((r) => r.range)).toEqual(["bytes=100-", "bytes=100-", "bytes=164-", "bytes=164-"]);
 			expect(requests[1]!.host).toContain("localhost:");
-			expect(requests.every((r) => r.encoding === "identity")).toBe(true);
+			expect(requests.every((r) => r.method === "GET" && r.encoding === "identity")).toBe(true);
 		} finally { other.stop(true); }
-	});
+	}, 12_000);
 
 	test("relative redirects work; redirect loops are bounded without consuming response bodies", async () => {
 		handler = (req) => new URL(req.url).pathname === "/index" ? new Response("ignored body", { status: 307, headers: { location: "./final" } }) : new Response("index");
@@ -385,7 +388,12 @@ describe("http.zig (black-box, real sockets)", () => {
 
 	test("fetchSmall bounds both declared and chunked bodies; exact limit and zero succeed", async () => {
 		for (const chunked of [false, true]) {
-			handler = () => chunked ? new Response(new ReadableStream({ start(c) { c.enqueue(BODY); c.close(); } })) : new Response(BODY);
+			handler = () => chunked ? new Response(new ReadableStream({
+				start(c) {
+					c.enqueue(BODY.subarray(0, 32));
+					setTimeout(() => { try { c.enqueue(BODY.subarray(32)); c.close(); } catch {} }, 20);
+				},
+			})) : new Response(BODY);
 			failure(await fetchSmall(50), "TooLarge");
 			success(await fetchSmall(SIZE));
 		}
@@ -430,7 +438,7 @@ describe("http.zig (black-box, real sockets)", () => {
 			requests.length = 0;
 			const res = await runDriver(["fetch", "https://does-not-exist.invalid/secret?token=hidden", "100"], { [name]: `http://user:password@127.0.0.1:${server.port}` });
 			failure(res, "UnsupportedProxy");
-			expect(res.stderr).toContain(name);
+			expect(res.stderr.toLowerCase()).toContain(name.toLowerCase());
 			expect(res.stderr).toContain("unset");
 			expect(res.stderr).not.toContain("password");
 			expect(res.stderr).not.toContain("token=hidden");
@@ -452,12 +460,16 @@ describe("http.zig (black-box, real sockets)", () => {
 		for (const mode of ["download", "fetch"]) {
 			const started = Date.now();
 			const args = mode === "download" ? [mode, `http://127.0.0.1:${port}/asset`, dest("refused"), String(SIZE), SHA] : [mode, `http://127.0.0.1:${port}/index`, "100"];
-			failure(await runDriver(args), "Network");
-			expect(Date.now() - started).toBeGreaterThanOrEqual(400); // four backoffs: 30+60+120+240 ms
+			// Winsock retries a refused local connect for ~2s before returning.
+			// Keep five HTTP attempts and an external per-invocation kill deadline.
+			failure(await runDriver(args, {}, 25_000), "Network");
+			const elapsed = Date.now() - started;
+			expect(elapsed).toBeGreaterThanOrEqual(400); // four backoffs: 30+60+120+240 ms
+			expect(elapsed).toBeLessThan(25_000);
 			args[1] = "file:///not-http";
 			failure(await runDriver(args), "BadUrl");
 		}
-	});
+	}, 55_000);
 
 	test.skipIf(process.env.DSH_MANAGER_OFFLINE === "1")("real HTTPS: pinned Zig 0.15.2 LICENSE, verified size and SHA-256", async () => {
 		const path = dest("zig-license");
