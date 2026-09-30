@@ -53,4 +53,6 @@ test {
     _ = @import("select.zig");
     _ = @import("zip.zig");
     _ = @import("http.zig");
+    _ = @import("target.zig");
+    _ = @import("index.zig");
 }

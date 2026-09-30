@@ -1,100 +1,76 @@
-// The `releases` branch index.json (release-distribution spec "Release index"): append-only, one ordered
-// list per channel plus `addons.office`, each entry with a per-list sequence. Used by the publish
-// workflows and local end-to-end runs; validated with the updater's own schema check.
-// usage:
-//   bun scripts/index.mjs append-bundle <index.json> <release-manifest.json> [--published-at iso]
-//   bun scripts/index.mjs append-addon  <index.json> <addon-manifest.json>   [--published-at iso]
-//   bun scripts/index.mjs check <index.json>
+// Runtime-index v1 writer: local-build manifest in, append-only runtime entries out.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { parseIndex } from "../runtime/update/index-client.ts";
 
-export const emptyIndex = () => ({ schemaVersion: 2, channels: { release: [], live: [] }, addons: { office: [] } });
+export const emptyIndex = () => ({ schema: 1, channels: { release: [], live: [] }, addons: { office: [] } });
+const object = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const positive = (v) => Number.isSafeInteger(v) && v > 0;
+const name = (v) => typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(v);
 
-export function readIndex(path) {
-	return existsSync(path) ? parseIndex(readFileSync(path, "utf8")) : emptyIndex();
-}
-
-const nextSeq = (list) => list.reduce((m, e) => Math.max(m, e.seq), 0) + 1;
-const sameAssets = (a, b) => JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
-
-/**
- * Append a bundle release. `manifest` is `release-manifest.json`: {tag, version, channel,
- * upstream: {commit, commitTime, tag?, version}, run, attempt, launcherProtocol, launcherCommit, addons: {office: {slot, pinned}}, targets: {<target>: {file, size, sha256}}}.
- * Re-appending an identical tag is a no-op (idempotent reruns); a different one with the same tag fails.
- */
-export function appendBundle(index, manifest, publishedAt = new Date().toISOString()) {
-	const list = index.channels[manifest.channel];
-	if (!list) throw new Error(`unknown channel ${manifest.channel}`);
-	const assets = Object.fromEntries(Object.entries(manifest.targets).map(([t, a]) => [t, { name: a.file, size: a.size, sha256: a.sha256 }]));
-	const existing = list.find((e) => e.tag === manifest.tag);
-	if (existing) {
-		if (existing.version === manifest.version && sameAssets(existing.assets, assets)) return existing;
-		throw new Error(`index already lists ${manifest.tag} with different content; entries are never modified`);
+export function parseIndex(text) {
+	const index = JSON.parse(text);
+	if (!object(index) || index.schema !== 1 || !object(index.channels) || !object(index.addons) || !Array.isArray(index.addons.office)) throw new Error("unsupported runtime index (expected schema 1)");
+	for (const channel of ["release", "live"]) {
+		const list = index.channels[channel];
+		if (!Array.isArray(list)) throw new Error(`runtime index ${channel} must be a list`);
+		let seq = 0;
+		const tags = new Set();
+		for (const entry of list) {
+			if (!object(entry) || entry.kind !== "dsh-runtime" || "launcherProtocol" in entry || entry.channel !== channel || !name(entry.id) || entry.tag !== `${channel === "release" ? "runtime-v" : "runtime-"}${entry.id}` || !positive(entry.seq) || entry.seq <= seq || tags.has(entry.tag)) throw new Error(`invalid runtime entry in ${channel}`);
+			if (!object(entry.upstream) || typeof entry.upstream.commit !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(entry.upstream.commitTime) || typeof entry.upstream.version !== "string" || !positive(entry.run) || !positive(entry.attempt) || !positive(entry.launchProtocol) || typeof entry.builderCommit !== "string" || !object(entry.addons?.office)) throw new Error(`invalid runtime metadata: ${entry.tag}`);
+			if (!object(entry.assets) || Object.keys(entry.assets).length === 0) throw new Error(`missing runtime assets: ${entry.tag}`);
+			for (const asset of Object.values(entry.assets)) if (!object(asset) || !name(asset.name) || !positive(asset.size) || !/^[0-9a-f]{64}$/.test(asset.sha256)) throw new Error(`invalid runtime asset: ${entry.tag}`);
+			seq = entry.seq;
+			tags.add(entry.tag);
+		}
 	}
-	const entry = {
-		seq: nextSeq(list),
-		tag: manifest.tag,
-		version: manifest.version,
-		channel: manifest.channel,
-		upstream: manifest.upstream,
-		run: manifest.run,
-		attempt: manifest.attempt,
-		launcherProtocol: manifest.launcherProtocol,
-		launcherCommit: manifest.launcherCommit,
-		publishedAt,
-		addons: manifest.addons ?? {},
-		assets,
-	};
-	list.push(entry);
-	return entry;
+	return index;
 }
 
-/** Append an addon release. `manifest`: {tag, version, slot, assets: {<platform>: {file, size, sha256}}}. */
-export function appendAddon(index, manifest, publishedAt = new Date().toISOString()) {
-	const list = index.addons.office;
-	const assets = Object.fromEntries(Object.entries(manifest.assets).map(([p, a]) => [p, { name: a.file, size: a.size, sha256: a.sha256 }]));
-	const existing = list.find((e) => e.tag === manifest.tag);
-	if (existing) {
-		if (existing.version === manifest.version && sameAssets(existing.assets, assets)) return existing;
-		throw new Error(`index already lists ${manifest.tag} with different content; entries are never modified`);
-	}
-	const entry = { seq: nextSeq(list), tag: manifest.tag, version: manifest.version, slot: manifest.slot, publishedAt, assets };
-	list.push(entry);
-	return entry;
-}
-
-/** Fail unless `next` keeps every entry of `prev` unchanged and in order (the append-only rule). */
-export function assertAppendOnly(prev, next) {
-	const lists = (i) => ({ release: i.channels.release, live: i.channels.live, office: i.addons.office });
-	const a = lists(prev);
-	const b = lists(next);
-	for (const key of Object.keys(a)) {
-		a[key].forEach((e, n) => {
-			if (JSON.stringify(e) !== JSON.stringify(b[key][n])) throw new Error(`index ${key}[${n}] (${e.tag}) was modified or removed`);
-		});
-	}
-}
-
+export const readIndex = (path) => existsSync(path) ? parseIndex(readFileSync(path, "utf8")) : emptyIndex();
 export const serialize = (index) => `${JSON.stringify(parseIndex(JSON.stringify(index)), null, 2)}\n`;
 
+/** Identical reruns are no-ops; changed metadata or assets under an existing tag are rejected. */
+export function appendBundle(index, manifest) {
+	const list = index.channels[manifest.channel];
+	if (!list || manifest.kind !== "dsh-runtime" || "launcherProtocol" in manifest) throw new Error("expected a runtime manifest and release|live channel");
+	const entry = {
+		kind: manifest.kind, tag: manifest.tag, id: manifest.id, channel: manifest.channel,
+		upstream: manifest.upstream, run: manifest.run, attempt: manifest.attempt,
+		launchProtocol: manifest.launchProtocol, builderCommit: manifest.builderCommit,
+		addons: manifest.addons,
+		assets: Object.fromEntries(Object.entries(manifest.targets).map(([target, a]) => [target, { name: a.file, size: a.size, sha256: a.sha256 }])),
+		seq: Math.max(0, ...list.map((e) => e.seq)) + 1,
+	};
+	const existing = list.find((e) => e.tag === entry.tag);
+	if (existing) {
+		if (JSON.stringify({ ...existing, seq: 0 }) === JSON.stringify({ ...entry, seq: 0 })) return existing;
+		throw new Error(`index already lists ${entry.tag} with different content; entries are never modified`);
+	}
+	parseIndex(JSON.stringify({ ...index, channels: { ...index.channels, [manifest.channel]: [...list, entry] } }));
+	list.push(entry);
+	return entry;
+}
+
+export function assertAppendOnly(prev, next) {
+	for (const [before, after] of [[prev.channels.release, next.channels.release], [prev.channels.live, next.channels.live], [prev.addons.office, next.addons.office]]) {
+		before.forEach((entry, n) => { if (JSON.stringify(entry) !== JSON.stringify(after[n])) throw new Error(`index entry ${entry.tag} was modified or removed`); });
+	}
+}
+
+// TODO(8.3): wire independent runtime/addon publishing into CI; no legacy index conversion.
 if (import.meta.main) {
-	const [cmd, path, manifestPath, ...rest] = process.argv.slice(2);
-	// DSH_BIN_PUBLISHED_AT: a candidate addon's entry is appended at build, acceptance and publication
-	// time; one fixed timestamp keeps those entries (and the embedded table) identical.
-	const at = rest.includes("--published-at") ? rest[rest.indexOf("--published-at") + 1] : process.env.DSH_BIN_PUBLISHED_AT || undefined;
+	const [cmd, path, manifestPath] = process.argv.slice(2);
 	if (cmd === "check" && path) {
 		readIndex(path);
 		console.log(`${path}: valid`);
-	} else if ((cmd === "append-bundle" || cmd === "append-addon") && path && manifestPath) {
-		const prev = readIndex(path);
-		const next = structuredClone(prev);
-		const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-		const entry = cmd === "append-bundle" ? appendBundle(next, manifest, at) : appendAddon(next, manifest, at);
+	} else if (cmd === "append-bundle" && path && manifestPath) {
+		const prev = readIndex(path), next = structuredClone(prev);
+		const entry = appendBundle(next, JSON.parse(readFileSync(manifestPath, "utf8")));
 		assertAppendOnly(prev, next);
 		writeFileSync(path, serialize(next));
 		console.log(`${entry.tag}: seq ${entry.seq}`);
 	} else {
-		console.error("usage: index.mjs append-bundle|append-addon <index.json> <manifest.json> [--published-at iso] | check <index.json>");
+		console.error("usage: index.mjs append-bundle <runtime-index.json> <manifest.json> | check <runtime-index.json>");
 		process.exit(2);
 	}
 }
