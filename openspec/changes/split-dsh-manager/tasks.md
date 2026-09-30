@@ -1,8 +1,8 @@
 ## 1. 独立入口与最小运行包协议
 
-- [ ] 1.1 以 MC-EMPTY、MC-NAMESPACE、RL-MANAGER-BUILD 确认首个行为切片并建立场景 ID → 黑盒测试 → red/green 证据记录；后续每个切片先确认场景、见到预期原因的失败，再做最小实现，完成标准是记录可复现命令和可观察结果，不以现有代码需要改动作为断言。
+- [x] 1.1 以 MC-EMPTY、MC-NAMESPACE、RL-MANAGER-BUILD 确认首个行为切片并建立场景 ID → 黑盒测试 → red/green 证据记录；后续每个切片先确认场景、见到预期原因的失败，再做最小实现，完成标准是记录可复现命令和可观察结果，不以现有代码需要改动作为断言。
 - [ ] 1.2 将 launcher 起点和 Bun 构建内容分别归入 `dsh-manager/`、`dsh-bun-build/`，业务脚本随归属移动并调整构建入口；验证两边各自的最小构建能执行，管理器 `zig build` 不调用 Bun 或上游构建（RL-OWNERSHIP、RL-MANAGER-BUILD、RL-RUNTIME-BUILD）。
-- [ ] 1.3 实现 Zig 管理器版本/帮助、`manager` 路由及前置选择解析，移除管理命令对 bundle 启动的依赖；通过无运行包、无宿主 JS runtime 的真实进程测试和含 `manager update` 提示文本的参数透传测试（MC-EMPTY、MC-NAMESPACE、MC-ARGS）。
+- [x] 1.3 实现 Zig 管理器版本/帮助、`manager` 路由及前置选择解析，移除管理命令对 bundle 启动的依赖；通过无运行包、无宿主 JS runtime 的真实进程测试和含 `manager update` 提示文本的参数透传测试（MC-EMPTY、MC-NAMESPACE、MC-ARGS）。
 - [ ] 1.4 在运行包项目调整 `local-build/assemble-bundle/compile-entry`，产出不含 manager 的新格式归档及 manifest；用有效、旧格式、不支持协议、缺入口的独立 fixture 验证协议识别和拒绝行为，检查编译入口不再导入管理分发（RB-CONTENTS、RB-LEGACY）。
 - [ ] 1.5 实现 `DSH_MANAGER_LAUNCH` 的构造与 runtime 消费，先用本地预置的新格式运行包贯通启动；验证 argv、cwd、stdio、退出码及受控进程使用锁，且两个管理器身份可启动同一份未重建运行包（RB-INDEPENDENT、MC-ARGS）。
 

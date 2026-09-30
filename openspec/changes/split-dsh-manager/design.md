@@ -150,6 +150,24 @@ CI 分开筛选 manager 与 build/runtime 变更。组合测试显式选已验�
 - shell 层：真实 Bash/Zsh/Fish/PowerShell 加载和候选查询，验证首次询问顺序、重复注册、拒绝/失败、卸载保护和注入边界。
 - 分发层：原目标矩阵、非特权 Gentoo 安装及 Windows Scoop 安装/升级/卸载；发布清理先在隔离测试仓库或发布 API fixture 验证，最终对精确生产清单操作。
 
+### D10. 实施契约（技术选择）
+
+以下是实现时固定的格式与名称，供两边项目与测试共同引用；它们不新增用户可见需求。
+
+**数据根布局与所有权**：数据根内 `.dsh-bin-data.json`（`{"kind":"dsh-manager-data","schema":1}`）是所有权标记。首次写入时，数据根不存在或为空目录才会创建并写标记；已有非空目录而无标记、或同名为文件，均报冲突。管理状态放在 `state/`：`selection.json`（`{schema:1,use,snapshot,addons}`，与旧格式同形）、`channel`、`completion.json`（每个 shell 的选择及结果）、`manager.lock`（维护互斥）。快照计数与快照锁在 `snapshots/.counters.json`、`snapshots/.lock`。
+
+**运行包 `bundle.json` v1**：`kind="dsh-runtime"`、`schemaVersion=1`、`id`、`channel`、`target`、`upstream{commit,commitTime,tag?,version}`、`run`、`attempt`、`builderCommit`、`launchProtocol=1`、`entry`（相对路径，如 `dsh-native`）、`requiredPaths`（相对运行包根）、`addons.office{slot,pinned,known}`。归档根就是运行包根。管理器以 `commitTime`→`run`→`attempt` 排序。任何缺 `kind`/`schemaVersion`，或含 `launcherProtocol`/`bundles/` 外层的归档都视为旧格式。
+
+**`DSH_MANAGER_LAUNCH`**：JSON `{protocol:1, runtime, dataRoot, home, snapshot:{id,dir}, addons:{office?:{version,dir}}, cache, tmp, manager}`。管理器同时导出 `DSH_HOME=<home>`，并将 Bun/pnpm 缓存与 `TMPDIR`/`TEMP`/`TMP` 指向数据根。runtime 把 `snapshot.dir` 作为插件运行目录；共享 `cordis.patch.yml` 取 `$DSH_HOME/profiles/<name>`。应用内重启继承同一载荷。载荷缺失时按上游规则独立运行；载荷存在但无效时报错退出。
+
+**发布身份**：运行包 tag 为 `runtime-v<upstream>-b<run>.<attempt>.g<sha8>`（release）和 `runtime-live-<sha7>-b<run>.<attempt>.g<sha8>`（live）；运行包 ID 去掉 `runtime-v`/`runtime-` 前缀。addon tag 为 `addon-office-v<kit>-b<run>.<attempt>.g<sha8>`，管理器 tag 为 `manager-v<semver>`。新 tag 家族与旧 `dsh-v*`/`dsh-live-*`/`dsh-addon-*` 不重叠，旧 Git 标签得以保留。索引位于 `releases` 分支：`runtime-index.json`（`{schema:1, channels:{release,live}, addons:{office}}`）和 `manager-index.json`（`{schema:1, versions:[{version,tag,launchProtocols,assets}]}`）。受控测试源仅在 `DSH_MANAGER_TEST=1` 与 `DSH_MANAGER_TEST_ORIGIN` 同时存在时生效，沿用旧 updater 的约束。
+
+**管理器目标**：管理器是不链接 libc 的静态 Zig 程序，发布 `linux-x64`、`linux-arm64`、`darwin-x64`、`darwin-arm64`、`windows-x64`、`windows-arm64` 六个资产。运行包 target（glibc/musl、baseline/modern）由管理器在运行时检测，不由管理器资产名决定。
+
+**`dsh manager` 命令面**：`--help|--version|help|version`、`info`、`install <version>|--addon office[:v] [--channel] [--force]`、`update [--channel] [--force]`、`uninstall <version>...|--addon office[:v]`、`list [--available] [--json]`（默认只读本地，`--available` 才访问索引）、`select [--use] [--snapshot] [--addon]`、`snapshot new|remove|list`、`clean`、`self-update`、`completion script|install|uninstall <shell>`；私有候选接口为 `manager __complete`。
+
+**证据**：每个切片的场景 ID、命令、red 原因和 green 结果都记录在变更目录的 `evidence.md`。
+
 ## Risks / Trade-offs
 
 - [默认全部随安装移动与系统只读安装不相容] → 仅明确托管标记启用用户数据目录例外，普通便携模式不因写入失败换地方。

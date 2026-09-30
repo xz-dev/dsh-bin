@@ -1,21 +1,11 @@
-//! Pure selection logic of the launcher (design S2): leading launch options, version matching, version
-//! order, `bundle.json` / `selection.json` reading, and version resolution. No I/O, so it is unit tested
+//! Pure selection logic of the manager: leading launch options, version matching, version order,
+//! runtime `bundle.json` / `selection.json` reading, and version resolution. No I/O, so it is unit tested
 //! on every host (`zig build test`).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-/// Launcher protocol this launcher implements; each `bundle.json` declares `launcherProtocol`.
-pub const protocol: u32 = 2;
-
-/// dsh-bin maintenance commands: run on the newest installed bundle, without a usage claim, so a missing
-/// or broken selected version can always be fixed.
-pub const maintenance_cmds = [_][]const u8{ "update", "install", "uninstall", "list", "select", "snapshot", "clean" };
-
-pub fn isMaintenance(arg: ?[]const u8) bool {
-    const a = arg orelse return false;
-    for (maintenance_cmds) |cmd| if (std.mem.eql(u8, a, cmd)) return true;
-    return false;
-}
+/// Launch protocol this manager implements; each runtime `bundle.json` declares `launchProtocol`.
+pub const protocol: u32 = 1;
 
 // ------------------------------------------------------------------------------------ leading options
 
@@ -79,10 +69,10 @@ pub fn snapshotVersion(id: []const u8) ?[]const u8 {
 
 pub const Match = union(enum) { found: []const u8, none, ambiguous: [2][]const u8 };
 
-/// An installed version named by its exact version, its tag (`dsh-v<v>`, `dsh-live-<v>`), or a unique prefix.
+/// An installed runtime named by its exact id, its tag (`runtime-v<id>`, `runtime-<live id>`), or a unique prefix.
 pub fn matchVersion(installed: []const Bundle, query: []const u8) Match {
     var q = query;
-    for ([_][]const u8{ "dsh-v", "dsh-live-" }) |p| {
+    for ([_][]const u8{ "runtime-v", "runtime-" }) |p| {
         if (std.mem.startsWith(u8, q, p)) {
             q = q[p.len..];
             break;
@@ -101,16 +91,20 @@ pub fn matchVersion(installed: []const Bundle, query: []const u8) Match {
 
 // ------------------------------------------------------------------------------------------ bundle.json
 
-/// The `bundle.json` fields the launcher reads. Null fields are absent or of the wrong type.
+/// The runtime `bundle.json` fields the manager reads (design D10). Null fields are absent or of the wrong type.
 pub const Meta = struct {
+    /// `kind="dsh-runtime"` with `schemaVersion=1`; anything else (an old coupled bundle, a foreign file)
+    /// is not a runtime this manager can start.
+    format: enum { runtime_v1, legacy, unknown } = .unknown,
     channel: ?[]const u8 = null,
     commit_time: ?[]const u8 = null,
     run: ?u64 = null,
     attempt: ?u64 = null,
     protocol: ?u64 = null,
+    entry: ?[]const u8 = null,
 
     pub fn ordered(self: Meta) bool {
-        return self.channel != null and self.commit_time != null and self.run != null and self.attempt != null;
+        return self.format == .runtime_v1 and self.channel != null and self.commit_time != null and self.run != null and self.attempt != null;
     }
 };
 
@@ -149,11 +143,15 @@ pub fn parseMeta(allocator: Allocator, bytes: []const u8) ?Meta {
     const root = std.json.parseFromSliceLeaky(std.json.Value, allocator, bytes, .{}) catch return null;
     if (root != .object) return null;
     const obj = root.object;
+    const kind = str(field(obj, "kind"));
+    const v1 = kind != null and std.mem.eql(u8, kind.?, "dsh-runtime") and uint(field(obj, "schemaVersion")) == 1;
     var meta = Meta{
+        .format = if (v1) .runtime_v1 else if (field(obj, "launcherProtocol") != null or kind == null) .legacy else .unknown,
         .channel = str(field(obj, "channel")),
         .run = uint(field(obj, "run")),
         .attempt = uint(field(obj, "attempt")),
-        .protocol = uint(field(obj, "launcherProtocol")),
+        .protocol = uint(field(obj, "launchProtocol")),
+        .entry = safeEntry(str(field(obj, "entry"))),
     };
     if (field(obj, "upstream")) |up| if (up == .object) {
         if (str(up.object.get("commitTime"))) |t| {
@@ -161,6 +159,14 @@ pub fn parseMeta(allocator: Allocator, bytes: []const u8) ?Meta {
         }
     };
     return meta;
+}
+
+/// A bundle entry is one plain file name inside the runtime directory.
+fn safeEntry(e: ?[]const u8) ?[]const u8 {
+    const v = e orelse return null;
+    if (std.mem.eql(u8, v, ".") or std.mem.eql(u8, v, "..")) return null;
+    for (v) |c| if (c == '/' or c == '\\' or c == ':' or c == 0) return null;
+    return v;
 }
 
 pub const Bundle = struct { version: []const u8, meta: ?Meta };
@@ -183,8 +189,7 @@ pub fn before(a: Bundle, b: Bundle) bool {
 // --------------------------------------------------------------------------------------- selection.json
 
 pub const Selection = struct {
-    /// `use` of the selection; null only when absent in a managed install, which ignores it.
-    use: ?[]const u8,
+    use: []const u8,
     value: std.json.Value,
 };
 
@@ -192,18 +197,17 @@ pub const SelectionError = enum { not_json_object, bad_schema, bad_use };
 
 pub const ParsedSelection = union(enum) { ok: Selection, err: SelectionError };
 
-pub fn parseSelection(allocator: Allocator, bytes: []const u8, managed: bool) ParsedSelection {
+pub fn parseSelection(allocator: Allocator, bytes: []const u8) ParsedSelection {
     const root = std.json.parseFromSliceLeaky(std.json.Value, allocator, bytes, .{}) catch return .{ .err = .not_json_object };
     if (root != .object) return .{ .err = .not_json_object };
     if (uint(root.object.get("schema")) != 1) return .{ .err = .bad_schema };
-    const use = str(root.object.get("use"));
-    if (use == null and !managed) return .{ .err = .bad_use };
+    const use = str(root.object.get("use")) orelse return .{ .err = .bad_use };
     return .{ .ok = .{ .use = use, .value = root } };
 }
 
 // ------------------------------------------------------------------------------------------- resolution
 
-pub const Source = enum { use, snapshot, selection, managed };
+pub const Source = enum { use, snapshot, selection };
 
 pub const Resolved = struct { version: []const u8, source: Source };
 
@@ -212,11 +216,10 @@ pub const Failure = union(enum) {
     not_installed: struct { query: []const u8, source: Source },
     ambiguous: struct { query: []const u8, candidates: [2][]const u8 },
     bad_snapshot_id: []const u8,
-    /// `latest` found no installed bundle of the channel (or, managed, no bundle at all).
-    none_installed: ?[]const u8,
+    /// `latest` found no installed runtime of the channel.
+    none_installed: []const u8,
     /// A `latest` candidate whose `bundle.json` lacks the version-order fields.
     unordered: []const u8,
-    managed_option: struct { manager: []const u8, option: []const u8 },
 };
 
 pub const Resolution = union(enum) { ok: Resolved, err: Failure };
@@ -227,8 +230,6 @@ pub const Input = struct {
     bundles: []const Bundle,
     /// Recorded channel (`<root>/channel`, else the launcher's own channel).
     channel: []const u8,
-    /// `.<manager>.managed.lock` in the install root.
-    managed: ?[]const u8 = null,
     /// The selection's `use`; null when there is no selection (`latest`).
     selection_use: ?[]const u8 = null,
 };
@@ -247,18 +248,8 @@ fn newest(bundles: []const Bundle, channel: ?[]const u8) union(enum) { found: []
     return if (best) |b| .{ .found = b.version } else .none;
 }
 
-/// Version to start (version-selection "Selection resolution", step 1; managed installs use their bundle).
+/// Runtime to start: `--use`, else the version of `--snapshot`, else the selection (`latest` by default).
 pub fn resolve(in: Input) Resolution {
-    if (in.managed) |m| {
-        if (in.opts.use != null) return .{ .err = .{ .managed_option = .{ .manager = m, .option = "--use" } } };
-        if (in.opts.addons.len > 0) return .{ .err = .{ .managed_option = .{ .manager = m, .option = "--addon" } } };
-        if (in.opts.snapshot) |id| if (snapshotVersion(id) == null) return .{ .err = .{ .bad_snapshot_id = id } };
-        return switch (newest(in.bundles, null)) {
-            .found => |v| .{ .ok = .{ .version = v, .source = .managed } },
-            .none => .{ .err = .{ .none_installed = null } },
-            .unordered => |v| .{ .err = .{ .unordered = v } },
-        };
-    }
     var query: []const u8 = undefined;
     var source: Source = undefined;
     if (in.opts.use) |u| {
@@ -285,35 +276,6 @@ pub fn resolve(in: Input) Resolution {
         .none => .{ .err = .{ .not_installed = .{ .query = query, .source = source } } },
         .ambiguous => |c| .{ .err = .{ .ambiguous = .{ .query = query, .candidates = c } } },
     };
-}
-
-/// Bundle that runs maintenance commands: the newest installed bundle this launcher can start (any
-/// channel). Unreadable or other-protocol bundles are skipped, so `dsh uninstall` can remove them.
-pub fn maintenanceBundle(bundles: []const Bundle) ?[]const u8 {
-    var best: ?Bundle = null;
-    for (bundles) |b| {
-        const m = b.meta orelse continue;
-        if (!m.ordered() or m.protocol != protocol) continue;
-        if (best == null or before(best.?, b)) best = b;
-    }
-    return if (best) |b| b.version else null;
-}
-
-// ---------------------------------------------------------------------------------------- DSH_BIN_LAUNCH
-
-/// `DSH_BIN_LAUNCH`: the parsed launch options, the resolved version and its source, and the selection the
-/// launcher read (so the runtime resolves the snapshot and addons from the same selection, and a restart
-/// keeps them). `version`/`source` are null for a maintenance command whose effective version did not resolve.
-pub fn launchJson(allocator: Allocator, opts: Options, resolved: ?Resolved, selection: ?std.json.Value) Allocator.Error![]u8 {
-    return std.json.Stringify.valueAlloc(allocator, .{
-        .protocol = protocol,
-        .version = if (resolved) |r| r.version else null,
-        .source = if (resolved) |r| @tagName(r.source) else null,
-        .use = opts.use,
-        .snapshot = opts.snapshot,
-        .addons = opts.addons,
-        .selection = selection,
-    }, .{});
 }
 
 // ------------------------------------------------------------------------------------ Windows arguments
@@ -388,16 +350,16 @@ test "snapshot id version prefix" {
 test "version matching: exact, tag, unique prefix, ambiguous" {
     const v = [_]Bundle{ R2, R2b, R1 };
     try tt.expectEqualStrings(R2.version, matchVersion(&v, R2.version).found);
-    try tt.expectEqualStrings(R1.version, matchVersion(&v, "dsh-v0.2.0-rc.1-xz.10.1.ga83dab63").found);
-    try tt.expectEqualStrings(R1.version, matchVersion(&v, "dsh-live-0.2.0").found);
+    try tt.expectEqualStrings(R1.version, matchVersion(&v, "runtime-v0.2.0-rc.1-xz.10.1.ga83dab63").found);
+    try tt.expectEqualStrings(R1.version, matchVersion(&v, "runtime-0.2.0").found);
     try tt.expectEqualStrings(R1.version, matchVersion(&v, "0.2.0-rc.1").found);
     try tt.expect(matchVersion(&v, "0.1.7-rc.2") == .ambiguous);
     try tt.expect(matchVersion(&v, "0.1.5") == .none);
-    try tt.expect(matchVersion(&v, "dsh-v") == .none);
+    try tt.expect(matchVersion(&v, "runtime-v") == .none);
 }
 
 fn testMeta(channel: []const u8, time: []const u8, run: u64, attempt: u64) ?Meta {
-    return .{ .channel = channel, .commit_time = time, .run = run, .attempt = attempt, .protocol = protocol };
+    return .{ .format = .runtime_v1, .channel = channel, .commit_time = time, .run = run, .attempt = attempt, .protocol = protocol };
 }
 
 const R2 = Bundle{ .version = "0.1.7-rc.2-xz.7.1.g4e41a3f1", .meta = testMeta("release", "2026-09-24T10:00:00.000Z", 7, 1) };
@@ -413,29 +375,32 @@ test "version order: commit time, then run, then attempt" {
     try tt.expect(before(R2, a2));
 }
 
-test "bundle.json fields" {
+test "bundle.json fields: runtime v1, legacy coupled bundles, unsafe entries" {
     var arena = std.heap.ArenaAllocator.init(tt.allocator);
     defer arena.deinit();
-    const m = parseMeta(arena.allocator(), "{\"channel\":\"live\",\"run\":7,\"attempt\":2,\"launcherProtocol\":2,\"upstream\":{\"commitTime\":\"2026-09-24T10:00:00.000Z\",\"version\":\"x\"},\"addons\":{}}").?;
+    const a = arena.allocator();
+    const m = parseMeta(a, "{\"kind\":\"dsh-runtime\",\"schemaVersion\":1,\"channel\":\"live\",\"run\":7,\"attempt\":2,\"launchProtocol\":1,\"entry\":\"dsh-native\",\"upstream\":{\"commitTime\":\"2026-09-24T10:00:00.000Z\",\"version\":\"x\"}}").?;
     try tt.expectEqualStrings("live", m.channel.?);
-    try tt.expectEqual(@as(?u64, 2), m.protocol);
+    try tt.expectEqual(@as(?u64, 1), m.protocol);
+    try tt.expectEqualStrings("dsh-native", m.entry.?);
     try tt.expect(m.ordered());
-    const old = parseMeta(arena.allocator(), "{\"schemaVersion\":1,\"channel\":\"release\",\"upstream\":{\"commitTime\":\"2026-09-24\"}}").?;
-    try tt.expectEqual(@as(?u64, null), old.protocol);
+    const old = parseMeta(a, "{\"schemaVersion\":2,\"name\":\"dsh-bin\",\"channel\":\"release\",\"launcherProtocol\":2,\"run\":1,\"attempt\":1,\"upstream\":{\"commitTime\":\"2026-09-24T10:00:00.000Z\"}}").?;
+    try tt.expect(old.format == .legacy);
     try tt.expect(!old.ordered());
-    try tt.expect(parseMeta(arena.allocator(), "[1]") == null);
-    try tt.expect(parseMeta(arena.allocator(), "{") == null);
+    try tt.expectEqual(@as(?[]const u8, null), parseMeta(a, "{\"kind\":\"dsh-runtime\",\"schemaVersion\":1,\"entry\":\"../x\"}").?.entry);
+    try tt.expect(parseMeta(a, "{\"kind\":\"other\"}").?.format == .unknown);
+    try tt.expect(parseMeta(a, "[1]") == null);
+    try tt.expect(parseMeta(a, "{") == null);
 }
 
 test "selection.json" {
     var arena = std.heap.ArenaAllocator.init(tt.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    try tt.expectEqualStrings("0.1.7-rc.2", parseSelection(a, "{\"schema\":1,\"use\":\"0.1.7-rc.2\",\"snapshot\":null,\"addons\":{}}", false).ok.use.?);
-    try tt.expectEqual(SelectionError.bad_schema, parseSelection(a, "{\"schema\":2,\"use\":\"latest\"}", false).err);
-    try tt.expectEqual(SelectionError.bad_use, parseSelection(a, "{\"schema\":1,\"use\":\"\"}", false).err);
-    try tt.expectEqual(@as(?[]const u8, null), parseSelection(a, "{\"schema\":1,\"snapshot\":\"v@1\"}", true).ok.use);
-    try tt.expectEqual(SelectionError.not_json_object, parseSelection(a, "nope", false).err);
+    try tt.expectEqualStrings("0.1.7-rc.2", parseSelection(a, "{\"schema\":1,\"use\":\"0.1.7-rc.2\",\"snapshot\":null,\"addons\":{}}").ok.use);
+    try tt.expectEqual(SelectionError.bad_schema, parseSelection(a, "{\"schema\":2,\"use\":\"latest\"}").err);
+    try tt.expectEqual(SelectionError.bad_use, parseSelection(a, "{\"schema\":1,\"use\":\"\"}").err);
+    try tt.expectEqual(SelectionError.not_json_object, parseSelection(a, "nope").err);
 }
 
 test "resolution: launch --use, then the --snapshot version, then the selection" {
@@ -458,7 +423,7 @@ test "resolution: latest follows the recorded channel and version order" {
     try tt.expectEqualStrings(L.version, resolve(.{ .opts = .{}, .bundles = &all, .channel = "live" }).ok.version);
     const rebuilt = [_]Bundle{ R2b, R2 };
     try tt.expectEqualStrings(R2b.version, resolve(.{ .opts = .{}, .bundles = &rebuilt, .channel = "release" }).ok.version);
-    try tt.expectEqualStrings("live", resolve(.{ .opts = .{}, .bundles = &.{R2}, .channel = "live" }).err.none_installed.?);
+    try tt.expectEqualStrings("live", resolve(.{ .opts = .{}, .bundles = &.{R2}, .channel = "live" }).err.none_installed);
     const broken = [_]Bundle{ R1, .{ .version = "junk", .meta = null } };
     try tt.expectEqualStrings("junk", resolve(.{ .opts = .{}, .bundles = &broken, .channel = "release" }).err.unordered);
 }
@@ -474,39 +439,6 @@ test "resolution: missing, ambiguous and malformed names; no fallback" {
     try tt.expectEqualStrings("nover", r.err.bad_snapshot_id);
     r = resolve(.{ .opts = .{ .use = "0.2.0", .snapshot = "bad" }, .bundles = &all, .channel = "release" });
     try tt.expectEqualStrings("bad", r.err.bad_snapshot_id);
-}
-
-test "resolution: managed installs ignore the selection's use and refuse --use/--addon" {
-    const one = [_]Bundle{R1};
-    var r = resolve(.{ .opts = .{}, .bundles = &one, .channel = "release", .managed = "portage", .selection_use = "0.1.7-rc.2" });
-    try tt.expectEqualStrings(R1.version, r.ok.version);
-    try tt.expectEqual(Source.managed, r.ok.source);
-    r = resolve(.{ .opts = .{ .snapshot = "0.1.7-rc.2@2" }, .bundles = &one, .channel = "live", .managed = "portage" });
-    try tt.expectEqualStrings(R1.version, r.ok.version);
-    r = resolve(.{ .opts = .{ .use = "0.1.7-rc.2" }, .bundles = &one, .channel = "release", .managed = "scoop" });
-    try tt.expectEqualStrings("scoop", r.err.managed_option.manager);
-    try tt.expectEqualStrings("--use", r.err.managed_option.option);
-    r = resolve(.{ .opts = .{ .addons = &.{"office:1"} }, .bundles = &one, .channel = "release", .managed = "scoop" });
-    try tt.expectEqualStrings("--addon", r.err.managed_option.option);
-}
-
-test "maintenance bundle: newest this launcher can start, any channel" {
-    const future = Bundle{ .version = "9", .meta = .{ .channel = "release", .commit_time = "2027-01-01T00:00:00.000Z", .run = 1, .attempt = 1, .protocol = 3 } };
-    const all = [_]Bundle{ R2, L, R1, future, .{ .version = "junk", .meta = null } };
-    try tt.expectEqualStrings(L.version, maintenanceBundle(&all).?);
-    try tt.expectEqual(@as(?[]const u8, null), maintenanceBundle(&.{future}));
-    try tt.expect(isMaintenance("select") and isMaintenance("snapshot") and isMaintenance("clean") and !isMaintenance("plugin") and !isMaintenance(null));
-}
-
-test "DSH_BIN_LAUNCH" {
-    var arena = std.heap.ArenaAllocator.init(tt.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const sel = parseSelection(a, "{\"schema\":1,\"use\":\"latest\",\"snapshot\":\"v@1\"}", false).ok.value;
-    const j = try launchJson(a, .{ .snapshot = "v@2", .addons = &.{"office:1"} }, .{ .version = "v", .source = .snapshot }, sel);
-    try tt.expectEqualStrings("{\"protocol\":2,\"version\":\"v\",\"source\":\"snapshot\",\"use\":null,\"snapshot\":\"v@2\",\"addons\":[\"office:1\"],\"selection\":{\"schema\":1,\"use\":\"latest\",\"snapshot\":\"v@1\"}}", j);
-    const m = try launchJson(a, .{}, null, null);
-    try tt.expectEqualStrings("{\"protocol\":2,\"version\":null,\"source\":null,\"use\":null,\"snapshot\":null,\"addons\":[],\"selection\":null}", m);
 }
 
 test "Windows command-line tail after the leading options" {

@@ -2,6 +2,7 @@
 //! Driven by environment variables, which the launcher passes through:
 //! - FAKE_OUT (required): directory for `<gen>.argv` (one argument per line) and `<gen>.env` (KEY=VALUE lines);
 //! - FAKE_EXIT: exit status (default 0);
+//! - `<gen>.cwd` gets the working directory; with FAKE_STDIN set, `<gen>.stdin` gets up to 4 KiB of stdin;
 //! - FAKE_HOLD: when set, write `<FAKE_OUT>/started` and then sleep 30 s;
 //! - FAKE_RESTART_WRITE / FAKE_RESTART_DATA: restart once like an in-app restart, after writing DATA to the
 //!   file WRITE: respawn this executable with the same arguments and environment (plus FAKE_GEN=2), then
@@ -25,6 +26,12 @@ pub fn main() !void {
     var it = env.iterator();
     while (it.next()) |e| try env_text.print(a, "{s}={s}\n", .{ e.key_ptr.*, e.value_ptr.* });
     try dir.writeFile(.{ .sub_path = try std.fmt.allocPrint(a, "{s}.env", .{gen}), .data = env_text.items });
+    try dir.writeFile(.{ .sub_path = try std.fmt.allocPrint(a, "{s}.cwd", .{gen}), .data = try std.process.getCwdAlloc(a) });
+    if (env.get("FAKE_STDIN") != null) {
+        var buf: [4096]u8 = undefined;
+        const n = try std.fs.File.stdin().readAll(&buf);
+        try dir.writeFile(.{ .sub_path = try std.fmt.allocPrint(a, "{s}.stdin", .{gen}), .data = buf[0..n] });
+    }
 
     if (env.get("FAKE_RESTART_WRITE")) |path| if (std.mem.eql(u8, gen, "1")) {
         try std.fs.cwd().writeFile(.{ .sub_path = path, .data = env.get("FAKE_RESTART_DATA") orelse "" });
