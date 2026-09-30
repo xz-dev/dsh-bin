@@ -1,5 +1,5 @@
 {
-  "version": "live.639ed01-xz.29.1.g5cf33f29",
+  "version": "live.639ed01-xz.34.1.g8a39d4f5",
   "description": "DeepSeek Harness (dsh), live channel, built from GitHub source by dsh-bin",
   "homepage": "https://github.com/xz-dev/dsh-bin",
   "license": "MIT",
@@ -12,12 +12,12 @@
   ],
   "architecture": {
     "64bit": {
-      "url": "https://github.com/xz-dev/dsh-bin/releases/download/dsh-live-639ed01-xz.29.1.g5cf33f29/dsh-windows-x64-modern.zip",
-      "hash": "800940fa9f6c0c2f8a199385a38a535ce8a0a9ed6c191912dff2cedbbcab56f9"
+      "url": "https://github.com/xz-dev/dsh-bin/releases/download/dsh-live-639ed01-xz.34.1.g8a39d4f5/dsh-windows-x64-modern.zip",
+      "hash": "1bad6a2d944bfc84164cc2be840ca1c1cced19fd29d6170dbe16ff8c53671e4b"
     },
     "arm64": {
-      "url": "https://github.com/xz-dev/dsh-bin/releases/download/dsh-live-639ed01-xz.29.1.g5cf33f29/dsh-windows-arm64.zip",
-      "hash": "34857390933225c297465ff3f70797bd684175b543fe278bdcb33bb03f32e847"
+      "url": "https://github.com/xz-dev/dsh-bin/releases/download/dsh-live-639ed01-xz.34.1.g8a39d4f5/dsh-windows-arm64.zip",
+      "hash": "9333b424450f747c45de2344b8deb4bb5d0d9a7b25f4b8ec0c9a00d53ab39120"
     }
   }
 }
