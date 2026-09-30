@@ -265,6 +265,94 @@
             "sha256": "65d7a5724c68ed8f391d21df70a6cde5343acc63e87c120f55452480f78e2f2c"
           }
         }
+      },
+      {
+        "seq": 4,
+        "tag": "dsh-v0.2.0-rc.2-xz.34.1.g8a39d4f5",
+        "version": "0.2.0-rc.2-xz.34.1.g8a39d4f5",
+        "channel": "release",
+        "upstream": {
+          "commit": "639ed015397290b3745d163aafe02ffee4aa3f84",
+          "commitTime": "2026-09-29T09:21:31.000Z",
+          "tag": "dsh-v0.2.0-rc.2",
+          "version": "0.2.0-rc.2"
+        },
+        "run": 34,
+        "attempt": 1,
+        "launcherProtocol": 2,
+        "launcherCommit": "8a39d4f528dca3acd4cf81e0058e56e5b5ad3648",
+        "publishedAt": "2026-09-30T08:23:33.551Z",
+        "addons": {
+          "office": {
+            "slot": {
+              "commit": "8e816b7ea4950f53b7eeb4623d63d74bd1341491",
+              "kitVersion": "0.1.1"
+            },
+            "pinned": "0.1.1-xz.28.1.gd499269a"
+          }
+        },
+        "assets": {
+          "darwin-arm64": {
+            "name": "dsh-darwin-arm64.zip",
+            "size": 116663280,
+            "sha256": "857805038fa128cc01a1344e861040a015d4bfcf0950aa44f2e59a6a6d4837ed"
+          },
+          "darwin-x64-baseline": {
+            "name": "dsh-darwin-x64-baseline.zip",
+            "size": 121555110,
+            "sha256": "de742cb34f434356a75adf98d32dd111ac24a16289475a8f70cce3f1cc5dc309"
+          },
+          "darwin-x64-modern": {
+            "name": "dsh-darwin-x64-modern.zip",
+            "size": 121555112,
+            "sha256": "a0ef66826016abcab8d1663024747a625fdc6849a0536c7e4a64e9d76c8c9e6f"
+          },
+          "linux-arm64": {
+            "name": "dsh-linux-arm64.zip",
+            "size": 131654271,
+            "sha256": "4f22f61d2eb8a4d668f5090ee1ea9271cd450677edfc93147072193054c7c628"
+          },
+          "linux-arm64-musl": {
+            "name": "dsh-linux-arm64-musl.zip",
+            "size": 128966285,
+            "sha256": "4959eedadd939a4f54b0ac7d96b8970b2249ed19267d79af02119a64171a476a"
+          },
+          "linux-x64-baseline": {
+            "name": "dsh-linux-x64-baseline.zip",
+            "size": 129257077,
+            "sha256": "8f727bd9c718761c5cf9dc081ca4be876a27352e999cf5c6010ab1f54782a269"
+          },
+          "linux-x64-modern": {
+            "name": "dsh-linux-x64-modern.zip",
+            "size": 129257076,
+            "sha256": "ab88f6a6b6b4530912eaa3ee6da02aee5b4f1fa46b3c2b9f56e1b57163369c9f"
+          },
+          "linux-x64-musl-baseline": {
+            "name": "dsh-linux-x64-musl-baseline.zip",
+            "size": 126633265,
+            "sha256": "25466838f64b80b78c050ec763b127d368eada685dd237e8064002e57c973c9c"
+          },
+          "linux-x64-musl-modern": {
+            "name": "dsh-linux-x64-musl-modern.zip",
+            "size": 126633265,
+            "sha256": "6ded3ec67e55bfe37ddf384312ba2c2d0756f73fc3c95b7890371f9a85f691d1"
+          },
+          "windows-arm64": {
+            "name": "dsh-windows-arm64.zip",
+            "size": 120447775,
+            "sha256": "ab6feb24998754f10025d63cab7f882496728df072eeded2c4f8beb48aee775d"
+          },
+          "windows-x64-baseline": {
+            "name": "dsh-windows-x64-baseline.zip",
+            "size": 133917191,
+            "sha256": "0e199645005c2ee9b4f6623a4c15b59d1d68f0bce9c651ff26c225a2e54d1ab5"
+          },
+          "windows-x64-modern": {
+            "name": "dsh-windows-x64-modern.zip",
+            "size": 133917192,
+            "sha256": "3d743d60e09e9824b063e99d042d87dcfdc665b7c043bd6466b809c20882ec8a"
+          }
+        }
       }
     ],
     "live": [
