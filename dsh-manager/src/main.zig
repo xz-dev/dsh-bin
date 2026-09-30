@@ -45,4 +45,5 @@ pub fn main() void {
 test {
     _ = @import("select.zig");
     _ = @import("zip.zig");
+    _ = @import("http.zig");
 }
