@@ -767,9 +767,13 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   - Windows: the contract fixture's shell launcher set `HOME` only; `homedir()` reads `USERPROFILE` on
     Windows, so the automatic snapshot went to the runner's real home and two launcher cases failed.
   - Rerun at bbbdcf6: CI run 36593757061 passed on ubuntu-24.04, macos-15 and windows-2022.
-  - Still not verified: uninstalling the version that runs the command on Windows (from 5.3). No
-    contract case does this (the uninstall cases run from another installed version), so CI does not
-    answer it; it stays open for the accept run / e2e (6.1).
+  - Uninstalling the version that runs the command on Windows (open since 5.3; covered at your request,
+    2026-09-30): a new contract case uninstalls R3 from R3's own `dsh-native`, then sweeps from R1.
+    CI run 36654551550 showed that Windows allows it (the rename succeeds, exit 0), but the removal
+    stopped at the running executable **after** it had deleted the `.uninstalled` mark, so a later sweep
+    would have restored the uninstalled version. Fix 176a1ad: `discard(trash, mark)` removes everything
+    else first and the mark last. CI run 36656241815 passed on ubuntu, macOS and Windows; the Windows
+    leftover keeps its mark and the next `clean --update` removes it without restoring anything.
 
 ### Task 5.5: addons as installed versions
 
