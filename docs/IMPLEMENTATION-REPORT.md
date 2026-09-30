@@ -1005,3 +1005,14 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
   which still proves the plugin lands in the resolved snapshot. Checked by hand on the published
   0.2.0-rc.1 first. Poll 36665735681 was cancelled during the live build; nothing half-published.
   New poll 36673557770 rebuilds 0.2.0-rc.2 and the live build (result below).
+
+### Task 7.1: result
+
+- Published and immutable: `dsh-addon-office-v0.1.1-xz.28.1.gd499269a`, `dsh-v0.1.7-rc.2-xz.28.1.gd499269a`,
+  `dsh-v0.2.0-rc.1-xz.28.1.gd499269a` (release Latest) and `dsh-live-639ed01-xz.29.1.g5cf33f29` (accepted
+  on 12 targets, first publication of the live channel). The index lists release seq 1-2, live seq 1 and
+  office seq 1; the Scoop bucket carries dsh 0.2.0-rc.1, dsh-live and dsh-office.
+- `dsh-v0.2.0-rc.2` (a new upstream tag, not part of 7.1's list) passed 11/12 accepts in poll 36673557770;
+  linux-x64-modern failed on HTTP 500 from raw.githubusercontent.com while fetching the index, before e2e
+  ran. The failed jobs are re-run (`gh run rerun --failed`); no code change.
+- All 17 tasks of dsh-bin-select-snapshots are complete.
