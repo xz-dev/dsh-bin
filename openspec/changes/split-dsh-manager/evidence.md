@@ -92,3 +92,38 @@
     - RL-MANAGER-BUILD 在 Windows 上找不到 zig 路径。
   - 以上已转给正在运行的 sol 任务处理。
 - 2026-10-01 第三次 CI（2342523）：https://github.com/xz-dev/dsh-bin/actions/runs/36782463054。ubuntu-24.04、macos-15、windows-2022 全部通过。说明：CI 上没有 `work/app`，真实运行包组合测试在 CI 中会明确跳过；该组合只在本机验证过（67 pass / 0 skip）。
+
+## 2.1 PS-SYMLINK、PS-HOME、PS-READONLY、PS-CONFLICT（sol）
+
+- 命令：`cd dsh-manager && timeout 300 bun test ./test/storage.test.ts`。实现前 **0 pass / 6 fail**：首次启动没有 `.dsh-bin-data.json`；顶层帮助/版本仍要求运行包；同名文件被误诊为 selection 不可读；非空目录、损坏所有权标记和只读目录只报“没有运行包”，未验证数据根。实现后 **6 pass / 0 fail**，60 次断言。
+- 最小实现：集中解析并保存真实 executable、数据根与原 cwd 下的应用 home；首次有状态启动才声明 D10 所有权，空/不存在目录通过，未标记非空目录、同名文件和损坏标记均带路径拒绝。实际独占写探针检验可写性，不依赖 POSIX mode 位推断、不切换 HOME/XDG。帮助、版本和本地 list 不创建文件。Windows 测试以 `icacls` 拒绝当前用户写入，避免把目录 READONLY 属性误当 ACL；软链接测试明确以 Windows 非默认 symlink 权限为由跳过，真实 exe 路径仍使用 realpath。
+- green 中间提交 **d692faf**：`timeout 300 zig build test --summary all` **43/43**；`timeout 1500 bun test ./test` **73 pass / 0 fail**、655 次断言（真实 archive 2 场景实际执行）；`cd ../dsh-bun-build && timeout 900 bun test ./test/unit ./test/runtime` **94 pass / 0 fail**、341 次断言。`timeout 300 zig build -Dtarget=<target>` 对 x86_64-windows-gnu、aarch64-macos、aarch64-linux 成功；交叉编译不是对应平台运行证据，新 Windows/macOS 代码待父会话 CI。
+- 边界：空安装尚不下载，预期先创建所有权标记再明确报运行包缺失；安装/自动自举属于第 3/5 节。只对有状态入口检查可写性，只读命令不要求可写。
+
+## 2.2 PS-MANAGED、PS-SCOOP、PS-OVERRIDE（sol）
+
+- red：`cd dsh-manager && timeout 300 bun test ./test/storage.test.ts -t 'PS-MANAGED|PS-SCOOP|manager info'`：**0 pass / 4 fail**。旧代码忽略包标记，Scoop 在程序目录查找运行包、`manager info` 报尚未实现、损坏标记仍启动普通便携路径。green：同文件全量 **10 pass / 0 fail**、125 次断言。
+- 提交 **8f25e14**：真实 exe 相邻 `.dsh-manager-install.json` 固定为 `{schema:1,owner:"portage"|"scoop"}`；未知 owner、格式损坏、未知 schema 明确带标记路径失败。portage 使用绝对 XDG_DATA_HOME，否则 HOME/.local/share；scoop 要求绝对 LOCALAPPDATA。只读 `manager info` 显示模式、数据根与 app home，并说明托管例外、外部 DSH_HOME 不在整目录便携保证内。测试在每个平台模拟 owner，不冒充真实包安装验收。
+- 将 package prefix 设为不可写，确认只写用户数据；两个不同 Scoop package 目录启动同一用户运行包，目录内容不变。相对 XDG_DATA_HOME 走 HOME fallback；相对/缺失 LOCALAPPDATA 报错。此提交 manager 全量 **77 pass / 0 fail**、720 次断言，Zig **43/43**，三个目标交叉编译成功。实际 Gentoo/Scoop 安装、升级、卸载仍归 7.4/7.5。
+
+## 2.3 PS-CONTAIN、PS-OVERRIDE、RB-HOME（sol）
+
+- red：`cd dsh-manager && timeout 300 bun test ./test/storage.test.ts -t PS-CONTAIN`：**0 pass / 2 fail**。载荷仍是 snapshot:null；继承的全局缓存环境未覆盖，假运行包实际在隔离 HOME 中写出了探针。green 为真实 `<id>@1`、`.usage.lock`、snapshot.json 和空 profiles；重启新进程选择现有最高编号且保留文件。只实现初始空快照和 newest，不实现 6.2 的编号计数、复制、别名、显式快照解析、列表或删除。
+- **真实 runtime 发现而非猜测**：本机 archive 内 Bun **1.4.2**、pnpm **11.7.0**。`config get store-dir/cache-dir/state-dir` 和 `store path` 实测 **npm_config_store_dir/cache_dir/state_dir 无效**（返回 undefined / 全局 store）；**pnpm_config_store_dir/cache_dir/state_dir 有效**。`timeout 900 bun test ./test/real-runtime.test.ts -t 'PS-CONTAIN|RB-HOME'` 此时 **1 pass / 1 fail**：实际 profile 读 patch 成功，store-dir 却为 undefined。改用已验证的 pnpm_config_* 后真实审计 **1 pass / 0 fail**（最终 30 次断言）。单独运行审计时，fixture 必须先经 manager 初始化 snapshot；缺初始化曾报 metadata 无效，已修复驱动，不把该驱动错误计为生产 red。
+- 受控环境：BUN_INSTALL_CACHE_DIR→cache/bun，BUN_RUNTIME_TRANSPILER_CACHE_PATH→cache/transpiler，npm_config_cache→cache/npm（npm 子进程），pnpm_config_store_dir→cache/pnpm/store，pnpm_config_cache_dir→cache/pnpm/cache，pnpm_config_state_dir→state/pnpm，PNPM_HOME→cache/pnpm/home，TMPDIR/TEMP/TMP→tmp。无需改写 XDG_CACHE_HOME、HOME、USERPROFILE 或 LOCALAPPDATA。Windows 覆盖环境键先 remove 再 put，避免 EnvMap 保留旧大小写使 pnpm 无法识别。
+- 真实审计复用第 1 节同一构建 archive；从真实 manager 启动真实上游 profile/plugin 记录子环境，再以同一 embedded native 的 BUN_BE_BUN 模式探测 Bun 和 pnpm。受控本地 HTTP registry 提供 tarball，实际执行两种 install，确认 node_modules、Bun 安装缓存、pnpm store/metadata cache 均有内容；大 TS 文件实际增加 `.pile` 缓存；os.tmpdir() 为 data/tmp，隔离 HOME 文件树始终为空，审计目录只有 tools/dsh 和 tools/dsh-bin 内变化。PATH 不含宿主 Node/Bun。
+- 外部 DSH_HOME 的真实 `--profile split-probe --dump-config` 现在通过 **manager** 启动，使用传入的真实 snapshot/profiles 和外部 home 中 cordis.patch.yml；没有错误相邻 profiles 或快照内 patch。已完成第 1 节的 profile 转换直接复用，本轮未重复改 runtime/builder。两个 manager 版本同 archive 的真实插件启动也改用 snapshot 内插件文件；对 runtime 与 snapshot 两个 guard 的独占探针均为 busy，退出后释放。CI 的假运行包有对应文件写审计与 snapshot 锁检查；缺 work/app 时三个真实 archive 场景均在测试名明确 SKIP，不宣称实际执行。
+- Windows ACL 测试使用 `icacls` 精确拒绝 WD/AD/WEA/WA（不拒绝读取/执行），snapshot staging/marker 文件关闭 handle 后同目录 rename；directory junction（Windows 无 symlink 管理员权限要求）和 POSIX link 均不能重定向数据根或缓存到外部。绿色功能提交 **25a8799**，测试复核提交 **45717de**。
+
+## 2.4 PS-MOVE、DL-NO-MIGRATION（sol，manager 侧）
+
+- `timeout 300 bun test ./test/storage.test.ts -t PS-MOVE`：真实 manager + 预置 runtime + 固定 selection + 插件状态和默认 home，停止后移动 executable/data，将旧目录替换为普通文件（旧子路径确实不可访问），设置不可连接的发行源/代理后仍离线启动。新载荷重新解析所有绝对路径；selection 和 snapshot metadata 只记录 ID/序号/时间/来源/构建顺序，不记录安装绝对路径。仅移动 binary 则创建新位置所有权标记并报告没有运行包，不读取原 data 或旧 ~/.dsh，旧数据不变。
+- 首次 green 是既有 ID 状态与新 snapshot 写法的特征验证，没有为制造 diff 新建迁移机制。red 强度检查：临时让 snapshot.json 持久化绝对 dir 并在下次启动采用它，上述命令 **0 pass / 1 fail**（搬迁后应退出 0，实际 1，旧位置 claim 失败）。只加入绝对 dir 的独立 mutation 也使 metadata 检查 **0 pass / 2 fail**。移除全部 mutation 后通过；最终代码未保留故障注入。
+- 真实插件完整搬迁属于 **8.1**；此处不宣称任意插件内部绝对链接、跨 OS 移动或运行中搬家已支持。
+
+### 第 2 节最终验证与边界
+
+- `cd dsh-manager && timeout 300 zig build test --summary all && timeout 1500 bun test ./test`：Zig **43/43**；Bun **83 pass / 0 fail / 0 skip**、**815** 次断言、7 文件。本机真实 archive 的 **3** 场景全部实际执行；较第 1 节增加 **16** 个行为场景（storage 15 + real audit 1）。
+- `cd dsh-bun-build && timeout 900 bun test ./test/unit ./test/runtime`：**94 pass / 0 fail**、**341** 次断言、23 文件。Bun 合计 **177 pass / 0 fail**、**1156** 次断言。
+- `timeout 300 zig build -Dtarget=<target> --prefix /tmp/dsh-section2-<target>`：x86_64-windows-gnu、aarch64-macos、aarch64-linux 全部成功；`git diff --check` 成功。本轮 Windows/macOS 实际执行待父会话 CI，不把交叉编译当运行通过。
+- 勾选 **2.1–2.4**，仅按本轮授权的 manager 存储/最小快照场景完成。初始所有权建立的并发/异常中断恢复归 5.4/6.6；完整 snapshot store/显式 --snapshot 选择归 6.2；实际包门禁归 7.4/7.5；完整真实插件搬迁归 8.1。未新增安装、更新、补全、网络策略或旧数据迁移代码；未触碰 add-config-snapshots-and-paths，未 push。
