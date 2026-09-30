@@ -129,9 +129,21 @@ export function retire(root: string, dir: string): boolean {
 	return true;
 }
 
-/** Remove a quarantined tree; a failure leaves it for the next maintenance run. */
-export function discard(trash: string) {
+/**
+ * Remove a quarantined tree; a failure leaves it for the next maintenance run. `last` (a marker file) is
+ * removed only after everything else, so a partial removal (Windows: the running executable cannot be
+ * deleted) keeps it and the sweep never mistakes the remains for a tree to restore.
+ */
+export function discard(trash: string, last?: string) {
 	try {
+		if (last && existsSync(join(trash, last))) {
+			try {
+				makeWritable(trash);
+			} catch {
+				// rmSync reports what really fails.
+			}
+			for (const name of readdirSync(trash)) if (name !== last) rmSync(join(trash, name), { recursive: true, force: true });
+		}
 		removeTree(trash);
 	} catch {
 		// Swept later.

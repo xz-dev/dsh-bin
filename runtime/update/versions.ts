@@ -100,7 +100,7 @@ export function uninstallVersions(ctx: Context, queries: readonly string[]) {
 		} catch {
 			// Without the mark a crash before removal restores the bundle, which loses nothing.
 		}
-		discard(m.trash);
+		discard(m.trash, UNINSTALLED_MARK);
 	}
 	for (const version of targets) ctx.out(`Uninstalled dsh ${version}; its plugin snapshots are kept (\`dsh snapshot list\`).`);
 }

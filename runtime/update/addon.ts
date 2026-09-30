@@ -139,7 +139,7 @@ export function uninstallAddon(ctx: Context, name: AddonName, version?: string) 
 		} catch {
 			// Without the mark a crash before removal restores it, which loses nothing.
 		}
-		discard(m.trash);
+		discard(m.trash, UNINSTALLED_MARK);
 	}
 	for (const v of targets) ctx.out(`Uninstalled the ${name} addon ${v}.`);
 }
