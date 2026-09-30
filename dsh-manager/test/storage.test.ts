@@ -100,3 +100,89 @@ test.skipIf(!hasZig)("PS-READONLY: denied portable prefix or data directory fail
 		} finally { restore(); }
 	}
 });
+
+function managed(i: ReturnType<typeof newInstall>, owner: string, data: string) {
+	writeFileSync(join(i.dir, ".dsh-manager-install.json"), JSON.stringify({ schema: 1, owner }));
+	i.data = data;
+}
+
+test.skipIf(!hasZig)("PS-MANAGED: portage writes absolute XDG data or HOME fallback, never read-only package prefix", () => {
+	for (const absoluteXdg of [true, false]) {
+		const i = newInstall();
+		const xdg = tempDir("dsh-user-data-");
+		const data = absoluteXdg ? join(xdg, "dsh-bin") : join(i.home, ".local", "share", "dsh-bin");
+		managed(i, "portage", data);
+		const before = tree(i.dir);
+		const restore = denyWrites(i.dir);
+		try {
+			const env = { XDG_DATA_HOME: absoluteXdg ? xdg : "relative-data" };
+			const info = run(i, ["manager", "info"], { env });
+			expect(info.status).toBe(0);
+			expect(info.stdout).toContain("portage");
+			expect(info.stdout).toContain(data);
+			expect(info.stdout).toContain(join(data, "home"));
+			expect(existsSync(data)).toBe(false); // info is read-only
+			run(i, [], { env });
+			expect(JSON.parse(readFileSync(join(data, DATA_MARKER), "utf8"))).toEqual(OWNED);
+			expect(tree(i.dir)).toEqual(before);
+			expect(existsSync(join(i.dir, "dsh-bin"))).toBe(false);
+		} finally { restore(); }
+	}
+});
+
+test.skipIf(!hasZig)("PS-SCOOP: two read-only package versions retain same LOCALAPPDATA root and preinstalled runtime", () => {
+	const local = tempDir("dsh-localappdata-");
+	const data = join(local, "dsh-bin");
+	for (const version of ["1.0.0", "2.0.0"]) {
+		const i = newInstall();
+		managed(i, "scoop", data);
+		if (version === "1.0.0") addRuntime(data, ID);
+		const before = tree(i.dir);
+		const restore = denyWrites(i.dir);
+		try {
+			const env = { LOCALAPPDATA: local };
+			expect(run(i, [], { env }).status).toBe(0);
+			expect(launchOf(i)).toMatchObject({ runtime: ID, dataRoot: data, home: join(data, "home") });
+			const info = run(i, ["manager", "info"], { env });
+			expect(info.status).toBe(0);
+			expect(info.stdout).toContain("scoop");
+			expect(info.stdout).toContain(data);
+			expect(tree(i.dir)).toEqual(before);
+		} finally { restore(); }
+	}
+});
+
+test.skipIf(!hasZig)("PS-MANAGED / PS-SCOOP: unknown/corrupt markers or missing absolute LOCALAPPDATA fail without mode switch", () => {
+	for (const marker of ["{", JSON.stringify({ schema: 1, owner: "other" }), JSON.stringify({ schema: 99, owner: "portage" }), JSON.stringify({ owner: "scoop" })]) {
+		const i = newInstall();
+		writeFileSync(join(i.dir, ".dsh-manager-install.json"), marker);
+		for (const args of [[], ["manager", "info"]]) {
+			const result = run(i, args);
+			expect(result.status).toBe(1);
+			expect(result.stderr).toContain(join(i.dir, ".dsh-manager-install.json"));
+		}
+		expect(existsSync(i.data)).toBe(false);
+		expect(tree(i.home)).toEqual([]);
+	}
+	const i = newInstall();
+	managed(i, "scoop", i.data);
+	for (const env of [{}, { LOCALAPPDATA: "relative" }]) {
+		const result = run(i, [], { env });
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain("absolute LOCALAPPDATA");
+		expect(existsSync(i.data)).toBe(false);
+	}
+});
+
+test.skipIf(!hasZig)("PS-OVERRIDE: manager info reports resolved app home and external portability exception without writing", () => {
+	const i = newInstall();
+	const external = tempDir("dsh-external-home-");
+	const result = run(i, ["manager", "info"], { env: { DSH_HOME: external } });
+	expect(result.status).toBe(0);
+	expect(result.stdout).toContain("portable");
+	expect(result.stdout).toContain(i.data);
+	expect(result.stdout).toContain(external);
+	expect(result.stdout).toContain("outside the portability guarantee");
+	expect(existsSync(i.data)).toBe(false);
+	expect(tree(i.home)).toEqual([]);
+});

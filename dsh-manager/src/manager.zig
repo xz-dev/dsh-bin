@@ -44,7 +44,15 @@ pub fn run(ctx: *Ctx, opts: select.Options, args: []const []const u8) u8 {
         return 0;
     }
     if (std.mem.eql(u8, cmd, "list")) return list(ctx);
-    const known = [_][]const u8{ "install", "update", "uninstall", "select", "snapshot", "clean", "self-update", "completion", "info" };
+    if (std.mem.eql(u8, cmd, "info")) {
+        util.print("Install mode: {s}\nData root: {s}\nApp home: {s}\n", .{ @tagName(ctx.mode), ctx.data, ctx.home() });
+        if (ctx.mode != .portable) util.print("Managed user data is an exception to the portable executable-adjacent layout.\n", .{});
+        const rel = std.fs.path.relative(ctx.a, ctx.data, ctx.home()) catch util.oom();
+        if (std.fs.path.isAbsolute(rel) or std.mem.eql(u8, rel, "..") or std.mem.startsWith(u8, rel, "../") or std.mem.startsWith(u8, rel, "..\\"))
+            util.print("External DSH_HOME is outside the portability guarantee; only manager data moves with the installation.\n", .{});
+        return 0;
+    }
+    const known = [_][]const u8{ "install", "update", "uninstall", "select", "snapshot", "clean", "self-update", "completion" };
     for (known) |k| if (std.mem.eql(u8, cmd, k)) {
         util.warn("`dsh manager {s}` is not available in this build yet", .{cmd});
         return 1;

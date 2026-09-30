@@ -7,12 +7,15 @@ const util = @import("util.zig");
 pub const is_windows = builtin.os.tag == .windows;
 pub const data_dir_name = "dsh-bin";
 pub const data_marker = ".dsh-bin-data.json";
+pub const install_marker = ".dsh-manager-install.json";
+pub const Mode = enum { portable, portage, scoop };
 
 pub const Ctx = struct {
     a: std.mem.Allocator,
     env: std.process.EnvMap,
     exe: []const u8,
     dir: []const u8,
+    mode: Mode,
     data: []const u8,
     app_home: []const u8,
 
@@ -98,6 +101,28 @@ pub fn init(a: std.mem.Allocator) Ctx {
     const exe = std.fs.cwd().realpathAlloc(a, raw) catch |err| util.fatal("cannot resolve the manager's real path: {s}", .{@errorName(err)});
     const dir = std.fs.path.dirname(exe) orelse util.fatal("cannot resolve the manager's directory", .{});
     const env = std.process.getEnvMap(a) catch util.oom();
-    const data = util.join(a, &.{ dir, data_dir_name });
-    return .{ .a = a, .env = env, .exe = exe, .dir = dir, .data = data, .app_home = appHome(a, &env, data) };
+    const marker = util.join(a, &.{ dir, install_marker });
+    const bytes = std.fs.cwd().readFileAlloc(a, marker, 4096) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => util.fatal("invalid install marker {s}: {s}", .{ marker, @errorName(err) }),
+    };
+    const mode: Mode = if (bytes) |b| blk: {
+        const Marker = struct { schema: u32, owner: enum { portage, scoop } };
+        const m = std.json.parseFromSliceLeaky(Marker, a, b, .{}) catch util.fatal("invalid install marker {s}: expected schema 1 and owner portage|scoop", .{marker});
+        if (m.schema != 1) util.fatal("unsupported install marker {s}: schema {d}", .{ marker, m.schema });
+        break :blk if (m.owner == .portage) .portage else .scoop;
+    } else .portable;
+    const data = switch (mode) {
+        .portable => util.join(a, &.{ dir, data_dir_name }),
+        .portage => blk: {
+            if (env.get("XDG_DATA_HOME")) |v| if (std.fs.path.isAbsolute(v)) break :blk util.join(a, &.{ v, data_dir_name });
+            break :blk util.join(a, &.{ userHome(&env), ".local", "share", data_dir_name });
+        },
+        .scoop => blk: {
+            const local = env.get("LOCALAPPDATA") orelse util.fatal("install marker {s} requires absolute LOCALAPPDATA", .{marker});
+            if (!std.fs.path.isAbsolute(local)) util.fatal("install marker {s} requires absolute LOCALAPPDATA", .{marker});
+            break :blk util.join(a, &.{ local, data_dir_name });
+        },
+    };
+    return .{ .a = a, .env = env, .exe = exe, .dir = dir, .mode = mode, .data = data, .app_home = appHome(a, &env, data) };
 }
