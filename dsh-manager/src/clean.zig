@@ -293,6 +293,10 @@ fn collect(c: *Cleanup, root: Store) !void {
     if (try c.open(root, "tmp")) |tmp| {
         var it = tmp.dir.iterate();
         while (try it.next()) |entry| {
+            if (entry.kind == .file and std.mem.startsWith(u8, entry.name, ".self-update-result-") and std.mem.endsWith(u8, entry.name, ".tmp") and nonce(entry.name[20 .. entry.name.len - 4])) {
+                try c.add(tmp, entry);
+                continue;
+            }
             if (!treeEntry(entry.kind)) continue;
             if (namedNonce(entry.name, ".install-") or removed(entry.name)) {
                 try c.add(tmp, entry);
@@ -381,6 +385,10 @@ fn perform(ctx: *const Ctx) !void {
             };
             defer file.close();
             if (!binary.deleteValidated(ctx, item.store.dir, item.name, file, "candidate-clean-delete")) continue;
+        } else if (std.mem.startsWith(u8, item.name, ".self-update-result-")) {
+            const file = binary.openRegular(item.store.dir, item.name) catch continue;
+            defer file.close();
+            if (!binary.deleteValidated(ctx, item.store.dir, item.name, file, "result-clean-delete")) continue;
         } else item.store.dir.deleteTree(item.name) catch |err| {
             util.warn("cannot clean {s}/{s}: {s}; earlier reported removals remain removed", .{ item.store.path, item.name, @errorName(err) });
             return error.Reported;

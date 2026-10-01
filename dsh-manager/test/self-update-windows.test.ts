@@ -122,8 +122,9 @@ native(`MC-SELF-FAIL Windows: candidate denies tampering through handoff; anothe
 test.skipIf(!hasZig)("MC-CLEAN: helper exact valid files reclaim; helper-named user files and junctions survive", () => {
     const i = fixture(), helper = join(i.dir, ".dsh-manager-helper-ab12.exe"), unknown = join(i.dir, ".dsh-manager-helper-cd34.exe"), linked = join(i.dir, ".dsh-manager-helper-ef56.exe");
     cpSync(build().manager, helper); writeFileSync(unknown, "USER FILE");
+    const resultPart = join(i.data, "tmp/.self-update-result-ab12.tmp"); mkdirSync(join(i.data, "tmp"), { recursive: true }); writeFileSync(resultPart, "interrupted result");
     const external = join(i.home, "external"); mkdirSync(external); writeFileSync(join(external, "credential"), "KEEP"); symlinkSync(external, linked, WIN ? "junction" : "dir");
-    expect(run(i, ["manager", "clean"]).status).toBe(0); expect(existsSync(helper)).toBe(false); expect(readFileSync(unknown, "utf8")).toBe("USER FILE"); expect(readFileSync(join(linked, "credential"), "utf8")).toBe("KEEP");
+    expect(run(i, ["manager", "clean"]).status).toBe(0); expect(existsSync(resultPart)).toBe(false); expect(existsSync(helper)).toBe(false); expect(readFileSync(unknown, "utf8")).toBe("USER FILE"); expect(readFileSync(join(linked, "credential"), "utf8")).toBe("KEEP");
 }, 60_000);
 
 native(`MC-SELF-FAIL Windows: tampered candidate before handle handoff refuses without installing or claiming success${WIN ? "" : reason}`, async () => {

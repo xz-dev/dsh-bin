@@ -86,9 +86,11 @@ pub fn start(ctx: *Ctx, dir: std.fs.Dir, installed: std.fs.File, name: []const u
     try binary.validateFile(ctx.a, candidate, version);
     if (!std.mem.eql(u8, &(try binary.digest(candidate)), &expected) or !binary.sameFile(dir, std.fs.path.basename(ctx.exe), installed)) return error.ManagerFileChanged;
     const helper_name = try std.fmt.allocPrint(ctx.a, "{s}{x}.exe", .{ helper_prefix, std.crypto.random.int(u64) });
-    var copy = try dir.createFile(helper_name, .{ .exclusive = true });
+    const copy_name = try std.fmt.allocPrint(ctx.a, "{s}{s}.part-{x}", .{ binary.candidate_prefix, options.version, std.crypto.random.int(u64) });
+    var copy = try dir.createFile(copy_name, .{ .exclusive = true });
     var opened = true;
     defer if (opened) copy.close();
+    defer dir.deleteFile(copy_name) catch {};
     errdefer dir.deleteFile(helper_name) catch {};
     const original_hash = try binary.digest(installed);
     try installed.seekTo(0);
@@ -101,6 +103,7 @@ pub fn start(ctx: *Ctx, dir: std.fs.Dir, installed: std.fs.File, name: []const u
     try copy.sync();
     copy.close();
     opened = false;
+    try @import("self_update.zig").publish(ctx.a, dir, copy_name, helper_name);
     const helper = try openFile(dir, helper_name, true);
     defer helper.close();
     try binary.validateFile(ctx.a, helper, options.version);
@@ -276,6 +279,7 @@ pub fn consume(ctx: *const Ctx) void {
     defer tmp.close();
     const file = binary.openRegular(tmp, result_name) catch return;
     defer file.close();
+    if ((info(file.handle) catch return).nNumberOfLinks != 1) return;
     const bytes = file.readToEndAlloc(ctx.a, 4096) catch return;
     if (bytes.len > 2048 or !std.mem.endsWith(u8, bytes, "\n") or std.mem.indexOfScalar(u8, bytes[0 .. bytes.len - 1], '\n') != null) return;
     if (std.mem.startsWith(u8, bytes, "updated ")) {

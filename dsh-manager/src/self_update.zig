@@ -189,7 +189,7 @@ fn reusable(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, version: []co
 }
 
 /// Handle-relative no-replace publication. Existing names, even links, are never overwritten.
-fn publish(a: std.mem.Allocator, parent: std.fs.Dir, part: []const u8, name: []const u8) !void {
+pub fn publish(a: std.mem.Allocator, parent: std.fs.Dir, part: []const u8, name: []const u8) !void {
     if (builtin.os.tag == .windows) {
         const win = std.os.windows;
         const src = try win.sliceToPrefixedFileW(parent.fd, part);
