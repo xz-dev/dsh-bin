@@ -1,12 +1,12 @@
 // MC-ADDON: native manager operations and launch payload, no application needed.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { writeZip } from "../../dsh-bun-build/runtime/zip.ts";
 import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
-import { addRuntime, baseEnv, build, cleanup, hasZig, launchOf, newInstall, run, started, tempDir, tree, WIN, type Install } from "./harness.ts";
+import { addRuntime, baseEnv, build, cleanup, hasZig, launchOf, newInstall, run, started, tempDir, tree, replaceAncestor, type Install } from "./harness.ts";
 
 beforeAll(() => { if (hasZig) build(); }, 300_000);
 afterAll(cleanup);
@@ -125,7 +125,7 @@ test.skipIf(!hasZig)("MC-ADDON review: uninstall through a replaced ancestor pre
 	const i = newInstall(), s = source(i);
 	try {
 		expect((await install(i, s, `office:${A}`)).status).toBe(0);
-		const addons = join(i.data, "addons"), original = `${addons}-original`, external = join(i.home, "external"), target = join(external, "office", A), sentinel = join(target, "unrelated-user-file");
+		const addons = join(i.data, "addons"), external = join(i.home, "external"), target = join(external, "office", A), sentinel = join(target, "unrelated-user-file");
 		mkdirSync(target, { recursive: true }); writeFileSync(sentinel, "KEEP");
 		const p = spawn(i.exe, ["manager", "uninstall", "--addon", `office:${A}`], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_PAUSE: "addon-remove" }, stdio: "pipe" });
 		let stderr = ""; p.stderr.on("data", b => { stderr += b.toString(); }); p.stdout.resume();
@@ -135,7 +135,7 @@ test.skipIf(!hasZig)("MC-ADDON review: uninstall through a replaced ancestor pre
 			const deadline = Date.now() + 5000;
 			while (!stderr.includes("test pause: addon-remove") && p.exitCode === null && Date.now() < deadline) await Bun.sleep(10);
 			expect(stderr).toContain("test pause: addon-remove");
-			renameSync(addons, original); symlinkSync(external, addons, WIN ? "junction" : "dir");
+			const original = replaceAncestor(addons, external);
 			p.stdin.end("continue"); const code = await done;
 			expect(existsSync(sentinel)).toBe(true); expect(readFileSync(sentinel, "utf8")).toBe("KEEP");
 			expect(code).toBe(0); expect(existsSync(join(original, "office", A))).toBe(false); expect(started(i)).toBe(false);
@@ -144,16 +144,16 @@ test.skipIf(!hasZig)("MC-ADDON review: uninstall through a replaced ancestor pre
 }, 30_000);
 
 test.skipIf(!hasZig)("MC-ADDON review: force install through a download-time ancestor swap preserves external files", async () => {
-	const i = newInstall(), addons = join(i.data, "addons"), original = `${addons}-original`, external = join(i.home, "external"), target = join(external, "office", A), sentinel = join(target, "unrelated-user-file");
-	let armed = false, swapped = false;
-	const s = source(i, () => { if (armed && !swapped) { renameSync(addons, original); symlinkSync(external, addons, WIN ? "junction" : "dir"); swapped = true; } });
+	const i = newInstall(), addons = join(i.data, "addons"), external = join(i.home, "external"), target = join(external, "office", A), sentinel = join(target, "unrelated-user-file");
+	let armed = false, attempted = false, original = addons;
+	const s = source(i, () => { if (armed && !attempted) { original = replaceAncestor(addons, external); attempted = true; } });
 	try {
 		expect((await install(i, s, `office:${A}`)).status).toBe(0);
 		const marker = join(addons, "office", A, "node_modules/old"); writeFileSync(marker, "old generation");
 		mkdirSync(target, { recursive: true }); writeFileSync(sentinel, "KEEP");
 		rmSync(join(i.data, "cache/downloads"), { recursive: true }); armed = true;
 		const r = await command(i, s, ["--use", V, "manager", "install", "--addon", `office:${A}`, "--force"]);
-		expect(swapped).toBe(true); expect(existsSync(sentinel)).toBe(true); expect(readFileSync(sentinel, "utf8")).toBe("KEEP");
+		expect(attempted).toBe(true); expect(existsSync(sentinel)).toBe(true); expect(readFileSync(sentinel, "utf8")).toBe("KEEP");
 		expect(existsSync(join(target, "addon.json"))).toBe(false); expect(existsSync(join(target, "node_modules"))).toBe(false);
 		expect(r.status).toBe(0); expect(existsSync(join(original, "office", A, "node_modules/old"))).toBe(false);
 		expect(existsSync(join(original, "office", A, "addon.json"))).toBe(true); expect(started(i)).toBe(false);

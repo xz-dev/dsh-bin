@@ -2,10 +2,10 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { acquireClaim } from "./claim-probe.ts";
-import { addRuntime, baseEnv, build, cleanup, hasZig, launchOf, newInstall, run, started, tree, WIN, type Install } from "./harness.ts";
+import { addRuntime, baseEnv, build, cleanup, hasZig, launchOf, newInstall, run, started, tree, replaceAncestor, WIN, type Install } from "./harness.ts";
 
 beforeAll(() => { if (hasZig) build(); }, 300_000);
 afterAll(cleanup);
@@ -89,7 +89,7 @@ test.skipIf(!hasZig || WIN)("MC-SNAPSHOT review: chained relative links cannot m
 
 test.skipIf(!hasZig)("MC-SNAPSHOT review: replacing the snapshots ancestor never deletes external user files", async () => {
 	const i = install(), id = `${A}@1`; expect(command(i, ["new", "--use", A, "--empty"]).status).toBe(0);
-	const external = join(i.home, "external"), sentinel = join(external, id, "unrelated-user-file"), original = `${root(i)}-original`;
+	const external = join(i.home, "external"), sentinel = join(external, id, "unrelated-user-file");
 	mkdirSync(join(external, id), { recursive: true }); writeFileSync(sentinel, "KEEP");
 	const p = spawn(i.exe, ["manager", "snapshot", "remove", id], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_PAUSE: "snapshot-remove" }, stdio: "pipe" });
 	let stderr = ""; p.stderr.on("data", b => { stderr += b.toString(); }); p.stdout.resume();
@@ -99,7 +99,7 @@ test.skipIf(!hasZig)("MC-SNAPSHOT review: replacing the snapshots ancestor never
 		const deadline = Date.now() + 5000;
 		while (!stderr.includes("test pause: snapshot-remove") && p.exitCode === null && Date.now() < deadline) await Bun.sleep(10);
 		expect(stderr).toContain("test pause: snapshot-remove");
-		renameSync(root(i), original); symlinkSync(external, root(i), WIN ? "junction" : "dir");
+		const original = replaceAncestor(root(i), external);
 		p.stdin.end("continue"); const code = await done;
 		expect(existsSync(sentinel)).toBe(true); expect(readFileSync(sentinel, "utf8")).toBe("KEEP");
 		expect(code).toBe(0); expect(existsSync(join(original, id))).toBe(false); expect(started(i)).toBe(false);

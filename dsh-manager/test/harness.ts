@@ -2,7 +2,7 @@
 // (manager file + its data root) with fake runtime bundles that record how they were started.
 // Scenario IDs from openspec/changes/split-dsh-manager/specs appear in the test names.
 import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -128,6 +128,19 @@ export function envOf(i: Install, gen = "1"): Record<string, string> {
 }
 export const cwdOf = (i: Install, gen = "1") => readFileSync(join(i.out, `${gen}.cwd`), "utf8");
 export const launchOf = (i: Install, gen = "1") => JSON.parse(envOf(i, gen).DSH_MANAGER_LAUNCH);
+
+/** Try the attack, not a skip: Windows may protect the open validated directory from rename. */
+export function replaceAncestor(root: string, external: string): string {
+	const original = `${root}-original`;
+	try { renameSync(root, original); }
+	catch (err) {
+		if (!WIN || (err as NodeJS.ErrnoException).code !== "EPERM") throw err;
+		console.info(`ancestor swap blocked by Windows EPERM for open validated directory: ${root}`);
+		return root;
+	}
+	symlinkSync(external, root, WIN ? "junction" : "dir");
+	return original;
+}
 
 /** Every path under `dir`, relative, sorted (for "nothing was created" assertions). */
 export function tree(dir: string): string[] {
