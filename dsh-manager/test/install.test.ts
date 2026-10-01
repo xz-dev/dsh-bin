@@ -578,14 +578,14 @@ test.skipIf(!hasZig)("FB-OFFLINE: installed pinned runtime starts without any in
 	} finally { await s.stop(); }
 });
 
-test.skipIf(!hasZig)("FB-CONCURRENT: fresh-root first launches succeed or fail with initialization retry; rerun succeeds", async () => {
+test.skipIf(!hasZig)("FB-CONCURRENT: fresh-root first launches succeed or fail with named initialization/snapshot retry; rerun succeeds", async () => {
 	const a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
 	try {
 		for (let n = 0; n < 24; n++) {
 			const i = newInstall(), before = s.requests.length;
 			const results = await Promise.all([bootstrap(i, s.origin), bootstrap(i, s.origin)]);
 			expect(results.filter(r => r.status === 0).length).toBeGreaterThanOrEqual(1);
-			for (const r of results.filter(r => r.status !== 0)) expect(r.stderr).toContain("initialization was interrupted");
+			for (const r of results.filter(r => r.status !== 0)) expect(r.stderr).toMatch(/initialization was interrupted|cannot prepare snapshot for [^\r\n]+: Busy;[^\r\n]+retry/);
 			expect(JSON.parse(readFileSync(join(i.data, ".dsh-bin-data.json"), "utf8"))).toEqual({ kind: "dsh-manager-data", schema: 1 });
 			expect(readdirSync(join(i.data, "bundles"))).toEqual([ID]);
 			expect(s.requests.slice(before).map(r => r.path)).toEqual(["/runtime-index.json", assetPath(e)]);

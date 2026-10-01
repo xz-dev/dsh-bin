@@ -3,7 +3,8 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { addRuntime, build, cleanup, hasZig, launchOf, newInstall, run, started, tree, WIN, type Install } from "./harness.ts";
+import { acquireClaim } from "./claim-probe.ts";
+import { addRuntime, baseEnv, build, cleanup, hasZig, launchOf, newInstall, run, started, tree, WIN, type Install } from "./harness.ts";
 
 beforeAll(() => { if (hasZig) build(); }, 300_000);
 afterAll(cleanup);
@@ -68,4 +69,17 @@ test.skipIf(!hasZig || WIN)("MC-SNAPSHOT: internal pnpm-style links copy indepen
 		symlinkSync(target, join(profile, "unsafe")); const r = command(i, ["new", "--use", B, "--target", `${A}@1`]);
 		expect(r.status).toBe(1); expect(r.stderr).toContain("unsafe"); expect(rows(i).filter((s: any) => s.version === B)).toHaveLength(1); rmSync(join(profile, "unsafe"));
 	}
+});
+
+test.skipIf(!hasZig)("MC-SNAPSHOT: concurrent starts reuse prepared snapshot without taking the busy store lock", async () => {
+	const i = install(); expect(command(i, ["new", "--use", A, "--empty"]).status).toBe(0);
+	const held = acquireClaim(join(root(i), ".lock"), "exclusive"); expect(held).not.toBe("busy");
+	const start = async () => {
+		const p = Bun.spawn([i.exe, "--use", A, "probe"], { cwd: i.home, env: baseEnv(i), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+		const timer = setTimeout(() => p.kill("SIGKILL"), 30_000);
+		try { const [code, stderr] = await Promise.all([p.exited, new Response(p.stderr).text(), new Response(p.stdout).text()]); expect(stderr).not.toContain("Busy"); return code; }
+		finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await p.exited; } }
+	};
+	try { expect(await Promise.all([start(), start()])).toEqual([0, 0]); expect(rows(i).map((s: any) => s.id)).toEqual([`${A}@1`]); }
+	finally { if (held !== "busy") held.release(); }
 });

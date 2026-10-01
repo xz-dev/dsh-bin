@@ -127,11 +127,15 @@ fn storeLock(ctx: *const Ctx) !lock.Lock {
 }
 
 pub fn prepare(ctx: *const Ctx, version: []const u8, meta: select.Meta) Snapshot {
-    return ensure(ctx, version, meta, "start") catch |err|
+    return ensure(ctx, version, meta, "start") catch |err| {
+        if (err == error.UnsafeSnapshotLink) std.process.exit(1); // Named diagnostic already emitted; staging defers completed.
         util.fatal("cannot prepare snapshot for {s}: {s}; inspect `dsh manager snapshot list` and retry", .{ version, @errorName(err) });
+    };
 }
 
 pub fn ensure(ctx: *const Ctx, version: []const u8, meta: select.Meta, reason: []const u8) !Snapshot {
+    // Ordinary launches reuse immutable published metadata without contending on the store lock.
+    if (newest(try list(ctx), version)) |s| return .{ .id = s.id, .dir = ctx.path(&.{ "snapshots", s.id }) };
     const mutex = try storeLock(ctx);
     defer mutex.release();
     const all = try list(ctx);
@@ -253,6 +257,7 @@ fn crashPoint(ctx: *const Ctx, point: []const u8) void {
 
 pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
     return command(ctx, args) catch |err| {
+        if (err == error.UnsafeSnapshotLink) return 1;
         util.warn("snapshot operation failed: {s}; inspect `dsh manager snapshot list` (retry if another operation is busy)", .{@errorName(err)});
         return 1;
     };
