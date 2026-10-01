@@ -59,8 +59,9 @@ pub const Ctx = struct {
             if (it.next() catch |err| self.writeError(err)) |entry| {
                 // Another first writer may have published its marker since our read, or left
                 // its initialization temp behind. Do not adopt or write into either case.
-                if (std.mem.eql(u8, entry.name, data_marker) or initializationTemp(entry.name)) self.initializing();
-                self.conflict();
+                if (std.mem.eql(u8, entry.name, data_marker) or (entry.kind == .file and initializationTemp(entry.name))) self.initializing();
+                dir.access(data_marker, .{}) catch self.conflict();
+                self.initializing();
             }
         }
         // A real exclusive write catches Windows ACLs too; POSIX mode bits alone are insufficient.

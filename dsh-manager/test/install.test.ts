@@ -470,13 +470,17 @@ test.skipIf(!hasZig)("FB-EMPTY: automatic download failure activates nothing and
 test.skipIf(!hasZig)("FB-MISSING: explicit/pinned missing versions and damaged runtimes never auto-install", async () => {
 	const a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
 	try {
-		for (const fixture of ["explicit", "snapshot", "pinned", "broken"] as const) {
+		for (const fixture of ["explicit", "snapshot", "pinned", "broken", "legacy", "protocol"] as const) {
 			const i = newInstall(); let args: string[] = [];
 			if (fixture === "explicit") args = ["--use", ID];
 			if (fixture === "snapshot") args = ["--snapshot", `${ID}@1`];
 			if (fixture === "pinned") { mkdirSync(join(i.data, "state"), { recursive: true }); writeFileSync(join(i.data, ".dsh-bin-data.json"), JSON.stringify({ kind: "dsh-manager-data", schema: 1 })); writeFileSync(join(i.data, "state/selection.json"), JSON.stringify({ schema: 1, use: ID })); }
 			if (fixture === "broken") addRuntime(i.data, ID, { entry: false });
-			expect((await bootstrap(i, s.origin, args)).status).toBe(1); expect(started(i)).toBe(false);
+			if (fixture === "legacy") addRuntime(i.data, ID, { raw: '{"schemaVersion":2,"launcherProtocol":2}' });
+			if (fixture === "protocol") addRuntime(i.data, ID, { patch: { launchProtocol: 99 } });
+			const result = await bootstrap(i, s.origin, args);
+			expect(result.status).toBe(1); expect(result.stdout).toBe(""); expect(started(i)).toBe(false);
+			expect(result.stderr).toContain(fixture === "broken" || fixture === "legacy" ? "--force" : fixture === "protocol" ? "self-update" : `install ${ID}`);
 		}
 		expect(s.requests).toEqual([]);
 	} finally { await s.stop(); }
