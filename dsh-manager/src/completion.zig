@@ -217,7 +217,7 @@ fn binding(ctx: *Ctx) []const u8 {
     while (paths.next()) |p| {
         const dir = if (p.len == 0) "." else if (win) std.mem.trim(u8, p, "\"") else p;
         // Cwd-dependent entries could shadow a later absolute hit after registration.
-        if (!std.fs.path.isAbsolute(dir)) break;
+        if (!std.fs.path.isAbsolute(dir) or (win and std.fs.path.diskDesignatorWindows(dir).len == 0)) break;
         var extensions = std.mem.splitScalar(u8, if (win) ctx.env.get("PATHEXT") orelse ".COM;.EXE;.BAT;.CMD" else "", ';');
         while (extensions.next()) |ext| {
             const name = std.fmt.allocPrint(ctx.a, "dsh{s}", .{ext}) catch util.oom();

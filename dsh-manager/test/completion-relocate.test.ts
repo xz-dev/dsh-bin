@@ -127,3 +127,10 @@ for (const shell of ["bash", "zsh", "fish", "pwsh", "powershell"] as const) {
   expect(input.status).toBe(0); expect(input.stdout).toContain("install"); expect(existsSync(join(i.home, "CANARY"))).toBe(false);
  }, 180_000);
 }
+
+test.skipIf(!WIN || !hasZig)(`SC-RELOCATE review: Windows current-drive-rooted PATH stays absolute-bound${!WIN ? " — SKIP: Windows path semantics require Windows" : ""}`, () => {
+ const i = newInstall();
+ // Zig's isAbsolute accepts \foo, but its drive still depends on the process cwd.
+ const result = run(i, ["manager", "completion", "install", "pwsh", "--profile", join(i.home, "profile.ps1"), "--dry-run"], { env: env(i, i.dir.slice(2)), cwd: i.dir });
+ expect(result.status).toBe(0); expect(result.stdout).toContain("Bound to this absolute manager location");
+});
