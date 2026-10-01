@@ -17,22 +17,38 @@ pub fn existing(ctx: *const Ctx, query: []const u8) !Snapshot {
     defer root.close();
     var it = root.iterate();
     var found: ?Snapshot = null;
+    const Meta = struct { id: []const u8, version: []const u8, n: u64, alias: ?[]const u8 = null };
+    var snapshots: std.ArrayList(Meta) = .empty;
+    var versions: std.ArrayList(select.Bundle) = .empty;
     while (try it.next()) |entry| {
         const v = select.snapshotVersion(entry.name) orelse continue;
-        if (!std.mem.eql(u8, v, version)) continue;
         const n = std.fmt.parseInt(u64, entry.name[v.len + 1 ..], 10) catch continue;
         if (n == 0 or entry.kind != .directory) continue;
         var dir = try root.openDir(entry.name, .{ .no_follow = true });
         defer dir.close();
         const bytes = try dir.readFileAlloc(ctx.a, "snapshot.json", 1 << 20);
-        const Meta = struct { id: []const u8, version: []const u8, n: u64, name: ?[]const u8 = null };
         const meta = try std.json.parseFromSliceLeaky(Meta, ctx.a, bytes, .{ .ignore_unknown_fields = true });
-        if (!std.mem.eql(u8, meta.id, entry.name) or !std.mem.eql(u8, meta.version, version) or meta.n != n) return error.InvalidSnapshot;
-        if (!std.mem.eql(u8, query, meta.id) and !(meta.name != null and std.mem.eql(u8, name, meta.name.?))) continue;
+        if (!std.mem.eql(u8, meta.id, entry.name) or !std.mem.eql(u8, meta.version, v) or meta.n != n) return error.InvalidSnapshot;
         try dir.access(".usage.lock", .{});
+        try snapshots.append(ctx.a, meta);
+        var known = false;
+        for (versions.items) |b| if (std.mem.eql(u8, b.version, v)) {
+            known = true;
+            break;
+        };
+        if (!known) try versions.append(ctx.a, .{ .version = meta.version, .meta = null });
+    }
+    const matched = switch (select.matchVersion(versions.items, version)) {
+        .found => |v| v,
+        .none => return error.SnapshotNotFound,
+        .ambiguous => return error.AmbiguousSnapshot,
+    };
+    const number = std.fmt.parseInt(u64, name, 10) catch null;
+    for (snapshots.items) |meta| {
+        if (!std.mem.eql(u8, matched, meta.version)) continue;
+        if (if (number) |n| meta.n != n else meta.alias == null or !std.mem.eql(u8, name, meta.alias.?)) continue;
         if (found != null) return error.AmbiguousSnapshot;
-        const id = try ctx.a.dupe(u8, entry.name);
-        found = .{ .id = id, .dir = ctx.path(&.{ "snapshots", id }) };
+        found = .{ .id = meta.id, .dir = ctx.path(&.{ "snapshots", meta.id }) };
     }
     return found orelse error.SnapshotNotFound;
 }

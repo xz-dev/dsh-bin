@@ -261,15 +261,14 @@ pub fn resolve(in: Input) Resolution {
         source = .snapshot;
     } else {
         source = .selection;
-        const use = in.selection_use orelse "latest";
-        if (std.mem.eql(u8, use, "latest")) {
-            return switch (newest(in.bundles, in.channel)) {
-                .found => |v| .{ .ok = .{ .version = v, .source = source } },
-                .none => .{ .err = .{ .none_installed = in.channel } },
-                .unordered => |v| .{ .err = .{ .unordered = v } },
-            };
-        }
-        query = use;
+        query = in.selection_use orelse "latest";
+    }
+    if (std.mem.eql(u8, query, "latest")) {
+        return switch (newest(in.bundles, in.channel)) {
+            .found => |v| .{ .ok = .{ .version = v, .source = source } },
+            .none => .{ .err = .{ .none_installed = in.channel } },
+            .unordered => |v| .{ .err = .{ .unordered = v } },
+        };
     }
     return switch (matchVersion(in.bundles, query)) {
         .found => |v| .{ .ok = .{ .version = v, .source = source } },

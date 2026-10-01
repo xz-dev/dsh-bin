@@ -52,7 +52,8 @@ test.skipIf(!hasZig)("MC-PIN / MC-NAMESPACE: native update adds newest release, 
 		expect(selection(i)).toBe(pin); expect(channel(i)).toBe("release");
 		expect(readdirSync(join(i.data, "bundles")).sort()).toEqual([A, B]); expect(started(i)).toBe(false);
 		expect(run(i, ["probe"]).status).toBe(0); expect(launchOf(i).runtime).toBe(A);
-		expect(run(i, ["manager", "select"]).stdout).toContain(A); expect(started(i)).toBe(false);
+        expect(run(i, ["--use", "latest", "probe"]).status).toBe(0); expect(launchOf(i).runtime).toBe(B);
+        expect(run(i, ["manager", "select"]).stdout).toContain(A); expect(started(i)).toBe(false);
 	} finally { s.stop(); }
 });
 
@@ -105,11 +106,12 @@ test.skipIf(!hasZig)("MC-PIN: ambiguous/missing selectors refuse unchanged; --us
 			const bad = run(i, ["manager", "select", ...args]); expect(bad.status).toBe(1); expect(bad.stderr).toContain(message); expect(selection(i)).toBe(original); expect(started(i)).toBe(false);
 		}
 		const metadata = join(i.data, "snapshots", `${A}@1`, "snapshot.json");
-		const meta = JSON.parse(readFileSync(metadata, "utf8")); writeFileSync(metadata, JSON.stringify({ ...meta, name: "keep" }));
-		expect(run(i, ["manager", "select", "--use", B, "--snapshot", `${A}@keep`]).status).toBe(0);
+		const meta = JSON.parse(readFileSync(metadata, "utf8")); writeFileSync(metadata, JSON.stringify({ ...meta, alias: "keep" }));
+		expect(run(i, ["manager", "select", "--use", B, "--snapshot", "1.0.0-b1@keep"]).status).toBe(0);
 		expect(JSON.parse(selection(i))).toMatchObject({ use: B, snapshot: `${A}@1` });
 		expect(run(i, ["probe"]).status).toBe(0); expect(launchOf(i)).toMatchObject({ runtime: B, snapshot: { id: `${A}@1` } });
-		expect(run(i, ["--use", A, "probe"]).status).toBe(0); expect(launchOf(i)).toMatchObject({ runtime: A, snapshot: { id: `${A}@1` } });
+        expect(run(i, ["--snapshot", "1.0.0-b1@keep", "probe"]).status).toBe(0); expect(launchOf(i)).toMatchObject({ runtime: A, snapshot: { id: `${A}@1` } });
+        expect(run(i, ["--use", A, "probe"]).status).toBe(0); expect(launchOf(i)).toMatchObject({ runtime: A, snapshot: { id: `${A}@1` } });
 		rmSync(join(i.data, "snapshots", `${A}@1`), { recursive: true });
 		expect(run(i, ["probe"]).status).toBe(1); expect(started(i)).toBe(false);
 		expect(run(i, ["manager", "select", "--use", "latest"]).status).toBe(0); expect(JSON.parse(selection(i))).toMatchObject({ use: "latest", snapshot: null });
@@ -156,7 +158,16 @@ test.skipIf(!hasZig)("MC-LAST / MC-REINSTALL: unpin then uninstall all, preserve
 		expect(readFileSync(join(i.data, "home", "credentials"), "utf8")).toBe("keep credentials");
 		expect(JSON.parse(readFileSync(join(i.data, "snapshots", ".counters.json"), "utf8"))).toEqual({ [A]: 7, [B]: 2 });
 		expect(run(i, ["probe"]).status).toBe(0); expect(launchOf(i)).toMatchObject({ runtime: A, snapshot: { id: `${A}@1` } });
-	} finally { s.stop(); }
+        expect(run(i, ["manager", "select", "--use", "latest", "--snapshot", `${A}@1`]).status).toBe(0);
+        expect((await manager(i, s, ["update", "--channel", "live"])).status).toBe(0);
+        const cross = selection(i), snapMeta = readFileSync(join(i.data, "snapshots", `${A}@1`, "snapshot.json"));
+        expect(run(i, ["manager", "uninstall", A, L]).status).toBe(0);
+        expect((await command(i, s, ["probe"])).status).toBe(0);
+        expect(launchOf(i)).toMatchObject({ runtime: L, snapshot: { id: `${A}@1` } });
+        expect(channel(i)).toBe("live"); expect(selection(i)).toBe(cross);
+        expect(readFileSync(join(i.data, "snapshots", `${A}@1`, "snapshot.json"))).toEqual(snapMeta);
+        expect(readFileSync(join(i.data, "snapshots", `${A}@1`, "plugin"), "utf8")).toBe("keep plugin");
+    } finally { s.stop(); }
 });
 
 test.skipIf(!hasZig)("FB-RESTORE-CHANNEL: uninstall last live then plain launch restores live; new empty installation defaults release", async () => {

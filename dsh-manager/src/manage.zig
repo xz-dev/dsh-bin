@@ -48,7 +48,7 @@ pub fn selection(ctx: *Ctx, args: []const []const u8) u8 {
     const use = if (std.mem.eql(u8, query, "latest")) query else require(runtimes.list(ctx), query);
     const snap: ?snapshot.Snapshot = if (opts.snapshot) |id| snapshot.existing(ctx, id) catch |err|
         util.fatal("cannot select snapshot {s}: {s}; run `dsh manager snapshot list`", .{ id, @errorName(err) }) else null;
-    const bytes = std.json.Stringify.valueAlloc(ctx.a, .{ .schema = @as(u32, 1), .use = use, .snapshot = if (snap) |s| s.id else null, .addons = .{} }, .{}) catch util.oom();
+    const bytes = std.json.Stringify.valueAlloc(ctx.a, .{ .schema = @as(u32, 1), .use = use, .snapshot = if (snap) |s| s.id else null, .addons = struct {}{} }, .{}) catch util.oom();
     state.write(ctx, "selection.json", bytes) catch |err| util.fatal("cannot save selection: {s}", .{@errorName(err)});
     util.print("Selected --use {s}.\n", .{use});
     printSelection(ctx, use, if (snap) |s| s.id else null);
@@ -79,9 +79,10 @@ pub fn list(ctx: *Ctx, args: []const []const u8) u8 {
     const stored = state.readSelection(ctx);
     const use = if (stored == .ok) stored.ok.use else "latest";
     const resolved = select.resolve(.{ .opts = .{}, .bundles = bundles, .channel = state.channel(ctx), .selection_use = use });
-    const Row = struct { version: []const u8, channel: ?[]const u8, selected: bool, startable: bool };
+    const latest = select.resolve(.{ .opts = .{}, .bundles = bundles, .channel = state.channel(ctx) });
+    const Row = struct { version: []const u8, channel: ?[]const u8, selected: bool, latest: bool, startable: bool, inUse: bool };
     const rows = ctx.a.alloc(Row, bundles.len) catch util.oom();
-    for (bundles, rows) |b, *r| r.* = .{ .version = b.version, .channel = if (b.meta) |m| m.channel else null, .selected = stored != .invalid and resolved == .ok and std.mem.eql(u8, b.version, resolved.ok.version), .startable = runtimes.check(ctx, bundles, b.version) == .ok };
+    for (bundles, rows) |b, *r| r.* = .{ .version = b.version, .channel = if (b.meta) |m| m.channel else null, .selected = stored != .invalid and resolved == .ok and std.mem.eql(u8, b.version, resolved.ok.version), .startable = runtimes.check(ctx, bundles, b.version) == .ok, .latest = latest == .ok and std.mem.eql(u8, b.version, latest.ok.version), .inUse = lock.inUse(ctx.path(&.{ "bundles", b.version, runtimes.guard_name })) };
     const Remote = struct { version: []const u8, channel: []const u8, installed: bool };
     var remote: std.ArrayList(Remote) = .empty;
     if (available) {
@@ -102,7 +103,7 @@ pub fn list(ctx: *Ctx, args: []const []const u8) u8 {
         if (stored == .invalid) util.print("Invalid selection ({s}); run `dsh manager select --use latest` to reset it.\n", .{stored.invalid});
         if (bundles.len == 0) util.print("No dsh runtime is installed. Run `dsh manager update` or plain `dsh` to install one.\n", .{}) else {
             util.print("Installed dsh runtimes (channel {s}):\n", .{state.channel(ctx)});
-            for (rows) |r| util.print("  {s}  {s}{s}{s}\n", .{ r.version, r.channel orelse "?", if (r.selected) "  (selected)" else "", if (r.startable) "" else "  (not startable)" });
+            for (rows) |r| util.print("  {s}  {s}{s}{s}{s}{s}\n", .{ r.version, r.channel orelse "?", if (r.selected) "  (selected)" else "", if (r.latest) "  (latest)" else "", if (r.inUse) "  (in use)" else "", if (r.startable) "" else "  (not startable)" });
         }
         if (available) {
             util.print("Available host-compatible runtimes:\n", .{});

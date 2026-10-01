@@ -66,8 +66,19 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
         @import("install.zig").bootstrap(ctx);
         bundles = runtimes.list(ctx);
     }
+    const explicit_snapshot = if (opts.snapshot) |id| blk: {
+        if (select.snapshotVersion(id) == null) reportResolution(.{ .bad_snapshot_id = id });
+        break :blk snapshot.existing(ctx, id) catch |err| {
+            // Preserve the missing-runtime diagnostic before reporting a missing snapshot.
+            const preliminary = select.resolve(.{ .opts = opts, .bundles = bundles, .channel = state.channel(ctx) });
+            if (preliminary == .err) reportResolution(preliminary.err);
+            util.fatal("cannot use snapshot {s}: {s}; run `dsh manager snapshot list`", .{ id, @errorName(err) });
+        };
+    } else null;
+    var effective = opts;
+    if (explicit_snapshot) |s| effective.snapshot = s.id;
     const resolved = switch (select.resolve(.{
-        .opts = opts,
+        .opts = effective,
         .bundles = bundles,
         .channel = state.channel(ctx),
         .selection_use = if (selection) |s| s.use else null,
@@ -79,8 +90,6 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
         .ok => |p| p,
         else => |p| runtimes.report(resolved.version, p),
     };
-    const explicit_snapshot = if (opts.snapshot) |id| snapshot.existing(ctx, id) catch |err|
-        util.fatal("cannot use snapshot {s}: {s}; run `dsh manager snapshot list`", .{ id, @errorName(err) }) else null;
     const stored_snapshot = if (selection) |s| @import("manage.zig").snapshotChoice(s) else null;
     const snap = explicit_snapshot orelse if (opts.use == null and stored_snapshot != null)
         snapshot.existing(ctx, stored_snapshot.?) catch |err| util.fatal("cannot use selected snapshot {s}: {s}; run `dsh manager select --use latest` to reset it", .{ stored_snapshot.?, @errorName(err) })
