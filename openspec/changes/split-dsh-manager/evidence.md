@@ -749,3 +749,33 @@
   - 候选准备好之后仍可能被同一用户修改。
 - **移交给 7.2/7.3**：在执行或替换之前，必须重新完整验证候选；MC-SELF-ONLY 的完整替换证明也在那时给出。7.1 本身只证明「准备候选时其余数据不变」。
 - 勾选 **7.1**。
+
+## 7.2 POSIX 管理器同卷替换与中断边界
+
+- 范围固定：Linux/macOS 从已校验候选继续执行同目录 `rename`；Windows 继续 `prepared, not installed`，helper 留给 7.3。不执行下载的候选来校验，不先删除入口。
+- 父会话批准：替换前从 no-follow 句柄重新核验唯一 version/protocol marker、原生头及复制时记录的二进制 SHA-256；保留当前入口 mode/owner；真实入口由 ctx.exe realpath 决定，用户启动链接不改写。readonly/跨目录/身份变化明确失败，不回退。
+- **red**：`cd dsh-manager; TMPDIR=/var/tmp/dsh-72 bun test ./test/self-update.test.ts -t 'replacement preserves mode'`；临时禁用实际 replace（保留 7.1 prepare）→ **0 pass / 1 fail / 7 断言**，入口仍旧哈希，明确未满足实际升级；日志 `/var/tmp/dsh-72/red.log`。随即恢复实现。
+
+### 7.2 实现与 Green
+
+- POSIX `self-update` 发布候选后，继续从 no-follow 文件句柄检查 native header、唯一版本/协议标记和复制时记录的 SHA-256；保留已校验的当前入口句柄，最后核对两个名字的 inode。候选和真实入口均通过 ctx.dir 同一目录句柄 `rename`，不 delete-then-copy，不执行候选做验证；rename 成功后才输出 `updated manager <old> -> <new>`。
+- 当前入口的 uid/gid 不同时先通过 fchown 保留（不允许则失败），再保留 `mode & 07777` 并 sync 候选。ctx.exe 已在 context.init realpath，用户启动链接始终保留。相同版本 `--force` 实际替换，旧 runtime 安装不回退 manager；Windows 行为仍是准备、不安装。
+- 决定（实现内最小选择）：二进制 SHA-256 只 finalize 一次并保留在本次维护锁上下文，不新增 sidecar/持久状态；中断后显式重跑会从可信索引重新校验下载，不能信任旧的 prepared 输出。标准 rename 已提供进程中断时完整旧/新入口，不增加备份/恢复状态机。
+- 调试过程如实记录：首次 green 尝试 **9 pass / 6 fail / 226 断言**；原因是对 SHA 状态调用 `finalResult()` 两次导致第二次结果变化，改为记录单次结果。早提交 `37e3f8b` 最后一次调整出现 optional 类型编译错误；`dcad368` 立即修正，随后 **15 pass / 0 fail / 320 断言**。最终增加半下载与入口冲突测试后 **17 pass / 0 fail / 340 断言**。这些失败不计为需求 red，也不隐藏为 green。
+
+| 场景 | 黑盒测试与断言 |
+|---|---|
+| MC-SELF-ONLY | 同协议真正 M1→M2 后公开入口报告 M2；bundles、selection、snapshot、addon、config、home、credential 分别 hash 原样；cache/locks/tmp 仍按 7.1 exact whitelist 检查；不启动应用 |
+| MC-OLD-RUNTIME | M2 安装并选择旧 runtime 后 manager 仍 M2，公开入口 hash 不变；Windows 则仍保留 7.1 候选 |
+| MC-SELF-FAIL 中断 | 测试专用 pause（生产忽略）在 download、verify、before-replace、after-replace 后 SIGKILL；前 3 项入口为完整旧版、后 1 项为完整新版，均可运行 --version；无成功消息，保护状态不变；普通重试成功 |
+| MC-SELF-FAIL 半下载 | 本地 HTTP 只返回半包，确认 `.zip.part` 已有字节后 SIGKILL；旧入口可运行，重试同包完成新入口；不依靠下载边界 hook 假装下载中断 |
+| MC-SELF-FAIL 校验/路径 | 发布后追加字节、改 version/protocol/header 或换成链接均拒绝；readonly 管理器目录拒绝；最后检查之前真实入口被换成用户文件则不覆盖 |
+| PS-SYMLINK / mode | 通过异目录链接启动仍替换 resolved target，链接不变；mode 0751 和 uid/gid 保留 |
+| DL-MANAGED-SELF | portage/scoop 在任何请求、状态创建、candidate staging 前拒绝，既有测试继续通过 |
+
+- 最终定向验证（不跑全量 Bun，按 parent 契约留给父会话）：
+  - `cd dsh-manager; TMPDIR=/var/tmp/dsh-72 bun test ./test/self-update.test.ts ./test/clean.test.ts` → **29 pass / 0 fail / 584 断言**，日志 `/var/tmp/dsh-72/targeted-final.log`。
+  - `zig build test --summary all` → **45/45**，日志 `zig-final.log`。
+  - `zig fmt --check src test build.zig`、`git diff --check` 通过。
+  - `zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-72/windows --summary all`、`zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-72/macos --summary all` 各 **4/4**。cross-build 不是原生验收；macOS 必须由原生 CI 执行，Windows 6 项 POSIX 新测试明确 skip（helper 留给 7.3），既有 7.1 测试在 Windows 不 skip。
+- 残余边界：继承 7.1 浅层原生头/可信索引真实性约束；same-user 最后 inode/hash 检查到 rename 间仍有 syscall 级竞争窗口，保留 `ponytail:` 注释，不新增锁或恢复。此次证明进程 SIGKILL 边界，不宣称断电 durability 或提供沙箱。完整 Bun、三平台 CI 与独立复审仍由父会话完成，checkbox 不动。

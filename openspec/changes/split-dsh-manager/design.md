@@ -214,3 +214,5 @@ Office addon 移植（6.3，经 supervisor 确认）：无选择时离线使用�
 7.1 supervisor 补充：仅保留一个有效候选，发布新候选后在维护锁下回收其他 exact/valid 候选，坏文件/链接保留；强杀留下的 `.dsh-manager-candidate-<strict semver>.part-<1..16 hex>` 仅按 regular/no-follow 文件回收，不要求尚未写完的内容有完整标记。
 
 7.1 独立复审修正（父会话批准）：候选发布使用 handle-relative no-replace；复制时计算二进制 SHA-256，发布后从最终 no-follow 句柄重算并比较，不一致只报错保留、不宣称 prepared。清理与单候选回收保留校验句柄、在 deleteFile 前核对 inode/file-index，绝不递归删除候选名。版本及协议 marker 各要求恰好一条；可信索引的归档 SHA-256 提供真实性，marker 只检查一致性，按批准保留现有浅层 native header 检查，不扩展 executable table 解析。身份检查到 unlink 的极小同用户竞争窗口按简单原则作为明确残余风险保留。
+
+7.2（父会话固定边界）：POSIX `self-update` 在维护锁内从 no-follow 句柄重新校验候选的 native header、唯一 version/protocol marker 与本次可信归档复制时记录的二进制 SHA-256；保留已校验当前入口句柄及 mode/owner，经 inode 核对后以同一个 ctx.dir 句柄原子 rename 候选到 resolved executable basename，成功后才输出 updated。启动链接不替换，不执行候选做验证，不采用先删入口再复制；readonly/身份变化明确拒绝。候选 hash 仅本次调用保存，不增加持久状态，中断后重跑重新校验下载；Windows 仍 prepared、不安装，helper 留给 7.3。进程中断只可能留下完整旧或新入口；最终校验到 rename 的微小同用户竞争窗口按既定简单原则保留，不宣称断电 durability。
