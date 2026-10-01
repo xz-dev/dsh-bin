@@ -212,3 +212,5 @@ Office addon 移植（6.3，经 supervisor 确认）：无选择时离线使用�
 7.1 经 supervisor 确认的实施边界：本切片 `self-update` 只准备已验证候选并明确输出 `prepared, not installed`，完整替换分别由 7.2/7.3 验收。管理器版本采用严格 SemVer（build metadata 不参与排序），相同版本默认不下载，`--force` 允许同版本修复但不降级。manager 索引资产复用 `{name,size,sha256}`；ZIP 仅包含本机 `dsh(.exe)`，核验原生文件类型及由同一源码常量生成的版本/协议标记，不执行候选。候选为管理器真实目录内 `.dsh-manager-candidate-<version>`，同名重新准备替换而不累积；portable clean 在维护锁下仅回收严格名字、regular/no-follow 且有效标记的候选文件，托管模式不枚举该目录。候选准备只允许修改该文件、已验下载缓存、锁文件及空 tmp，不改变运行包、选择、快照、addon、配置、home 或凭据。
 
 7.1 supervisor 补充：仅保留一个有效候选，发布新候选后在维护锁下回收其他 exact/valid 候选，坏文件/链接保留；强杀留下的 `.dsh-manager-candidate-<strict semver>.part-<1..16 hex>` 仅按 regular/no-follow 文件回收，不要求尚未写完的内容有完整标记。
+
+7.1 独立复审修正（父会话批准）：候选发布使用 handle-relative no-replace；复制时计算二进制 SHA-256，发布后从最终 no-follow 句柄重算并比较，不一致只报错保留、不宣称 prepared。清理与单候选回收保留校验句柄、在 deleteFile 前核对 inode/file-index，绝不递归删除候选名。版本及协议 marker 各要求恰好一条；可信索引的归档 SHA-256 提供真实性，marker 只检查一致性，按批准保留现有浅层 native header 检查，不扩展 executable table 解析。身份检查到 unlink 的极小同用户竞争窗口按简单原则作为明确残余风险保留。

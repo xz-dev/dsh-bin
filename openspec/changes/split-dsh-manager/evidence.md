@@ -702,3 +702,33 @@
 - 18 skips：本机无 zsh、Windows PowerShell 5.1/Windows 路径语义需 Windows、未配置真实 HTTPS proxy；7.1 新增测试无 skip（除缺 Zig 的公共门禁）。pwsh Core 已按要求加入 PATH。
 - **7.2/7.3 必须承接**：同卷替换、故障恢复、Windows helper 以及完整 MC-SELF-ONLY 的 M1→M2 实际版本变化、保护状态哈希证明；本切片只输出 `prepared, not installed`，不能算已升级。
 - 未改任务勾选、未 push、未运行 gh、未触碰其他 change；验收仍需父会话独立复审与三平台最终 CI。
+
+### 7.1 独立复审
+
+- 独立复审 run `43b7482e` 的三项 P1：candidate 清理递归误删目录；发布/回收校验后路径替换导致覆盖、误删或发布未验证字节；重复/冲突 marker 可冒充候选身份。此次只执行父会话明确批准的修正，不擅自扩大到 executable table 校验或退役事务。
+- `3ec64a4`：manager-directory 只用 handle-relative `deleteFile`；目录/特殊文件不递归处理，保留并点名提示。新增测试在最终删除前把候选换成含 credential 的用户目录。
+- `b647127`：Linux `renameat2(RENAME_NOREPLACE)`（旧内核/文件系统用 linkat+unlink）、macOS `renameatx_np(RENAME_EXCL)`、Windows `std.posix.renameatW(..., FALSE)`（即 handle-relative 的不替换语义，避免 MoveFileEx 绝对路径重解析）。最终名字有对象时拒绝。复制时 SHA-256，发布后从 no-follow 文件句柄重算；不一致保留最终文件并退出 1。既有同名有效候选先经句柄身份核对后 deleteFile，再 no-replace 发布；旧候选和 clean 共用 identity-check + deleteFile，无重试/等待。
+- `8de4ba9` + `102a4df`：版本及协议 marker 各恰好一条，重复相同值或冲突值都拒绝；下载与 clean 共用规则。避免在 validator 内构造完整 marker 前缀引起编译器将第二条 marker 前缀嵌入 manager 字符串池。可信索引/归档 hash 负责真实性，marker 仅检查一致性；native header 按父会话批准维持原浅层检查。
+
+#### Red / Green
+
+所有命令：`cd dsh-manager; TMPDIR=/var/tmp/dsh-71-reviewfix`；日志在该目录。
+
+| 发现 | 命令筛选 | Red | Green |
+|---|---|---|---|
+| P1-1 | `bun test ./test/self-update.test.ts -t 'swapped for a user directory'` | 临时恢复 deleteTree：0 pass / 1 fail / 4 断言，credential 消失 | 1 pass / 0 fail / 7 断言，credential 原样保留 |
+| P1-2 | `bun test ./test/self-update.test.ts -t 'concurrent candidate names'` | 临时恢复 replacing rename、禁用 digest/identity：0 pass / 1 fail / 4 断言，最终用户文件被覆盖 | 1 pass / 0 fail / 24 断言，最终冲突拒绝、换入 partial 拒绝、old/clean 身份变更保留用户字节 |
+| P1-3 | `bun test ./test/self-update.test.ts -t 'duplicate or conflicting identity'` | 0 pass / 1 fail / 3 断言，重复 marker 错误通过 | 1 pass / 0 fail / 28 断言，四种重复/冲突均拒绝准备、clean 保留 |
+
+- 最终 targeted：`bun test ./test/self-update.test.ts ./test/clean.test.ts` → **23 pass / 0 fail / 449 断言**；无本切片新增 skip。
+- `zig build test --summary all` → **45/45**；`zig fmt --check src build.zig`、Windows `zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-71-reviewfix/windows --summary all`、macOS `zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-71-reviewfix/macos --summary all` 通过。未运行全量 Bun，留给父会话；未 push/gh/勾选。
+
+#### Reviewer probes 与明确残余边界
+
+适配后的原 probe 保存在 `/var/tmp/dsh-71-reviewfix/probes/`（原报告/脚本未改）；所有四份脚本成功执行，**不将脚本退出 0 当成全部发现关闭**：
+
+- `probe.ts`：旧 manager 追加声明版本、冲突协议均退出 1、不发布；candidate 换成用户目录后 credential 保留。无 program table 的伪 ELF **仍通过准备**，因为父会话明确要求保留浅层 native header。
+- `race-publish.ts`：trace 适配到 `renameat2`；最终名字抢先创建 `USER CREDENTIAL` 时退出 1，用户文件原样。原 old-delete trace 在 unlink 系统调用入口暂停（已经通过身份比较）再替换用户文件，**用户文件仍被删除**；这就是父会话明确接受的 identity-check→unlink 极小同用户竞争窗口，未额外增加退役事务。新黑盒暂停在身份比较之前，证明该检查确实保留替换文件。
+- `unverified-source.ts`：`.part` 被换入 `UNVERIFIED INPUT` 后退出 1，不输出 prepared；最终文件保留供检查。
+- `invalid-candidate-clean.ts`：冲突版本 marker 文件保留；只有合法单条 marker、伪 ELF 头的文件 **仍会被 clean 删除**（同上浅层校验边界）。因此不声称原复审 P1-3 的全部 native-table 诉求关闭。
+- Windows/macOS 这里只 cross-build；原生不替换发布、文件身份与删除语义仍需三平台 CI。7.2/7.3 在执行/替换候选前须重新验证完整候选内容，不能依赖此前 prepared 输出永远有效。
