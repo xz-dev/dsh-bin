@@ -109,7 +109,12 @@ for (const shell of ["powershell", "pwsh"] as const) {
 	const binary = shell === "powershell" && !WIN ? null : Bun.which(WIN ? `${shell}.exe` : shell);
 	const reason = shell === "powershell" && !WIN ? "Windows PowerShell 5.1 requires Windows" : !binary ? `${shell} executable not installed` : !hasZig ? "zig executable not installed" : "";
 	const env = (i: Install) => ({ ...baseEnv(i), PATH: `${i.dir}${delimiter}${process.env.PATH}`, XDG_CONFIG_HOME: join(i.home, "config"), XDG_DATA_HOME: join(i.home, "data"), XDG_CACHE_HOME: join(i.home, "cache") });
-	const psRun = (i: Install, code: string) => spawnSync(binary!, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(`$ErrorActionPreference='Stop'; ${code}`, "utf16le").toString("base64")], { env: env(i), cwd: i.home, encoding: "utf8", timeout: 20_000 });
+	// The shell host gets the real process environment (CI run 36812811596: a stripped Windows env makes
+	// in-shell native calls return nothing and cold 5.1 module setup exceed 20 s). Profiles stay isolated
+	// via -NoProfile/--profile; dsh state stays isolated via HOME/USERPROFILE/XDG overrides.
+	const hostEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^DSH_/i.test(k))) as Record<string, string>;
+	const psEnv = (i: Install) => ({ ...hostEnv, ...env(i) });
+	const psRun = (i: Install, code: string) => spawnSync(binary!, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(`$ErrorActionPreference='Stop'; ${code}`, "utf16le").toString("base64")], { env: psEnv(i), cwd: i.home, encoding: "utf8", timeout: 90_000 });
 	const tabs = (line: string) => `$line=${psQuote(line)}; (TabExpansion2 $line $line.Length).CompletionMatches | ForEach-Object { $_.CompletionText }`;
 	const profile = (i: Install) => join(i.home, "isolated-profile/profile.ps1");
 	const args = (i: Install, verb: string) => ["manager", "completion", verb, shell, "--profile", profile(i)];
