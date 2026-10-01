@@ -1,4 +1,4 @@
-//! Self-update discovery/validation. 7.1 prepares a same-volume candidate; 7.2/7.3 own replacement.
+//! Self-update discovery/validation and atomic POSIX replacement; Windows helper belongs to 7.3.
 const std = @import("std");
 const builtin = @import("builtin");
 const options = @import("build_options");
@@ -21,7 +21,7 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
         return 1;
     }
     prepare(ctx, force) catch |err| {
-        util.warn("manager candidate preparation failed: {s}; installed manager and application data unchanged", .{@errorName(err)});
+        util.warn("manager self-update failed: {s}; installed entry remains complete and application data unchanged", .{@errorName(err)});
         return 1;
     };
     return 0;
@@ -45,11 +45,14 @@ fn prepare(ctx: *Ctx, force: bool) !void {
     defer mutex.release();
     var parent = try std.fs.cwd().openDir(ctx.dir, .{ .iterate = true, .no_follow = true });
     defer parent.close();
+    const installed = if (builtin.os.tag == .windows) null else try binary.openRegular(parent, std.fs.path.basename(ctx.exe));
+    defer if (installed) |f| f.close();
     const name = try std.fmt.allocPrint(ctx.a, "{s}{s}", .{ binary.candidate_prefix, candidate.entry.version });
     // A conflicting user file/link is not ours to overwrite.
     try reusable(ctx, parent, name, candidate.entry.version);
     var tmp = ctx.ensureDir(&.{"tmp"});
     defer tmp.close();
+    binary.testPause(ctx, "self-update-download", name);
     const staging = try install.fetchTree(ctx, tmp, candidate.asset, candidate.entry.tag);
     defer tmp.deleteTree(staging) catch |err| util.warn("leftover tmp/{s}: {s}; run `dsh manager clean`", .{ staging, @errorName(err) });
     var tree = try tmp.openDir(staging, .{ .iterate = true, .no_follow = true });
@@ -57,15 +60,16 @@ fn prepare(ctx: *Ctx, force: bool) !void {
     var it = tree.iterate();
     const entry = try it.next() orelse return error.MissingManagerEntry;
     if (entry.kind != .file or !std.mem.eql(u8, entry.name, binary.executable) or try it.next() != null) return error.InvalidManagerArchive;
-    try binary.validate(ctx.a, tree, binary.executable, candidate.entry.version);
+    binary.testPause(ctx, "self-update-verify", name);
+    var source = try binary.validated(ctx.a, tree, binary.executable, candidate.entry.version);
+    defer source.close();
+    try source.seekTo(0);
     // Copy from a validated private tree into an exclusive file beside the executable. Never execute it.
     const part = try std.fmt.allocPrint(ctx.a, "{s}.part-{x}", .{ name, std.crypto.random.int(u64) });
     var file = try parent.createFile(part, .{ .exclusive = true, .mode = 0o755 });
     var open = true;
     defer if (open) file.close();
     defer parent.deleteFile(part) catch {};
-    var source = try binary.openRegular(tree, binary.executable);
-    defer source.close();
     var hash = std.crypto.hash.sha2.Sha256.init(.{});
     var buf: [64 * 1024]u8 = undefined;
     while (true) {
@@ -74,6 +78,7 @@ fn prepare(ctx: *Ctx, force: bool) !void {
         hash.update(buf[0..n]);
         try file.writeAll(buf[0..n]);
     }
+    const expected = hash.finalResult();
     try file.sync();
     file.close();
     open = false;
@@ -94,7 +99,7 @@ fn prepare(ctx: *Ctx, force: bool) !void {
     };
     const final = try binary.openRegular(parent, name);
     defer final.close();
-    if (!std.mem.eql(u8, &(try binary.digest(final)), &hash.finalResult())) {
+    if (!std.mem.eql(u8, &(try binary.digest(final)), &expected)) {
         util.warn("manager candidate {s} changed after validation; not prepared; retained for inspection", .{name});
         return error.ManagerFileChanged;
     }
@@ -106,7 +111,31 @@ fn prepare(ctx: *Ctx, force: bool) !void {
         defer held.close();
         _ = binary.deleteValidated(ctx, parent, item.name, held, "candidate-old-delete");
     }
-    util.print("Manager {s} prepared, not installed: {s}/{s}; installed manager remains {s}.\n", .{ candidate.entry.version, ctx.dir, name, options.version });
+    if (builtin.os.tag == .windows) {
+        util.print("Manager {s} prepared, not installed: {s}/{s}; installed manager remains {s}.\n", .{ candidate.entry.version, ctx.dir, name, options.version });
+    } else {
+        try replace(ctx, parent, installed.?, name, candidate.entry.version, expected);
+        util.print("updated manager {s} -> {s}\n", .{ options.version, candidate.entry.version });
+    }
+}
+
+/// Candidate and resolved entry share this retained parent: rename never exposes a partial entry.
+fn replace(ctx: *const Ctx, parent: std.fs.Dir, installed: std.fs.File, name: []const u8, version: []const u8, expected: [32]u8) !void {
+    if (builtin.os.tag == .windows) unreachable;
+    const entry = std.fs.path.basename(ctx.exe);
+    const original = try std.posix.fstat(installed.handle);
+    binary.testPause(ctx, "self-update-before-replace", name);
+    const candidate = try binary.validated(ctx.a, parent, name, version);
+    defer candidate.close();
+    if (!std.mem.eql(u8, &(try binary.digest(candidate)), &expected)) return error.ManagerFileChanged;
+    const current = try std.posix.fstat(candidate.handle);
+    if (current.uid != original.uid or current.gid != original.gid) try candidate.chown(original.uid, original.gid);
+    try candidate.chmod(original.mode & 0o7777);
+    try candidate.sync();
+    if (!binary.sameFile(parent, name, candidate) or !binary.sameFile(parent, entry, installed)) return error.ManagerFileChanged;
+    // ponytail: same-user identity-check -> rename window; private bin directory if stronger isolation is needed.
+    try parent.rename(name, entry);
+    binary.testPause(ctx, "self-update-after-replace", entry);
 }
 
 fn reusable(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, version: []const u8) !void {
