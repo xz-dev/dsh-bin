@@ -16,7 +16,7 @@ const commands = [_]Command{
     .{ .name = "snapshot", .options = &.{ "--target", "--empty", "--name", "--json" } },
     .{ .name = "clean" },
     .{ .name = "self-update" },
-    .{ .name = "completion", .options = &.{"--shell"} },
+    .{ .name = "completion", .options = &.{ "--shell", "--profile", "--dry-run" } },
     .{ .name = "info" },
     .{ .name = "help" },
     .{ .name = "version" },
@@ -119,9 +119,17 @@ fn runtimeWords(ctx: *Ctx, prefix: []const u8, prior: []const []const u8, opts: 
 
 /// Words exclude argv[0]; the final word is the current (possibly empty) prefix.
 pub fn query(ctx: *Ctx, inherited: select.Options, args: []const []const u8) u8 {
-    if (args.len < 3 or !eq(args[0], "--shell") or !eq(args[2], "--")) return 1;
-    if (!eq(args[1], "bash") and !eq(args[1], "zsh")) return 1;
-    const words = args[3..];
+    if (args.len < 3 or !eq(args[0], "--shell")) return 1;
+    const shell = std.meta.stringToEnum(Shell, args[1]) orelse return 1;
+    var env_words: std.ArrayList([]const u8) = .empty;
+    const words = if (args.len == 3 and eq(args[2], "--words-env") and isPowerShell(shell)) blk: {
+        // Ctx EnvMap decodes Windows' UTF-16 environment, not the legacy native argv binder.
+        const encoded = ctx.env.get("DSH_COMPLETE_WORDS") orelse return 0;
+        if (std.mem.indexOfScalar(u8, encoded, 0) != null) return 0;
+        var it = std.mem.splitScalar(u8, encoded, 0x1f);
+        while (it.next()) |word| env_words.append(ctx.a, word) catch util.oom();
+        break :blk env_words.items;
+    } else if (eq(args[2], "--")) args[3..] else return 1;
     const prefix = if (words.len > 0) words[words.len - 1] else "";
     const prior = if (words.len > 0) words[0 .. words.len - 1] else words;
     const last = if (prior.len > 0) prior[prior.len - 1] else "";
@@ -152,8 +160,7 @@ pub fn query(ctx: *Ctx, inherited: select.Options, args: []const []const u8) u8 
             return 0;
         }
         if (eq(last, "--shell")) {
-            emit(prefix, "bash");
-            emit(prefix, "zsh");
+            for (std.enums.values(Shell)) |candidate| emit(prefix, @tagName(candidate));
             return 0;
         }
         if (rest.len == 1) {
@@ -169,7 +176,7 @@ pub fn query(ctx: *Ctx, inherited: select.Options, args: []const []const u8) u8 
             }
             if (eq(rest[1], "completion")) {
                 if (rest.len == 2) for ([_][]const u8{ "script", "install", "uninstall" }) |w| emit(prefix, w);
-                if (rest.len == 3) for ([_][]const u8{ "bash", "zsh" }) |w| emit(prefix, w);
+                if (rest.len == 3) for (std.enums.values(Shell)) |candidate| emit(prefix, @tagName(candidate));
             }
         }
         emit(prefix, "--help");
@@ -181,11 +188,17 @@ pub fn query(ctx: *Ctx, inherited: select.Options, args: []const []const u8) u8 
     return 0;
 }
 
-const Shell = enum { bash, zsh };
+pub const Shell = enum { bash, zsh, fish, pwsh, powershell };
 const end_marker = "# <<< dsh-manager completion v1\n";
 
-fn quoted(ctx: *Ctx, text: []const u8) []const u8 {
-    const escaped = std.mem.replaceOwned(u8, ctx.a, text, "'", "'\\''") catch util.oom();
+fn quoted(ctx: *Ctx, shell: Shell, text: []const u8) []const u8 {
+    const replacement = switch (shell) {
+        .bash, .zsh => "'\\''",
+        .fish => "\\'",
+        .pwsh, .powershell => "''",
+    };
+    const base = if (shell == .fish) std.mem.replaceOwned(u8, ctx.a, text, "\\", "\\\\") catch util.oom() else text;
+    const escaped = std.mem.replaceOwned(u8, ctx.a, base, "'", replacement) catch util.oom();
     return std.fmt.allocPrint(ctx.a, "'{s}'", .{escaped}) catch util.oom();
 }
 
@@ -193,26 +206,46 @@ fn script(ctx: *Ctx, shell: Shell) []const u8 {
     const template = switch (shell) {
         .bash => @embedFile("completion.bash"),
         .zsh => @embedFile("completion.zsh"),
+        .fish => @embedFile("completion.fish"),
+        .pwsh, .powershell => @embedFile("completion.ps1"),
     };
-    return std.mem.replaceOwned(u8, ctx.a, template, "@DSH@", quoted(ctx, ctx.exe)) catch util.oom();
+    return std.mem.replaceOwned(u8, ctx.a, template, "@DSH@", quoted(ctx, shell, ctx.exe)) catch util.oom();
 }
 
-fn block(ctx: *Ctx, shell: Shell, created: bool) []const u8 {
-    return std.fmt.allocPrint(ctx.a, "\n# >>> dsh-manager completion v1 {s} {s}\n{s}{s}", .{ @tagName(shell), if (created) "created" else "existing", script(ctx, shell), end_marker }) catch util.oom();
+fn block(ctx: *Ctx, shell: Shell, created: bool, parents: usize) []const u8 {
+    // Keep existing Bash/Zsh marker bytes stable. New owned files record created parent count.
+    const ownership = if (created and (shell == .fish or isPowerShell(shell)))
+        std.fmt.allocPrint(ctx.a, "created:{d}", .{parents}) catch util.oom()
+    else if (created) "created" else "existing";
+    return std.fmt.allocPrint(ctx.a, "\n# >>> dsh-manager completion v1 {s} {s}\n{s}{s}", .{ @tagName(shell), ownership, script(ctx, shell), end_marker }) catch util.oom();
 }
 
-fn foreign(bytes: []const u8, shell: Shell) bool {
+fn isPowerShell(shell: Shell) bool {
+    return shell == .pwsh or shell == .powershell;
+}
+
+fn foreign(ctx: *Ctx, bytes: []const u8, shell: Shell) bool {
     var lines = std.mem.splitScalar(u8, bytes, '\n');
+    var ps: std.ArrayList(u8) = .empty;
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0 or line[0] == '#') continue;
+        if (isPowerShell(shell)) {
+            ps.appendSlice(ctx.a, line) catch util.oom();
+            ps.append(ctx.a, '\n') catch util.oom();
+            continue;
+        }
         const registration = switch (shell) {
-            .bash => std.mem.indexOf(u8, line, "complete"),
+            .bash, .fish => std.mem.indexOf(u8, line, "complete"),
             .zsh => std.mem.indexOf(u8, line, "compdef"),
+            .pwsh, .powershell => unreachable,
         };
         if (registration != null and std.mem.indexOf(u8, line, "dsh") != null) return true;
     }
-    return false;
+    // ponytail: conservative file-level PS scan covers multiline CommandName arrays;
+    // use a parser if false-positive refusals become a real problem.
+    const lower = std.ascii.allocLowerString(ctx.a, ps.items) catch util.oom();
+    return std.mem.indexOf(u8, lower, "register-argumentcompleter") != null and std.mem.indexOf(u8, lower, "dsh") != null;
 }
 
 fn standardCollision(ctx: *Ctx, shell: Shell, home: []const u8) bool {
@@ -221,12 +254,13 @@ fn standardCollision(ctx: *Ctx, shell: Shell, home: []const u8) bool {
     const paths: []const []const u8 = switch (shell) {
         .bash => &.{ util.join(ctx.a, &.{ data, "bash-completion", "completions", "dsh" }), util.join(ctx.a, &.{ home, ".bash_completion" }) },
         .zsh => &.{ util.join(ctx.a, &.{ home, ".zfunc", "_dsh" }), util.join(ctx.a, &.{ config, "zsh", "completions", "_dsh" }) },
+        .fish, .pwsh, .powershell => return false,
     };
     for (paths) |p| {
         if (!util.exists(p)) continue;
         if (shell == .zsh or !std.mem.endsWith(u8, p, ".bash_completion")) return true;
         const bytes = std.fs.cwd().readFileAlloc(ctx.a, p, 1 << 20) catch return true;
-        if (foreign(bytes, shell)) return true;
+        if (foreign(ctx, bytes, shell)) return true;
     }
     return false;
 }
@@ -236,21 +270,114 @@ fn collision(path: []const u8) u8 {
     return 1;
 }
 
+extern "shell32" fn SHGetKnownFolderPath(id: *const std.os.windows.GUID, flags: u32, token: ?std.os.windows.HANDLE, path: *?[*:0]u16) callconv(.winapi) i32;
+extern "ole32" fn CoTaskMemFree(memory: ?*anyopaque) callconv(.winapi) void;
+
+fn documents(ctx: *Ctx) ![]const u8 {
+    // Windows user token, not USERPROFILE: follows redirected Documents (including OneDrive).
+    const id: std.os.windows.GUID = .{ .Data1 = 0xfdd39ad0, .Data2 = 0x238f, .Data3 = 0x46af, .Data4 = .{ 0xad, 0xb4, 0x6c, 0x85, 0x48, 0x03, 0x69, 0xc7 } };
+    var path: ?[*:0]u16 = null;
+    // KF_FLAG_DONT_VERIFY resolves without creating or testing the directory.
+    const result = SHGetKnownFolderPath(&id, 0x4000, null, &path);
+    defer if (path) |p| CoTaskMemFree(p);
+    if (result < 0 or path == null) return error.DocumentsUnavailable;
+    return std.unicode.utf16LeToUtf8Alloc(ctx.a, std.mem.span(path.?));
+}
+
+/// Shared read-only resolver; also usable by the later first-run prompt.
+pub fn registrationPath(ctx: *Ctx, shell: Shell, override: ?[]const u8) ![]const u8 {
+    if (shell == .powershell and !@import("context.zig").is_windows) return error.WindowsPowerShellRequiresWindows;
+    const path = if (override) |p| p else if (isPowerShell(shell) and @import("context.zig").is_windows)
+        util.join(ctx.a, &.{ try documents(ctx), if (shell == .pwsh) "PowerShell" else "WindowsPowerShell", "profile.ps1" })
+    else blk: {
+        const home = ctx.env.get(if (@import("context.zig").is_windows) "USERPROFILE" else "HOME") orelse return error.HomeRequired;
+        if (!std.fs.path.isAbsolute(home)) return error.AbsolutePathRequired;
+        const config = ctx.env.get("XDG_CONFIG_HOME") orelse util.join(ctx.a, &.{ home, ".config" });
+        break :blk switch (shell) {
+            .bash => util.join(ctx.a, &.{ home, ".bashrc" }),
+            .zsh => util.join(ctx.a, &.{ ctx.env.get("ZDOTDIR") orelse home, ".zshrc" }),
+            .fish => util.join(ctx.a, &.{ config, "fish", "completions", "dsh.fish" }),
+            .pwsh => util.join(ctx.a, &.{ config, "powershell", "profile.ps1" }),
+            .powershell => unreachable,
+        };
+    };
+    if (!std.fs.path.isAbsolute(path)) return error.AbsolutePathRequired;
+    return path;
+}
+
+fn missingParents(path: []const u8) usize {
+    var parent = std.fs.path.dirname(path);
+    var count: usize = 0;
+    while (parent) |p| {
+        if (util.exists(p)) break;
+        count += 1;
+        parent = std.fs.path.dirname(p);
+    }
+    return count;
+}
+
+fn decodeProfile(ctx: *Ctx, bytes: []const u8) ![]const u8 {
+    if (!std.mem.startsWith(u8, bytes, "\xff\xfe")) {
+        if (std.mem.startsWith(u8, bytes, "\xfe\xff") or std.mem.indexOfScalar(u8, bytes, 0) != null) return error.InvalidEncoding;
+        return bytes;
+    }
+    if (bytes.len % 2 != 0) return error.InvalidEncoding;
+    const units = try ctx.a.alloc(u16, bytes.len / 2);
+    for (units, 0..) |*unit, i| unit.* = std.mem.readInt(u16, bytes[i * 2 ..][0..2], .little);
+    return std.unicode.utf16LeToUtf8Alloc(ctx.a, units);
+}
+
+fn encodeProfile(ctx: *Ctx, bytes: []const u8, utf16: bool) ![]const u8 {
+    if (!utf16) return bytes;
+    const units = try std.unicode.utf8ToUtf16LeAlloc(ctx.a, bytes);
+    return std.mem.sliceAsBytes(units);
+}
+
+fn resultHint(ctx: *Ctx, shell: Shell, path: []const u8, installing: bool, dry: bool, action: []const u8) void {
+    util.print("Completion registration: {s}\n{s}{s}\n", .{ path, if (dry) "Dry run: " else "Action: ", action });
+    if (installing) {
+        util.print("New interactive {s} sessions load it. For the current session: {s} {s}\n", .{ @tagName(shell), if (isPowerShell(shell)) "." else "source", quoted(ctx, shell, path) });
+    } else if (isPowerShell(shell)) {
+        util.print("Start a new session; PowerShell has no public unregister API for the current session.\n", .{});
+    } else {
+        util.print("Start a new session; for the current session: {s}\n", .{switch (shell) {
+            .bash => "complete -r dsh",
+            .zsh => "compdef -d dsh",
+            .fish => "complete -e -c dsh; functions -e _dsh_manager_complete; set -e _dsh_manager_completion_owner; set -e _dsh_manager_completion_registration",
+            .pwsh, .powershell => unreachable,
+        }});
+    }
+}
+
 pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
     if (args.len < 2) {
-        util.warn("use `dsh manager completion script|install|uninstall <bash|zsh>`; choose a shell explicitly", .{});
+        util.warn("use `dsh manager completion script|install|uninstall <bash|zsh|fish|pwsh|powershell>`; choose a shell explicitly", .{});
         return 1;
     }
     const verb = args[0];
-    const shell_name = if (args.len == 2) args[1] else if (args.len == 3 and eq(args[1], "--shell")) args[2] else {
-        util.warn("expected an explicit shell, e.g. `dsh manager completion install --shell bash`", .{});
+    var at: usize = 1;
+    if (eq(args[at], "--shell")) at += 1;
+    if (at == args.len) return 1;
+    const shell = std.meta.stringToEnum(Shell, args[at]) orelse {
+        util.warn("unsupported completion shell {s}; supported: bash, zsh, fish, pwsh, powershell", .{args[at]});
         return 1;
     };
-    const shell = std.meta.stringToEnum(Shell, shell_name) orelse {
-        util.warn("unsupported completion shell {s}; currently bash and zsh are supported", .{shell_name});
-        return 1;
-    };
+    at += 1;
+    var profile: ?[]const u8 = null;
+    var dry = false;
+    while (at < args.len) : (at += 1) {
+        if (eq(args[at], "--dry-run") and !dry) {
+            dry = true;
+        } else if (eq(args[at], "--profile") and isPowerShell(shell) and profile == null and at + 1 < args.len) {
+            at += 1;
+            profile = args[at];
+        } else {
+            util.warn("expected an explicit shell, optional PowerShell --profile <absolute-path>, or --dry-run", .{});
+            return 1;
+        }
+    }
     if (eq(verb, "script")) {
+        if (profile != null or dry) return 1;
         util.print("{s}", .{script(ctx, shell)});
         return 0;
     }
@@ -259,50 +386,72 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
         util.warn("unknown completion action {s}", .{verb});
         return 1;
     }
-    const home = ctx.env.get(if (@import("context.zig").is_windows) "USERPROFILE" else "HOME") orelse {
-        util.warn("HOME is required for user-level completion registration", .{});
+    const path = registrationPath(ctx, shell, profile) catch |err| {
+        util.warn("cannot resolve completion target: {s}; an absolute profile/configuration path is required", .{@errorName(err)});
         return 1;
     };
-    const base = if (shell == .zsh) ctx.env.get("ZDOTDIR") orelse home else home;
-    if (!std.fs.path.isAbsolute(base)) {
-        util.warn("completion configuration directory must be absolute", .{});
-        return 1;
-    }
-    const path = util.join(ctx.a, &.{ base, if (shell == .bash) ".bashrc" else ".zshrc" });
     var link_buf: [std.fs.max_path_bytes]u8 = undefined;
     if (std.fs.cwd().readLink(path, &link_buf)) |_| return collision(path) else |_| {}
     const existing = std.fs.cwd().readFileAlloc(ctx.a, path, 1 << 20) catch |err| switch (err) {
         error.FileNotFound => null,
         else => return collision(path),
     };
-    const bytes = existing orelse "";
+    const raw = existing orelse "";
+    const utf16 = isPowerShell(shell) and std.mem.startsWith(u8, raw, "\xff\xfe");
+    const bytes = if (isPowerShell(shell)) decodeProfile(ctx, raw) catch return collision(path) else raw;
     var output: []const u8 = bytes;
     var remove_file = false;
-    if (std.mem.indexOf(u8, bytes, "\n# >>> dsh-manager completion v1 ")) |at| {
-        const tail = bytes[at..];
-        const created = std.mem.startsWith(u8, tail, std.fmt.allocPrint(ctx.a, "\n# >>> dsh-manager completion v1 {s} created\n", .{@tagName(shell)}) catch util.oom());
-        const owned = block(ctx, shell, created);
+    var parents: usize = 0;
+    var action: []const u8 = if (installing) "already-registered" else "nothing-to-remove";
+    const home = ctx.env.get(if (@import("context.zig").is_windows) "USERPROFILE" else "HOME") orelse "";
+    if (std.mem.indexOf(u8, bytes, "\n# >>> dsh-manager completion v1 ")) |start| {
+        const tail = bytes[start..];
+        const line_end = std.mem.indexOfScalarPos(u8, tail, 1, '\n') orelse return collision(path);
+        const line = tail[1..line_end];
+        const token = line[(std.mem.lastIndexOfScalar(u8, line, ' ') orelse return collision(path)) + 1 ..];
+        const created = eq(token, "created") or std.mem.startsWith(u8, token, "created:");
+        if (std.mem.startsWith(u8, token, "created:")) parents = std.fmt.parseInt(usize, token[8..], 10) catch return collision(path);
+        if (parents > 128) return collision(path);
+        const owned = block(ctx, shell, created, parents);
         if (!std.mem.startsWith(u8, tail, owned)) return collision(path);
         const rest = tail[owned.len..];
         if (std.mem.indexOf(u8, rest, "# >>> dsh-manager completion") != null) return collision(path);
+        if (shell == .fish and (start != 0 or rest.len != 0)) return collision(path);
         if (installing) {
-            if (foreign(bytes[0..at], shell) or foreign(rest, shell) or standardCollision(ctx, shell, home)) return collision(path);
+            if (foreign(ctx, bytes[0..start], shell) or foreign(ctx, rest, shell) or standardCollision(ctx, shell, home)) return collision(path);
         } else {
-            output = std.mem.concat(ctx.a, u8, &.{ bytes[0..at], rest }) catch util.oom();
-            remove_file = created and output.len == 0;
+            output = std.mem.concat(ctx.a, u8, &.{ bytes[0..start], rest }) catch util.oom();
+            remove_file = created and (output.len == 0 or (isPowerShell(shell) and eq(output, "\xef\xbb\xbf")));
+            action = "would-remove";
         }
-    } else if (std.mem.indexOf(u8, bytes, "# >>> dsh-manager completion") != null or std.mem.indexOf(u8, bytes, end_marker) != null) {
+    } else if (std.mem.indexOf(u8, bytes, "# >>> dsh-manager completion") != null or std.mem.indexOf(u8, bytes, end_marker) != null or (shell == .fish and existing != null)) {
         return collision(path);
     } else if (installing) {
-        if (foreign(bytes, shell) or standardCollision(ctx, shell, home)) return collision(path);
-        output = std.mem.concat(ctx.a, u8, &.{ bytes, block(ctx, shell, existing == null) }) catch util.oom();
+        if (foreign(ctx, bytes, shell) or standardCollision(ctx, shell, home)) return collision(path);
+        parents = if (existing == null) missingParents(path) else 0;
+        output = std.mem.concat(ctx.a, u8, &.{ if (existing == null and isPowerShell(shell)) "\xef\xbb\xbf" else bytes, block(ctx, shell, existing == null, parents) }) catch util.oom();
+        action = if (existing == null) "create" else "append";
+    }
+    if (dry) {
+        resultHint(ctx, shell, path, installing, true, action);
+        return 0;
     }
     if (remove_file) {
         std.fs.cwd().deleteFile(path) catch |err| {
             util.warn("cannot remove completion registration {s}: {s}", .{ path, @errorName(err) });
             return 1;
         };
+        var parent = std.fs.path.dirname(path);
+        for (0..parents) |_| {
+            const p = parent orelse break;
+            std.fs.cwd().deleteDir(p) catch break; // Only our created, still-empty parents.
+            parent = std.fs.path.dirname(p);
+        }
     } else if (!eq(output, bytes)) {
+        if (existing == null) std.fs.cwd().makePath(std.fs.path.dirname(path) orelse return 1) catch |err| {
+            util.warn("cannot create completion parent for {s}: {s}", .{ path, @errorName(err) });
+            return 1;
+        };
         const mode = if (std.fs.cwd().statFile(path)) |st| st.mode else |_| 0o600;
         var buffer: [4096]u8 = undefined;
         var file = std.fs.cwd().atomicFile(path, .{ .mode = mode, .write_buffer = &buffer }) catch |err| {
@@ -310,16 +459,13 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
             return 1;
         };
         defer file.deinit();
-        file.file_writer.interface.writeAll(output) catch return 1;
+        const encoded = encodeProfile(ctx, output, utf16) catch return collision(path);
+        file.file_writer.interface.writeAll(encoded) catch return 1;
         file.finish() catch |err| {
             util.warn("cannot save completion registration {s}: {s}", .{ path, @errorName(err) });
             return 1;
         };
     }
-    if (installing) {
-        util.print("Completion registration: {s}\nNew interactive {s} sessions load it. For the current session: source {s}\n", .{ path, @tagName(shell), quoted(ctx, path) });
-    } else {
-        util.print("Completion registration removed from {s}. Start a new session; for the current session: {s}\n", .{ path, if (shell == .bash) "complete -r dsh" else "compdef -d dsh" });
-    }
+    resultHint(ctx, shell, path, installing, false, action);
     return 0;
 }

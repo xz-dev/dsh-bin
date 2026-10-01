@@ -25,8 +25,8 @@ pub const help_text =
     \\                                                            plugin-runtime snapshots
     \\  clean                                                     remove interrupted downloads and leftovers (offline)
     \\  self-update                                               update this manager only
-    \\  completion script|install|uninstall <bash|zsh|fish|powershell>
-    \\                                                            shell completion
+    \\  completion script|install|uninstall <bash|zsh|fish|pwsh|powershell>
+    \\                                                            shell completion (--dry-run; PowerShell: --profile <path>)
     \\  info                                                      install mode, data root and application home
     \\  --version, --help
     \\

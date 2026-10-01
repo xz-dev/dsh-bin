@@ -239,3 +239,21 @@
 - 第二次 full suite 的日志写入曾遇到 `/tmp` zram 的 ENOSPC（未获得有效完整结果，不计通过）；保持产品不变，将测试驱动 TMPDIR/TMP/TEMP 与日志放入 `/home/xz/.cache/dsh-proxy-validation` 后重新执行上述最终全部命令，均成功。最终日志在该目录的 logs/；red 初次记录在 /tmp/dsh-proxy-*.log。
 - 绿色中间提交 **e0da27a**（feat(manager): verify origin TLS over HTTP proxy CONNECT）：Zig 44/44、manager 130 pass / 5 skip、runtime 99 pass，四目标与两个 driver 成功后提交；后续修正 **ae380ee**（fix(manager): decode HTTP proxy authentication userinfo）。无 push。
 - **3.2 已勾选**，只关闭此授权 gap；Windows/macOS 本轮 CONNECT 运行仍待父会话真实 CI，交叉编译不充当运行证据。`https://` 代理传输、严格总 deadline 和工具链升级 layout 复核为明确残余边界；可选真实代理因未配置未执行。不触碰 add-config-snapshots-and-paths 或其他既有 untracked change，不操作用户真实安装/凭据。
+
+## 4.4 SC-SHELLS、SC-IDEMPOTENT、SC-COLLISION、SC-CURRENT（Fish/PowerShell）
+
+- **实现者与中断**：主体由 worker（gpt-6.1-sol:max，run f60044b8）编写，30 分钟超时退出时工作区未提交且无法编译：`completion.zig` 两处 `|shell|` capture 与外层 const 同名。父会话只把这两处改名为 `candidate`，并补写一个 transport 测试，其余实现均为 worker 产物。worker 的 red 运行记录未随超时输出保存，所以本节**不声称有 red→green**，只记录父会话复现的 green 以及 mutation 结果。
+- **经父会话批准的设计决定（已向用户列出，等待最终认可）**：
+  - shell 名为 `fish`、`pwsh`、`powershell`。
+  - Fish 写入 `${XDG_CONFIG_HOME:-~/.config}/fish/completions/dsh.fish`，整个文件归 dsh 所有。
+  - PowerShell 默认目标为 CurrentUserAllHosts：Windows 用 `SHGetKnownFolderPath(Documents)` 定位，非 Windows 的 pwsh 用 `$XDG_CONFIG_HOME/powershell/profile.ps1`；另有可选的 `--profile <绝对路径>`。
+  - 四种 shell 都支持 `--dry-run`，只显示目标和将执行的动作，零写入。
+  - 不反射 PowerShell 私有的 completer 表，只检测目标 profile 内的冲突。
+  - PowerShell 候选改用 `DSH_COMPLETE_WORDS` 环境变量（U+001F 分隔）加 `--words-env` 传递，见 design.md。
+- **本地真实 shell**：Fish 4.x（/usr/bin/fish）、pwsh 7.4（task-scoped 放在 `/var/tmp/dsh-section4.4-validation/pwsh`，未做系统安装）。`TMPDIR=/var/tmp/dsh-44 PATH=<pwsh>:$PATH bun test ./test/completion.test.ts ./test/completion-shells.test.ts`：**14 pass / 8 skip / 0 fail**。Fish 三项、pwsh 四项实际执行；powershell(5.1) 四项和 zsh 四项因本机没有对应 shell 而明确 skip。
+- **transport 测试（父会话补写）**：`-t transport` 覆盖 `dsh manager `（空前缀）、`--channel `、`--use 'a b'`、`--use 'q"x'`、`--snapshot 'é ü'`，pwsh **1 pass**。mutation：把 Zig 的分隔符改成 0x20 后该项 **0 pass / 1 fail**，恢复后通过。本机无法运行 5.1，由 Windows CI 实际执行。
+- **全量**：`zig build test` 通过；`bun test ./test` **139 pass / 9 skip / 0 fail**（skip 均为本机缺 zsh 或 5.1）。`zig fmt --check`、`git diff --check` 通过；x86_64-windows-gnu、aarch64-macos、x86_64-linux-musl 交叉编译成功（不作为运行证据）。
+- **残余风险**：
+  - 由其他模块或另一个 profile 在运行时注册的 dsh completer，用公开 API 检测不到，后注册的那个生效。
+  - Fish 只拥有 completions/dsh.fish；config.fish 或 conf.d 中用户自己写的 `complete -c dsh` 不做扫描。
+- **4.4 暂不勾选**：Windows PowerShell 5.1 与 Windows pwsh 的真实执行，以及默认 Documents 路径与 `$PROFILE.CurrentUserAllHosts` 的比对，都要等 windows-2022 CI 跑完。
