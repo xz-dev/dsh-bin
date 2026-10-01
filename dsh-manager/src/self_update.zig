@@ -30,9 +30,10 @@ fn prepare(ctx: *Ctx, force: bool) !void {
     // Pin this installation before the first network wait; no later path resolution selects a target.
     var parent = try std.fs.cwd().openDir(ctx.dir, .{ .iterate = true, .no_follow = true });
     defer parent.close();
-    const installed: ?std.fs.File = if (builtin.os.tag == .windows) null else try binary.validated(ctx.a, parent, std.fs.path.basename(ctx.exe), options.version);
-    defer if (installed) |f| f.close();
-    if (installed) |f| try runningEntry(ctx, f);
+    const installed = if (builtin.os.tag == .windows) try @import("self_update_windows.zig").openFile(parent, std.fs.path.basename(ctx.exe), false) else try binary.validated(ctx.a, parent, std.fs.path.basename(ctx.exe), options.version);
+    defer installed.close();
+    if (builtin.os.tag == .windows) try binary.validateFile(ctx.a, installed, options.version);
+    try runningEntry(ctx, installed);
     const endpoints = http.endpoints(ctx.a, &ctx.env);
     defer endpoints.deinit(ctx.a);
     const bytes = try http.fetchSmall(ctx.a, &ctx.env, endpoints.manager_index, 16 << 20);
@@ -112,15 +113,21 @@ fn prepare(ctx: *Ctx, force: bool) !void {
     var old = parent.iterate();
     while (try old.next()) |item| {
         if (item.kind != .file or std.mem.eql(u8, item.name, name)) continue;
+        if (builtin.os.tag == .windows and @import("self_update_windows.zig").helperName(item.name)) {
+            const held = binary.reclaimableFile(ctx.a, parent, item.name) catch continue;
+            defer held.close();
+            _ = binary.deleteValidated(ctx, parent, item.name, held, "helper-old-delete");
+            continue;
+        }
         const old_version = binary.candidateVersion(item.name) orelse continue;
         const held = binary.validated(ctx.a, parent, item.name, old_version) catch continue;
         defer held.close();
         _ = binary.deleteValidated(ctx, parent, item.name, held, "candidate-old-delete");
     }
     if (builtin.os.tag == .windows) {
-        util.print("Manager {s} prepared, not installed: {s}/{s}; installed manager remains {s}.\n", .{ candidate.entry.version, ctx.dir, name, options.version });
+        try @import("self_update_windows.zig").start(ctx, parent, installed, name, candidate.entry.version, expected, mutex.handle, tmp);
     } else {
-        try replace(ctx, parent, installed.?, name, candidate.entry.version, expected);
+        try replace(ctx, parent, installed, name, candidate.entry.version, expected);
         util.print("updated manager {s} -> {s}\n", .{ options.version, candidate.entry.version });
     }
 }
@@ -147,7 +154,11 @@ fn replace(ctx: *const Ctx, parent: std.fs.Dir, installed: std.fs.File, name: []
 }
 
 fn runningEntry(ctx: *const Ctx, installed: std.fs.File) !void {
-    if (builtin.os.tag == .windows) return;
+    if (builtin.os.tag == .windows) {
+        const actual = ctx.exe_identity orelse return error.ManagerFileChanged;
+        if (@as(u64, @bitCast((try installed.stat()).inode)) != actual.inode) return error.ManagerFileChanged;
+        return;
+    }
     const entry = try std.posix.fstat(installed.handle);
     if (builtin.os.tag == .linux) {
         const running = try std.fs.cwd().openFile("/proc/self/exe", .{});

@@ -37,7 +37,16 @@ function source(versions: ReturnType<typeof entry>[], bytes: Uint8Array, runtime
 async function command(i: Install, s: ReturnType<typeof source>, args = ["manager", "self-update"], env: Record<string, string> = {}) {
 	const p = Bun.spawn([i.exe, ...args], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: s.origin, DSH_MANAGER_TEST_RETRY_MS: "10", ...env }, stdout: "pipe", stderr: "pipe" });
 	const timer = setTimeout(() => p.kill(), 30_000);
-	try { const [stdout, stderr, status] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]); return { stdout, stderr, status }; }
+	try {
+        const [stdout, stderr, status] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+        if (WIN && status === 0 && stdout.includes("handed off to helper")) {
+            const result = join(i.data, "tmp/self-update-result.txt"), deadline = Date.now() + 20_000;
+            while (!existsSync(result) && Date.now() < deadline) await Bun.sleep(10);
+            expect(existsSync(result)).toBe(true); expect(readFileSync(result, "utf8")).toStartWith("updated ");
+            await Bun.sleep(100); // Result is committed before the helper exits/unmaps its image.
+        }
+        return { stdout, stderr, status };
+    }
 	finally { clearTimeout(timer); }
 }
 async function paused(i: Install, args: string[], stage: string, action: (name: string) => void, env: Record<string, string> = {}, kill = false) {
@@ -70,18 +79,18 @@ function fixture() {
 	return i;
 }
 
-test.skipIf(!hasZig)("MC-SELF-ONLY: same-protocol newer manager changes only its entry on POSIX; Windows prepares for 7.3", async () => {
+test.skipIf(!hasZig)("MC-SELF-ONLY: same-protocol newer manager changes only its entry; Windows hands off without claiming success", async () => {
 	const i = fixture(), bytes = archive(), s = source([entry(NEXT, bytes)], bytes), before = protectedBytes(i), exe = sha(readFileSync(i.exe)), allBefore = tree(i.data);
 	try {
-		const r = await command(i, s); expect(r.stderr).toBe(""); expect(r.status).toBe(0); expect(r.stdout).toContain(WIN ? "prepared, not installed" : `updated manager ${MANAGER_VERSION} -> ${NEXT}`);
-		const candidate = join(i.dir, `.dsh-manager-candidate-${NEXT}`); if (WIN) expect(sha(readFileSync(candidate))).toBe(sha(readFileSync(next))); else expect(existsSync(candidate)).toBe(false);
-		expect(protectedBytes(i)).toEqual(before); expect(sha(readFileSync(i.exe))).toBe(WIN ? exe : sha(readFileSync(next))); expect(started(i)).toBe(false);
+		const r = await command(i, s); expect(r.stderr).toBe(""); expect(r.status).toBe(0); expect(r.stdout).toContain(WIN ? "handed off to helper" : `updated manager ${MANAGER_VERSION} -> ${NEXT}`);
+		const candidate = join(i.dir, `.dsh-manager-candidate-${NEXT}`); expect(existsSync(candidate)).toBe(false);
+		expect(protectedBytes(i)).toEqual(before); expect(sha(readFileSync(i.exe))).toBe(sha(readFileSync(next))); expect(started(i)).toBe(false);
 		expect(s.requests).toEqual(["/manager-index.json", `/download/manager-v${NEXT}/manager-${TARGET}.zip`]);
 		const added = tree(i.data).filter(p => !allBefore.includes(p));
-		expect(added.filter(p => !["cache", "cache/downloads", `cache/downloads/${sha(bytes)}.zip`, "tmp", "state/manager.lock"].includes(p))).toEqual([]);
-		expect(run(i, ["manager", "--version"]).stdout).toContain(WIN ? MANAGER_VERSION : NEXT); expect(tree(i.home)).toEqual([]);
+		expect(added.filter(p => !["cache", "cache/downloads", `cache/downloads/${sha(bytes)}.zip`, "tmp", "tmp/self-update-result.txt", "state/manager.lock"].includes(p))).toEqual([]);
+		expect(run(i, ["manager", "--version"]).stdout).toContain(NEXT); expect(tree(i.home)).toEqual([]);
 		cpSync(build().manager, join(i.dir, `.dsh-manager-candidate-${MANAGER_VERSION}`));
-		expect((await command(i, s, ["manager", "self-update", "--force"])).status).toBe(0); expect(readdirSync(i.dir).filter(n => n.startsWith(".dsh-manager-candidate-"))).toEqual(WIN ? [`.dsh-manager-candidate-${NEXT}`] : []);
+		expect((await command(i, s, ["manager", "self-update", "--force"])).status).toBe(0); expect(readdirSync(i.dir).filter(n => n.startsWith(".dsh-manager-candidate-"))).toEqual([]);
 	} finally { s.stop(); }
 }, 60_000);
 
@@ -90,16 +99,16 @@ test.skipIf(!hasZig)("MC-SELF-ONLY: SemVer 1.10 > 1.9, prerelease ordering and s
 	const repairFile = join(tempDir("manager-repair-"), `dsh${EXE}`); writeFileSync(repairFile, Buffer.concat([readFileSync(build().manager), Buffer.from("same-version-rebuild")]));
 	const repaired = archive(repairFile);
 	for (const [versions, force, status, text, asset] of [
-		[["9.9.0", "9.10.0"], false, 0, WIN ? "9.10.0 prepared" : "-> 9.10.0", true],
-		[["9.8.8-rc.2", "9.8.8-rc.10"], false, 0, WIN ? "9.8.8-rc.10 prepared" : "-> 9.8.8-rc.10", true],
+		[["9.9.0", "9.10.0"], false, 0, WIN ? "handed off" : "-> 9.10.0", true],
+		[["9.8.8-rc.2", "9.8.8-rc.10"], false, 0, WIN ? "handed off" : "-> 9.8.8-rc.10", true],
 		[[MANAGER_VERSION], false, 0, "already current", false],
-		[[MANAGER_VERSION], true, 0, WIN ? "prepared" : "updated manager", true],
+		[[MANAGER_VERSION], true, 0, WIN ? "handed off" : "updated manager", true],
 		[["9.8.7-test.0"], true, 1, "Downgrade", false],
 		[["9.8.7-test.1+repair"], false, 0, "already current", false],
 	] as const) {
 		const i = newInstall(), version = versions[0], payload = version === MANAGER_VERSION ? (force ? repaired : archive(build().manager)) : version === "9.9.0" ? archive(numeric) : version === "9.8.8-rc.2" ? archive(prerelease) : bytes;
 		const s = source(versions.map(v => entry(v, payload)), payload);
-		try { const r = await command(i, s, ["manager", "self-update", ...(force ? ["--force"] : [])]); expect(r.status).toBe(status); expect(r.stdout + r.stderr).toContain(text); expect(s.requests.some(p => p.startsWith("/download/"))).toBe(asset); if (version === MANAGER_VERSION && force) { expect(sha(readFileSync(WIN ? join(i.dir, `.dsh-manager-candidate-${version}`) : i.exe))).toBe(sha(readFileSync(repairFile))); expect(sha(readFileSync(repairFile))).not.toBe(sha(readFileSync(build().manager))); } }
+		try { const r = await command(i, s, ["manager", "self-update", ...(force ? ["--force"] : [])]); expect(r.status).toBe(status); expect(r.stdout + r.stderr).toContain(text); expect(s.requests.some(p => p.startsWith("/download/"))).toBe(asset); if (version === MANAGER_VERSION && force) { expect(sha(readFileSync(i.exe))).toBe(sha(readFileSync(repairFile))); expect(sha(readFileSync(repairFile))).not.toBe(sha(readFileSync(build().manager))); } }
 		finally { s.stop(); }
 	}
 }, 60_000);
@@ -134,12 +143,12 @@ test.skipIf(!hasZig)("DL-MANAGED-SELF: portage/scoop refuse before any request, 
 	finally { s.stop(); }
 }, 60_000);
 
-test.skipIf(!hasZig)("MC-OLD-RUNTIME: older upstream install/select never downgrades updated manager or Windows candidate", async () => {
+test.skipIf(!hasZig)("MC-OLD-RUNTIME: older upstream install/select never downgrades updated manager", async () => {
 	const i = fixture(), meta = bundleMeta(OLD, { commitTime: "2020-01-01T00:00:00.000Z", patch: { target: hostTargetId() } }), file = join(tempDir("old-runtime-"), "runtime.zip");
 	writeZip(file, [{ name: "bundle.json", data: Buffer.from(JSON.stringify(meta)) }, { name: `dsh-native${EXE}`, data: readFileSync(build().fake), mode: 0o755 }]);
 	const runtimeBytes = readFileSync(file), e = { ...meta, tag: `runtime-v${OLD}`, seq: 1, assets: { [hostTargetId()]: { name: "runtime.zip", size: runtimeBytes.length, sha256: sha(runtimeBytes) } } };
 	const bytes = archive(), s = source([entry(NEXT, bytes)], bytes, { entry: e, bytes: runtimeBytes }), exe = sha(readFileSync(i.exe));
-	try { expect((await command(i, s)).status).toBe(0); const staged = WIN ? join(i.dir, `.dsh-manager-candidate-${NEXT}`) : i.exe, before = sha(readFileSync(staged)); expect((await command(i, s, ["manager", "install", OLD])).status).toBe(0); expect(run(i, ["manager", "select", "--use", OLD]).status).toBe(0); expect(run(i, ["manager", "--version"]).stdout).toContain(WIN ? MANAGER_VERSION : NEXT); expect(sha(readFileSync(i.exe))).toBe(WIN ? exe : sha(readFileSync(next))); expect(sha(readFileSync(staged))).toBe(before); expect(run(i, []).status).toBe(0); }
+	try { expect((await command(i, s)).status).toBe(0); const staged = i.exe, before = sha(readFileSync(staged)); expect((await command(i, s, ["manager", "install", OLD])).status).toBe(0); expect(run(i, ["manager", "select", "--use", OLD]).status).toBe(0); expect(run(i, ["manager", "--version"]).stdout).toContain(NEXT); expect(sha(readFileSync(i.exe))).toBe(sha(readFileSync(next))); expect(sha(readFileSync(staged))).toBe(before); expect(run(i, []).status).toBe(0); }
 	finally { s.stop(); }
 }, 60_000);
 

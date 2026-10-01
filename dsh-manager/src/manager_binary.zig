@@ -88,7 +88,8 @@ pub fn validate(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, version
     const file = try validated(a, dir, name, version);
     file.close();
 }
-fn validateFile(a: std.mem.Allocator, file: std.fs.File, version: []const u8) !void {
+pub fn validateFile(a: std.mem.Allocator, file: std.fs.File, version: []const u8) !void {
+    try file.seekTo(0);
     const st = try file.stat();
     if (builtin.os.tag != .windows and st.mode & 0o111 == 0) return error.ManagerNotExecutable;
     const bytes = try file.readToEndAlloc(a, 128 << 20);
@@ -136,11 +137,29 @@ pub fn reclaimable(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8) bool
     return true;
 }
 pub fn reclaimableFile(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8) !std.fs.File {
+    if (@import("self_update_windows.zig").helperName(name)) {
+        const file = try openRegular(dir, name);
+        errdefer file.close();
+        if (builtin.os.tag == .windows) {
+            const win = std.os.windows;
+            var info: win.BY_HANDLE_FILE_INFORMATION = undefined;
+            if (GetFileInformationByHandle(file.handle, &info) == 0 or info.nNumberOfLinks != 1) return error.InvalidManagerFile;
+        } else if ((try std.posix.fstat(file.handle)).nlink != 1) return error.InvalidManagerFile;
+        const bytes = try file.readToEndAlloc(a, 128 << 20);
+        defer a.free(bytes);
+        const at = std.mem.indexOf(u8, bytes, version_marker[0..20]) orelse return error.InvalidManagerVersion;
+        const rest = bytes[at + 20 ..];
+        const end = std.mem.indexOfScalar(u8, rest, 0) orelse return error.InvalidManagerVersion;
+        try validateFile(a, file, rest[0..end]);
+        return file;
+    }
     // A prerelease partial name is itself parseable SemVer (rc.1.part-ab12); classify it first.
     if (partialCandidate(name)) return openRegular(dir, name);
     const v = candidateVersion(name) orelse return error.InvalidManagerVersion;
     return validated(a, dir, name, v);
 }
+
+extern "kernel32" fn GetFileInformationByHandle(std.os.windows.HANDLE, *std.os.windows.BY_HANDLE_FILE_INFORMATION) callconv(.winapi) std.os.windows.BOOL;
 
 pub fn sameFile(dir: std.fs.Dir, name: []const u8, file: std.fs.File) bool {
     const opened = file.stat() catch return false;

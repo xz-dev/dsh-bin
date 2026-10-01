@@ -32,7 +32,12 @@ pub fn main() void {
         for (raw[1..], out) |arg, *o| o.* = std.mem.span(arg);
         break :blk out;
     };
+    if (args.len > 0 and std.mem.eql(u8, args[0], @import("self_update_windows.zig").command)) {
+        const code = @import("self_update_windows.zig").run(a, args[1..]);
+        std.process.exit(code);
+    }
     var ctx = context.init(a);
+    @import("self_update_windows.zig").consume(&ctx);
     // `manager` is a namespace only as the first argument after the leading options.
     const opts = launch.parseLeading(a, args);
     if (opts.consumed < args.len and std.mem.eql(u8, args[opts.consumed], "manager")) {
