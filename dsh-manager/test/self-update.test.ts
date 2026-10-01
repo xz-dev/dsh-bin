@@ -196,3 +196,14 @@ test.skipIf(!hasZig)("MC-SELF-FAIL review: concurrent candidate names and swappe
 		}
 	} finally { s.stop(); }
 }, 60_000);
+
+test.skipIf(!hasZig)("MC-SELF-FAIL review: duplicate or conflicting identity markers refuse preparation and remain untouched by clean", async () => {
+	for (const marker of [`DSH_MANAGER_VERSION=${NEXT}\0`, "DSH_MANAGER_VERSION=1.0.0\0", "DSH_MANAGER_LAUNCH_PROTOCOL=1\0", "DSH_MANAGER_LAUNCH_PROTOCOL=2\0"]) {
+		const file = join(tempDir("contradictory-manager-"), `dsh${EXE}`); writeFileSync(file, Buffer.concat([readFileSync(next), Buffer.from(marker)]), { mode: 0o755 });
+		const bytes = archive(file), s = source([entry(NEXT, bytes)], bytes), i = fixture(), path = join(i.dir, `.dsh-manager-candidate-${NEXT}`);
+		try {
+			const r = await command(i, s); expect(r.status).toBe(1); expect(r.stdout).not.toContain("prepared, not installed"); expect(existsSync(path)).toBe(false);
+			cpSync(file, path); const before = sha(readFileSync(path)); expect(run(i, ["manager", "clean"]).status).toBe(0); expect(sha(readFileSync(path))).toBe(before);
+		} finally { s.stop(); }
+	}
+}, 60_000);

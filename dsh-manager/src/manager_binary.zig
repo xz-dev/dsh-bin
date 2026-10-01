@@ -96,8 +96,11 @@ fn validateFile(a: std.mem.Allocator, file: std.fs.File, version: []const u8) !v
     if (!native(bytes)) return error.WrongManagerTarget;
     const marker = try std.fmt.allocPrint(a, "DSH_MANAGER_VERSION={s}\x00", .{version});
     defer a.free(marker);
-    if (std.mem.indexOf(u8, bytes, marker) == null) return error.ManagerVersionMismatch;
-    if (std.mem.indexOf(u8, bytes, protocol_marker) == null) return error.ManagerProtocolMismatch;
+    if (!uniqueMarker(bytes, version_marker[0..20], marker)) return error.ManagerVersionMismatch;
+    if (!uniqueMarker(bytes, protocol_marker[0..28], protocol_marker)) return error.ManagerProtocolMismatch;
+}
+fn uniqueMarker(bytes: []const u8, prefix: []const u8, expected: []const u8) bool {
+    return std.mem.count(u8, bytes, prefix) == 1 and std.mem.indexOf(u8, bytes, expected) != null;
 }
 /// Deterministic race barrier; production ignores both variables.
 pub fn testPause(ctx: *const @import("context.zig").Ctx, stage: []const u8, name: []const u8) void {
