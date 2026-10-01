@@ -544,3 +544,27 @@
 
 - `TMPDIR=/var/tmp/dsh-64 PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH bun test ./test` → **214 pass / 18 skip / 0 fail / 2793 断言**，232 tests / 17 files，237.38s（`full-release.log`）。上述 skip 原因不变；6.4 的九项新增场景、两个既有 ancestor-swap/claim probe 场景均实际通过。
 - 同时再次 `zig build test --summary all` **44/44**、`zig fmt --check src test/fake-native.zig`、两 target cross-build、`git diff --check` 全通过。
+
+### Guard generation 身份检查（supervisor 批准，续跑）
+
+- Supervisor 批准在唯一入口 `lock.tryAcquireIn` 成功获锁后比较 opened handle 的 `File.Stat.inode` 与当前 guard 路径的 inode；缺失或不一致即 release 并返回 Busy，调用方点名对象、要求 retry，不新增等待。Windows 的 inode 是 file index，使用同一比较；原生可靠性仍由 Windows CI 验证。
+- 单一 deterministic 回归：`versions.test.ts` 的 `MC-IN-USE: a guard retired between open and lock refuses the stale launch`，在 shared guard 的 open 与 flock/LockFileEx 之间用 test-only stdin barrier 暂停，另一 manager force 替换，恢复后必须明确拒绝而不启动应用；新普通启动仍成功。hook 仅在 `DSH_MANAGER_TEST=1` 且 `DSH_MANAGER_TEST_CLAIM_PAUSE` 匹配此 guard 时生效。
+- Red 已运行：临时绕过 `checked` 身份比较，`TMPDIR=/var/tmp/dsh-64 bun test ./test/versions.test.ts -t 'guard retired'` → **0 pass / 1 fail / 4 断言**（`identity-red.log`）。预期原因：stale launch 返回 0 而非 1；mutation 已恢复，续跑仅收尾此批准范围。
+- Green 同命令 → **1 pass / 0 fail / 10 断言**（`identity-green.log`）；复核恢复的产品代码后提交 **5ff2713 `fix(manager): refuse a claim on a retired guard generation`**。
+- 续跑要求的全量验证仅跑一次：`TMPDIR=/var/tmp/dsh-64 PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH zig build test --summary all && bun test ./test` → Zig **44/44**、Bun **215 pass / 18 skip / 0 fail / 2805 断言**，233 tests / 17 files，227.07s（`units.log`、`full-resume.log`）。
+- 随后 `zig fmt --check src test/fake-native.zig`、`zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-64/windows`、`zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-64/macos`、`git diff --check 452440c` 均 **exit 0**（`*-resume.log`）。guard-path audit 已在上方「启动 guard 完整性核对」完整列出，无新增遗漏路径。
+- 18 skip：本机无 zsh、Windows/PowerShell 5.1 特有测试、未配置真实 HTTPS proxy。新 guard identity 回归与既有 6.4 场景全实际执行；Windows/macOS 此次仅 cross-compile，不计原生验收。Windows file-index 比较的原生可靠性仍须三平台 CI；未启用平台豁免或新机制。
+
+### 6.4 场景 → 回归索引（最终）
+
+| 场景 | 回归文件与关键名称 |
+|---|---|
+| MC-IN-USE：会话持 runtime/snapshot/addon，删除拒绝、字节不变、退出后成功 | `in-use.test.ts`：`runtime, snapshot and addon batch removal refuse busy objects unchanged, succeed after exit` |
+| MC-IN-USE：全量 missing/selection/busy 预检失败零删除 | `in-use.test.ts`：`runtime and snapshot preflight reports every missing, pinned/selected and busy target before any delete` |
+| RB-RESTART：默认改 B，原会话重启仍 A/S/addon、claims 保留，新启动才 B | `in-use.test.ts`：`changing default during a session does not change restarted A/S/addon or release its claims` |
+| MC-IN-USE：启动 fail-fast、缺 runtime guard 拒绝且可修复、缺 addon guard 降级 | `in-use.test.ts`：`a busy runtime launch fails fast; missing runtime guard refuses, missing addon guard degrades`；`versions.test.ts` force 重建 guard 断言 |
+| MC-IN-USE：force 在下载前拒绝占用对象，字节不变、退出后修复 | `versions.test.ts` / `addons.test.ts`：`force runtime/addon replacement refuses ... before download` |
+| MC-IN-USE：下载过程中出现会话，激活再次检查并拒绝 | `versions.test.ts` / `addons.test.ts`：`force runtime/addon activation rechecks a session that starts during download` |
+| MC-IN-USE：open→lock 间 guard generation 被替换，拒绝 stale launch | `versions.test.ts`：`a guard retired between open and lock refuses the stale launch` |
+| 已验证目录 handle 不重新解析、预检 claim 持至退役 | `snapshots.test.ts` / `addons.test.ts` 既有 ancestor-swap 回归新增 shared probe 必为 busy；`install.test.ts` runtime swap 回归保持通过 |
+| 删除预检通过后真实文件系统竞争导致后续失败，报告已移除项、不回滚 | `snapshots.test.ts`：`a post-preflight removal failure reports the already removed snapshot without rollback` |
