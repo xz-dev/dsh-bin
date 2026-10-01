@@ -27,6 +27,12 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
     return 0;
 }
 fn prepare(ctx: *Ctx, force: bool) !void {
+    // Pin this installation before the first network wait; no later path resolution selects a target.
+    var parent = try std.fs.cwd().openDir(ctx.dir, .{ .iterate = true, .no_follow = true });
+    defer parent.close();
+    const installed: ?std.fs.File = if (builtin.os.tag == .windows) null else try binary.validated(ctx.a, parent, std.fs.path.basename(ctx.exe), options.version);
+    defer if (installed) |f| f.close();
+    if (installed) |f| try runningEntry(ctx, f);
     const endpoints = http.endpoints(ctx.a, &ctx.env);
     defer endpoints.deinit(ctx.a);
     const bytes = try http.fetchSmall(ctx.a, &ctx.env, endpoints.manager_index, 16 << 20);
@@ -40,13 +46,11 @@ fn prepare(ctx: *Ctx, force: bool) !void {
         },
         .gt => {},
     }
+    try sameParent(ctx, parent);
     ctx.ensureData();
     const mutex = try state.maintenance(ctx);
     defer mutex.release();
-    var parent = try std.fs.cwd().openDir(ctx.dir, .{ .iterate = true, .no_follow = true });
-    defer parent.close();
-    const installed: ?std.fs.File = if (builtin.os.tag == .windows) null else try binary.validated(ctx.a, parent, std.fs.path.basename(ctx.exe), options.version);
-    defer if (installed) |f| f.close();
+    try sameParent(ctx, parent);
     const name = try std.fmt.allocPrint(ctx.a, "{s}{s}", .{ binary.candidate_prefix, candidate.entry.version });
     // A conflicting user file/link is not ours to overwrite.
     try reusable(ctx, parent, name, candidate.entry.version);
@@ -134,10 +138,33 @@ fn replace(ctx: *const Ctx, parent: std.fs.Dir, installed: std.fs.File, name: []
     if (current.uid != original.uid or current.gid != original.gid) try candidate.chown(original.uid, original.gid);
     try candidate.chmod(original.mode & 0o7777);
     try candidate.sync();
+    try sameParent(ctx, parent);
     if (!binary.sameFile(parent, name, candidate) or !binary.sameFile(parent, entry, installed)) return error.ManagerFileChanged;
     // ponytail: same-user identity-check -> rename window; private bin directory if stronger isolation is needed.
     try parent.rename(name, entry);
     binary.testPause(ctx, "self-update-after-replace", entry);
+}
+
+fn runningEntry(ctx: *const Ctx, installed: std.fs.File) !void {
+    if (builtin.os.tag == .windows) return;
+    const entry = try std.posix.fstat(installed.handle);
+    if (builtin.os.tag == .linux) {
+        const running = try std.fs.cwd().openFile("/proc/self/exe", .{});
+        defer running.close();
+        const actual = try std.posix.fstat(running.handle);
+        if (entry.dev != actual.dev or entry.ino != actual.ino) return error.ManagerFileChanged;
+    } else {
+        const actual = ctx.exe_identity orelse return error.ManagerFileChanged;
+        if (entry.dev != actual.device or entry.ino != actual.inode) return error.ManagerFileChanged;
+    }
+}
+
+/// An ancestor move/link during I/O is a clear refusal, never a reason to select another installation.
+fn sameParent(ctx: *const Ctx, held: std.fs.Dir) !void {
+    if (builtin.os.tag == .windows) return;
+    const opened = try std.posix.fstat(held.fd);
+    const current = std.posix.fstatat(std.posix.AT.FDCWD, ctx.dir, 0) catch return error.ManagerFileChanged;
+    if (opened.dev != current.dev or opened.ino != current.ino) return error.ManagerFileChanged;
 }
 
 fn reusable(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, version: []const u8) !void {

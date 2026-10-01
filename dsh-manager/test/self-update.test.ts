@@ -321,3 +321,24 @@ test.skipIf(!hasZig)("MC-SELF-FAIL review: extracted source must still match byt
 		expect(protectedBytes(i)).toEqual(before);
 	} finally { s.stop(); }
 }, 60_000);
+
+test.skipIf(!hasZig || WIN)("MC-SELF-FAIL review: index-time ancestor swap never selects another manager installation", async () => {
+	const i = fixture(), bytes = archive(), root = dirname(i.dir), moved = `${root}-saved`, external = tempDir("manager-other-install-");
+	const externalExe = join(external, "tools", `dsh${EXE}`); mkdirSync(dirname(externalExe)); cpSync(build().manager, externalExe);
+	writeFileSync(join(external, "credential"), "KEEP");
+	const old = sha(readFileSync(i.exe)), other = sha(readFileSync(externalExe));
+	let readyResolve!: () => void, release!: () => void;
+	const ready = new Promise<void>(r => readyResolve = r), wait = new Promise<void>(r => release = r);
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
+		if (new URL(req.url).pathname === "/manager-index.json") { readyResolve(); await wait; return Response.json({ schema: 1, versions: [entry(NEXT, bytes)] }); }
+		return new Response(bytes);
+	} });
+	const p = Bun.spawn([i.exe, "manager", "self-update"], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: `http://127.0.0.1:${server.port}` }, stdout: "pipe", stderr: "pipe" });
+	const stdout = new Response(p.stdout).text(), stderr = new Response(p.stderr).text(), timer = setTimeout(() => p.kill(), 20_000);
+	try {
+		await ready; renameSync(root, moved); symlinkSync(external, root, "dir"); release();
+		expect(await p.exited).toBe(1); expect(await stdout).not.toContain("updated manager"); expect(await stderr).toContain("self-update failed");
+		expect(sha(readFileSync(externalExe))).toBe(other); expect(sha(readFileSync(join(moved, "tools", `dsh${EXE}`)))).toBe(old);
+		expect(readFileSync(join(external, "credential"), "utf8")).toBe("KEEP");
+	} finally { clearTimeout(timer); release(); p.kill(); await p.exited; server.stop(true); }
+}, 60_000);

@@ -19,6 +19,7 @@ pub const Ctx = struct {
     mode: Mode,
     data: []const u8,
     app_home: []const u8,
+    exe_identity: ?struct { device: u64, inode: u64 },
 
     pub fn path(self: *const Ctx, parts: []const []const u8) []u8 {
         var all: std.ArrayList([]const u8) = .empty;
@@ -138,6 +139,7 @@ pub fn init(a: std.mem.Allocator) Ctx {
     // realpath also handles Windows symlink/reparse-point entries.
     const exe = std.fs.cwd().realpathAlloc(a, raw) catch |err| util.fatal("cannot resolve the manager's real path: {s}", .{@errorName(err)});
     const dir = std.fs.path.dirname(exe) orelse util.fatal("cannot resolve the manager's directory", .{});
+    const identity: ?std.posix.Stat = if (is_windows) null else std.posix.fstatat(std.posix.AT.FDCWD, exe, 0) catch |err| util.fatal("cannot inspect the manager's real entry: {s}", .{@errorName(err)});
     const env = std.process.getEnvMap(a) catch util.oom();
     const marker = util.join(a, &.{ dir, install_marker });
     const bytes = std.fs.cwd().readFileAlloc(a, marker, 4096) catch |err| switch (err) {
@@ -162,5 +164,5 @@ pub fn init(a: std.mem.Allocator) Ctx {
             break :blk util.join(a, &.{ local, data_dir_name });
         },
     };
-    return .{ .a = a, .env = env, .exe = exe, .dir = dir, .mode = mode, .data = data, .app_home = appHome(a, &env, data) };
+    return .{ .a = a, .env = env, .exe = exe, .dir = dir, .mode = mode, .data = data, .app_home = appHome(a, &env, data), .exe_identity = if (identity) |st| .{ .device = @intCast(st.dev), .inode = @intCast(st.ino) } else null };
 }
