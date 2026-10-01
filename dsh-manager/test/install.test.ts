@@ -423,3 +423,106 @@ test.skipIf(!hasZig)("DL-CORRUPT: --force refuses an unrecognized same-id direct
 		expect(s.requests.map((r) => r.path)).toEqual(["/runtime-index.json"]);
 	} finally { await s.stop(); }
 });
+
+// 5.2: ordinary empty launches reuse the native install, never manager/GitHub Latest.
+async function bootstrap(i: Install, origin: string, args: string[] = [], extra: Record<string, string> = {}, input = "") {
+	const proc = Bun.spawn([i.exe, ...args], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: origin, DSH_MANAGER_TEST_RETRY_MS: "20", ...extra }, stdin: new Response(input), stdout: "pipe", stderr: "pipe" });
+	const timer = setTimeout(() => proc.kill("SIGKILL"), 30_000);
+	try {
+		const [stdout, stderr, status] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+		return { stdout, stderr, status };
+	} finally { clearTimeout(timer); if (proc.exitCode === null) { proc.kill("SIGKILL"); await proc.exited; } }
+}
+
+test.skipIf(!hasZig)("FB-EMPTY: ordinary empty launch installs latest compatible release and preserves argv/cwd/stdin/exit", async () => {
+	const old = archive(OLD), latest = archive(ID, { run: 2 }), live = archive(LIVE);
+	const e = entry(ID, latest.bytes, { run: 2 }), o = entry(OLD, old.bytes), l = entry(LIVE, live.bytes);
+	const incompatible = entry("9.0-b9.1.gdeadbeef", latest.bytes, { launchProtocol: 99 });
+	const other = entry("8.0-b8.1.gdeadbeef", latest.bytes, { assets: { "wrong-target": e.assets[TARGET] } });
+	const manager = { ...e, kind: "dsh-manager", id: "99.0.0", tag: "manager-v99.0.0" };
+	const s = source([o, e, incompatible, other, manager, l], new Map([[assetPath(e), latest.bytes], [assetPath(o), old.bytes], [assetPath(l), live.bytes]]));
+	try {
+		for (const args of [["--profile", "headless", "-p", "hello world"], []]) {
+			const i = newInstall(); const before = s.requests.length;
+			const result = await bootstrap(i, s.origin, args, { FAKE_STDIN: "1", FAKE_EXIT: "37" }, "application stdin\n");
+			expect(result.status).toBe(37); expect(result.stdout).toBe("");
+			expect(result.stderr).not.toMatch(/\? |\[Y\/n|download\?/i);
+			expect(argvOf(i)).toEqual(args); expect(readFileSync(join(i.out, "1.cwd"), "utf8")).toBe(i.home);
+			expect(readFileSync(join(i.out, "1.stdin"), "utf8")).toBe("application stdin\n");
+			expect(launchOf(i).runtime).toBe(ID); expect(installed(i)).toBe(true); expect(installed(i, OLD)).toBe(false);
+			expect(s.requests.slice(before).map((r) => r.path)).toEqual(["/runtime-index.json", assetPath(e)]);
+			expect(existsSync(join(i.data, "state/completion.json"))).toBe(false);
+		}
+	} finally { await s.stop(); }
+}, 120_000);
+
+test.skipIf(!hasZig)("FB-EMPTY: automatic download failure activates nothing and never starts app", async () => {
+	const i = newInstall(), a = archive(), e = entry(ID, a.bytes); e.assets[TARGET].sha256 = "a".repeat(64);
+	const s = source([e], new Map([[assetPath(e), a.bytes]]));
+	try {
+		const result = await bootstrap(i, s.origin);
+		expect(result.status).toBe(1); expect(result.stderr).toContain("HashMismatch"); expect(result.stdout).toBe("");
+		expect(installed(i)).toBe(false); expect(started(i)).toBe(false); expect(existsSync(join(i.data, "snapshots", `${ID}@1`))).toBe(false);
+	} finally { await s.stop(); }
+});
+
+test.skipIf(!hasZig)("FB-EMPTY: explicit/pinned missing versions and damaged runtimes never auto-install", async () => {
+	const a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
+	try {
+		for (const fixture of ["explicit", "snapshot", "pinned", "broken"] as const) {
+			const i = newInstall(); let args: string[] = [];
+			if (fixture === "explicit") args = ["--use", ID];
+			if (fixture === "snapshot") args = ["--snapshot", `${ID}@1`];
+			if (fixture === "pinned") { mkdirSync(join(i.data, "state"), { recursive: true }); writeFileSync(join(i.data, ".dsh-bin-data.json"), JSON.stringify({ kind: "dsh-manager-data", schema: 1 })); writeFileSync(join(i.data, "state/selection.json"), JSON.stringify({ schema: 1, use: ID })); }
+			if (fixture === "broken") addRuntime(i.data, ID, { entry: false });
+			expect((await bootstrap(i, s.origin, args)).status).toBe(1); expect(started(i)).toBe(false);
+		}
+		expect(s.requests).toEqual([]);
+	} finally { await s.stop(); }
+});
+
+test.skipIf(!hasZig)("FB-EMPTY: simultaneous empty launches activate one runtime under the existing install lock", async () => {
+	const i = newInstall(), a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
+	// Ownership initialization races belong to 5.4; here exercise the install/activation mutex.
+	mkdirSync(i.data); writeFileSync(join(i.data, ".dsh-bin-data.json"), JSON.stringify({ kind: "dsh-manager-data", schema: 1 }));
+	try {
+		const results = await Promise.all([bootstrap(i, s.origin), bootstrap(i, s.origin)]);
+		if (results.some((r) => r.status !== 0)) console.error(results);
+		expect(results.map((r) => r.status)).toEqual([0, 0]);
+		expect(s.requests.map((r) => r.path)).toEqual(["/runtime-index.json", assetPath(e)]);
+		expect(readdirSync(join(i.data, "bundles"))).toEqual([ID]);
+	} finally { await s.stop(); }
+});
+
+test.skipIf(!hasZig)("FB-EMPTY: recorded live channel and latest selection survive automatic restore", async () => {
+	const i = newInstall(), a = archive(), live = archive(LIVE), e = entry(ID, a.bytes), l = entry(LIVE, live.bytes);
+	const s = source([e, l], new Map([[assetPath(e), a.bytes], [assetPath(l), live.bytes]]));
+	mkdirSync(join(i.data, "state"), { recursive: true });
+	writeFileSync(join(i.data, ".dsh-bin-data.json"), JSON.stringify({ kind: "dsh-manager-data", schema: 1 }));
+	writeFileSync(join(i.data, "state/channel"), "live\n");
+	const pin = '{"schema":1,"use":"latest"}'; writeFileSync(join(i.data, "state/selection.json"), pin);
+	try {
+		expect((await bootstrap(i, s.origin)).status).toBe(0); expect(launchOf(i).runtime).toBe(LIVE);
+		expect(readFileSync(join(i.data, "state/channel"), "utf8")).toBe("live\n"); expect(selection(i)).toBe(pin);
+		expect(s.requests.map((r) => r.path)).toEqual(["/runtime-index.json", assetPath(l)]);
+	} finally { await s.stop(); }
+});
+
+const ptyReason = process.platform === "win32" ? "real Windows console/ConPTY harness not available" : !Bun.which("python3") || !Bun.which("bash") ? "real Python PTY/Bash unavailable" : !hasZig ? "Zig unavailable" : "";
+test.skipIf(!!ptyReason)(`FB-EMPTY / FB-ORDER: PTY downloads only after completion consent then launches original argv${ptyReason ? ` — SKIP: ${ptyReason}` : ""}`, async () => {
+	const i = newInstall(), a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
+	const { spawn } = await import("node:child_process");
+	const python = Bun.which("python3")!, bash = Bun.which("bash")!;
+	const proc = spawn(python, [join(import.meta.dir, "terminal-driver.py"), bash, "--noprofile", "--norc", "-c", '"$@"; code=$?; exit "$code"', "pty-bash", i.exe, "--profile", "headless", "-p", "hello world"], { env: { ...baseEnv(i), SHELL: bash, DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: s.origin, FAKE_EXIT: "23" }, cwd: i.home, stdio: "pipe" });
+	let output = ""; proc.stdout.on("data", (b) => { output += b.toString(); }); proc.stderr.on("data", (b) => { output += b.toString(); });
+	const done = new Promise<number | null>((resolve, reject) => { proc.on("exit", resolve); proc.on("error", reject); });
+	const timer = setTimeout(() => proc.kill("SIGTERM"), 15_000);
+	try {
+		for (let n = 0; n < 300 && !output.includes("[Y/n/o]") && proc.exitCode === null; n++) await Bun.sleep(20);
+		expect(output).toContain("Register bash completion at "); expect(s.requests).toEqual([]); expect(started(i)).toBe(false);
+		proc.stdin.write("n\n"); expect(await done).toBe(23);
+		expect(s.requests.map((r) => r.path)).toEqual(["/runtime-index.json", assetPath(e)]);
+		expect(argvOf(i)).toEqual(["--profile", "headless", "-p", "hello world"]);
+		expect(output).not.toMatch(/download\?|install\?/i); expect(launchOf(i).runtime).toBe(ID);
+	} finally { clearTimeout(timer); if (proc.exitCode === null) { proc.kill("SIGTERM"); await done; } await s.stop(); }
+}, 120_000);

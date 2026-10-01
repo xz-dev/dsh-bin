@@ -43,7 +43,7 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
         return 1;
     };
     defer mutex.release();
-    perform(ctx, query.?, channel orelse state.channel(ctx), force) catch |err| {
+    perform(ctx, query.?, channel orelse state.channel(ctx), force, false) catch |err| {
         util.warn("runtime install failed: {s}; no selection was changed", .{@errorName(err)});
         return 1;
     };
@@ -55,7 +55,22 @@ fn usage() u8 {
     return 1;
 }
 
-fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool) !void {
+/// Ordinary empty launch: serialize with explicit installs, then recheck before activating anything.
+/// No stdout output: it belongs to the runtime that will start after this returns.
+pub fn bootstrap(ctx: *Ctx) void {
+    var state_dir = ctx.ensureDir(&.{"state"});
+    state_dir.close();
+    const mutex = lock.acquire(ctx.path(&.{ "state", "manager.lock" }), .exclusive, true, null) catch |err|
+        util.fatal("cannot acquire automatic install lock: {s}", .{@errorName(err)});
+    defer mutex.release();
+    if (runtimes.list(ctx).len != 0) return;
+    const channel = state.channel(ctx);
+    util.warn("no runtime installed; installing latest compatible {s} runtime", .{channel});
+    perform(ctx, "latest", channel, false, true) catch |err|
+        util.fatal("automatic runtime install failed: {s}; retry with `dsh manager install latest --channel {s}`", .{ @errorName(err), channel });
+}
+
+fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, automatic: bool) !void {
     const host = try target.host();
     const endpoints = http.endpoints(ctx.a, &ctx.env);
     defer endpoints.deinit(ctx.a);
@@ -90,7 +105,7 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool) !void
     if (exists and !force) {
         _ = validate(ctx, dest, e, host) catch return error.IncompleteRuntimeUseForce;
         _ = snapshot.prepare(ctx, e.id, e.bundle().meta.?);
-        util.print("dsh {s} is already installed.\n", .{e.id});
+        if (automatic) util.warn("dsh {s} is already installed", .{e.id}) else util.print("dsh {s} is already installed.\n", .{e.id});
         return;
     }
     var cache = ctx.ensureDir(&.{ "cache", "downloads" });
@@ -117,7 +132,7 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool) !void
     try activate(ctx, staging, dest, backup, exists);
     crashPoint(ctx, "after-activation");
     _ = snapshot.prepare(ctx, e.id, meta);
-    util.print("Installed dsh {s} ({s}); selection unchanged.\n", .{ e.id, host });
+    if (automatic) util.warn("installed dsh {s} ({s}); starting original command", .{ e.id, host }) else util.print("Installed dsh {s} ({s}); selection unchanged.\n", .{ e.id, host });
 }
 
 fn recognized(ctx: *const Ctx, path: []const u8, id: []const u8) !void {

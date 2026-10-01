@@ -16,7 +16,7 @@ const state = (i: Install) => JSON.parse(readFileSync(statePath(i), "utf8"));
 
 function terminal(i: Install, shell: "bash" | "fish" | "unknown" = "bash", env: Record<string, string> = {}, args: string[] = []) {
 	const command = shell === "bash" ? [bash!, "--noprofile", "--norc", "-c", '"$@"; code=$?; exit "$code"', "pty-bash", i.exe, ...args] : shell === "fish" ? [fish!, "--no-config", "-c", '$argv; exit $status', i.exe, ...args] : [python!, "-c", "import subprocess,sys; sys.exit(subprocess.call(sys.argv[1:]))", i.exe, ...args];
-	const p = spawn(python!, [join(import.meta.dir, "terminal-driver.py"), ...command], { env: { ...baseEnv(i), SHELL: shell === "unknown" ? "/unrecognized" : shell === "fish" ? fish! : bash!, ...env }, cwd: i.home, stdio: "pipe" });
+	const p = spawn(python!, [join(import.meta.dir, "terminal-driver.py"), ...command], { env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: "not-a-url", SHELL: shell === "unknown" ? "/unrecognized" : shell === "fish" ? fish! : bash!, ...env }, cwd: i.home, stdio: "pipe" });
 	let output = "";
 	p.stdout.on("data", (b) => { output += b.toString(); });
 	p.stderr.on("data", (b) => { output += b.toString(); });
@@ -40,7 +40,7 @@ for (const fixture of ["empty", "installed", "broken"] as const) {
 		const i = newInstall();
 		if (fixture !== "empty") addRuntime(i.data, "1.0.0", { entry: fixture !== "broken" });
 		let requests = 0;
-		const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { requests++; return new Response("unexpected", { status: 500 }); } });
+		const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { requests++; return new Response("unexpected", { status: 404 }); } });
 		try {
 			const t = terminal(i, "bash", { DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: server.url.origin, ...(process.platform === "linux" ? { SHELL: fish ?? "/bin/fish" } : {}) });
 			await t.wait("Register bash completion at ");
@@ -50,9 +50,9 @@ for (const fixture of ["empty", "installed", "broken"] as const) {
 			t.answer("\n");
 			expect(await t.done).toBe(fixture === "installed" ? 0 : 1);
 			expect(state(i).shells.bash.result).toBe("registered"); expect(readFileSync(join(i.home, ".bashrc"), "utf8")).toContain("dsh-manager completion");
-			if (fixture === "empty") expect(t.output).toContain("no release-channel");
+			if (fixture === "empty") expect(t.output).toContain("automatic runtime install failed");
 			if (fixture === "broken") expect(t.output).toContain("is incomplete");
-			expect(started(i)).toBe(fixture === "installed"); expect(requests).toBe(0);
+			expect(started(i)).toBe(fixture === "installed"); expect(requests).toBe(fixture === "empty" ? 1 : 0);
 			const again = terminal(i); expect(await again.done).toBe(fixture === "installed" ? 0 : 1); expect(again.output).not.toContain("Register bash");
 		} finally { server.stop(true); }
 	}, 120_000);

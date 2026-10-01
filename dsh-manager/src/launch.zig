@@ -53,13 +53,19 @@ fn reportResolution(f: select.Failure) noreturn {
 /// Decide which runtime runs the arguments `args` (leading options included).
 pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
     const opts = parseLeading(ctx.a, args);
-    const bundles = runtimes.list(ctx);
+    var bundles = runtimes.list(ctx);
     const sel = state.readSelection(ctx);
     const selection = switch (sel) {
         .none => null,
         .ok => |s| s,
         .invalid => |why| util.fatal("cannot use the selection {s} ({s}); run `dsh manager select --use latest` to reset it", .{ state.selectionPath(ctx), why }),
     };
+    if (bundles.len == 0 and opts.use == null and opts.snapshot == null and
+        (selection == null or std.mem.eql(u8, selection.?.use, "latest")))
+    {
+        @import("install.zig").bootstrap(ctx);
+        bundles = runtimes.list(ctx);
+    }
     const resolved = switch (select.resolve(.{
         .opts = opts,
         .bundles = bundles,

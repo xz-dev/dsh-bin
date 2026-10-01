@@ -35,9 +35,9 @@ test.skipIf(!hasZig)("PS-HOME: first stateful start initializes only adjacent ow
 	i.dir = i.home;
 	i.data = join(i.home, "dsh-bin");
 	const cwd = tempDir("dsh-other-cwd-");
-	const result = run(i, [], { cwd });
-	expect(result.status).toBe(1); // Installing the first runtime belongs to section 3/5.
-	expect(result.stderr).toContain("no release-channel dsh runtime");
+	const result = run(i, [], { cwd, env: { DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: "not-a-url" } });
+	expect(result.status).toBe(1); // No controlled archive in this storage-only fixture.
+	expect(result.stderr).toContain("automatic runtime install failed");
 	expect(JSON.parse(readFileSync(join(i.data, DATA_MARKER), "utf8"))).toEqual(OWNED);
 	expect(tree(i.home).filter((p) => !p.startsWith("dsh-bin/"))).toEqual([`dsh${EXE}`, "dsh-bin"].sort());
 	expect(tree(cwd)).toEqual([]);
@@ -49,7 +49,7 @@ test.skipIf(!hasZig || WIN)("PS-SYMLINK: first write follows real executable, no
 	const link = join(links, "dsh");
 	symlinkSync(i.exe, link);
 	const cwd = tempDir("dsh-workspace-");
-	run(i, [], { exe: link, cwd });
+	run(i, [], { exe: link, cwd, env: { DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: "not-a-url" } });
 	expect(JSON.parse(readFileSync(join(i.data, DATA_MARKER), "utf8"))).toEqual(OWNED);
 	expect(tree(links)).toEqual(["dsh"]);
 	expect(tree(cwd)).toEqual([]);
@@ -122,7 +122,7 @@ test.skipIf(!hasZig)("PS-MANAGED: portage writes absolute XDG data or HOME fallb
 		const before = tree(i.dir);
 		const restore = denyWrites(i.dir);
 		try {
-			run(i, [], { env });
+			run(i, [], { env: { ...env, DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: "not-a-url" } });
 			expect(JSON.parse(readFileSync(join(data, DATA_MARKER), "utf8"))).toEqual(OWNED);
 			expect(tree(i.dir)).toEqual(before);
 			expect(existsSync(join(i.dir, "dsh-bin"))).toBe(false);
@@ -291,9 +291,9 @@ test.skipIf(!hasZig)("PS-MOVE / DL-NO-MIGRATION: stopped binary+data relocate of
 	renameSync(i.exe, fresh.exe);
 	mkdirSync(join(fresh.home, ".dsh"));
 	writeFileSync(join(fresh.home, ".dsh/legacy-data"), "do not adopt");
-	const result = run(fresh, []);
+	const result = run(fresh, [], { env: { DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: "not-a-url" } });
 	expect(result.status).toBe(1);
-	expect(result.stderr).toContain("no release-channel dsh runtime");
+	expect(result.stderr).toContain("automatic runtime install failed");
 	expect(started(fresh)).toBe(false);
 	expect(JSON.parse(readFileSync(join(fresh.data, DATA_MARKER), "utf8"))).toEqual(OWNED);
 	expect(existsSync(join(fresh.data, "bundles"))).toBe(false);
