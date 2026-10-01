@@ -104,6 +104,8 @@ dsh-bin/
 
 非交互不消费 stdin、不记录为拒绝，空安装仍自动下载；之后第一次交互仍能询问。注册失败记录为失败而非已启用，给显式修复入口但不阻断安装。一次完成的选择不在每次启动重复询问。用户输入是 shell 选择与注册同意，不是再次询问是否下载。
 
+5.1 经用户确认的实现选择：仅 stdin 与 stderr 都为 TTY 时询问；Linux/Windows 最多向上查三个祖先进程识别 bash/zsh/fish/pwsh/powershell（Windows 去掉 .exe），POSIX 可用 `$SHELL` 作待确认提示，macOS 本轮不做祖先查询。识别到 shell 时展示原有 resolver 的目标并询问 `[Y/n/o]`（Enter/y/yes 同意，n/no 拒绝，o 打开列出平台可用 shell 与目标的菜单）；未识别时直接菜单，选 shell 即同意已展示目标，空输入/skip 拒绝。`state/completion.json` 为 `{schema:1,shells:{<shell>:{result:registered|declined|failed}},undetected?:{result:...}}`，每个 shell 只问一次；未识别菜单还记录 undetected；已识别 X 改选 Y 时保存 Y 的结果并记 X 为 declined，skip 只记 X declined。EOF 不存选择；无效状态报错，不悄悄覆盖；原子写入，不在等待用户时持锁；失败给显式补全安装重试命令，继续原运行包检查。
+
 旧限制不能自动继承。用户已确认零运行包是正常状态，因此删除“最后一个运行包”数量限制；保留正在使用、固定选择和批量预检保护。解除固定选择后可以卸载全部运行包；只删除 runtime 目录，不清理快照、home 或管理状态。重新安装原版本复用有效快照与数据；下一次无固定选择的普通启动也可以自举。
 
 ### D5. 原生管理操作与失败边界

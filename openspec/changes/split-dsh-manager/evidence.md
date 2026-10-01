@@ -288,3 +288,12 @@
   - checksum 用来发现误改，不能防有人故意重算。
   - 运行时由其他模块注册的 completer 用公开 API 检测不到。
   - 本机孤立构建的 zsh 曾出现 sigsuspend 挂起，zsh 的证据以 CI 为准。
+
+## 5.1 FB-ORDER / FB-DECLINE / FB-REG-FAIL（首次交互补全选择）
+
+- **范围与批准**：只做 5.1，`launch.run` 的 ensureData 后、plan 前处理补全；没有 5.2 自动下载。用户通过 supervisor 批准识别后确认、按 shell 问一次、`[Y/n/o]` 默认同意及目标菜单、state/completion.json 结果格式；EOF 不写、无效状态明确拒绝、失败给重试命令后继续运行包检查。supervisor 后续确认：已识别 X 经 o 改选 Y 时记录 X declined、Y 注册结果，skip 记录 X declined。见 design D4。
+- **真实终端 red**：`TMPDIR=/var/tmp/dsh-51 timeout 150 bun test ./dsh-manager/test/first-run.test.ts -t 'real terminal empty'`：**0 pass / 1 fail**，期望 `Register bash completion at`，旧程序立即输出 `no release-channel dsh runtime is installed`，没有等待同意；`/var/tmp/dsh-51/red.log`。最初 driver 名 pty.py 遮蔽 Python 标准库而报 AttributeError，改名 terminal-driver.py 后得到上述行为 red；不把 harness 错误算 red。
+- **green**：`cd dsh-manager && TMPDIR=/var/tmp/dsh-51 timeout 180 bun test ./test/first-run.test.ts`：**8 pass / 0 fail，104 断言**。Python stdlib pty.openpty/setsid/TIOCSCTTY 提供真实终端，真实 Bash 与 Fish 保留为管理器父进程；测试驱动读到询问后才写答案。空/已有/损坏 runtime 都先询问，等待时 HTTP recorder **0 请求**、应用未启动、快照不存在、choice state 不存在；接受后才到启动或原空/损坏诊断。拒绝保留原 profile、注册失败用只读 HOME 实测 AccessDenied 后写 failed、给重试命令并继续启动；三类结果再次同 shell 都不询问，换真实 Fish 再问。未识别菜单列出目标、菜单接受/skip 不重问、Bash→o→Fish 后 Bash 不重问、EOF 不记选择及下次重问、损坏 state 拒绝均实际通过。
+- **必要的 5.3 最小部分**：TTY 门禁，非 TTY 不读取答案；现有 fake runtime 的 stdin 原样通过，未记录为拒绝。未实现 5.3 空安装非交互自动下载；现有 manager/help/query 分流不变。
+- **独立构建**：`zig build test --summary all` **44/44**；x86_64-windows-gnu 与 aarch64-macos 交叉编译成功。交叉编译不是实际平台运行。Windows real-console/ConPTY harness 未提供，first-run.test.ts 每条测试名称明确说明 skip 原因；macOS 采用 `$SHELL` 提示后确认（按批准不查祖先），真实 macOS PTY 运行待父会话 CI。
+- **状态**：5.1 暂不勾选，等待父会话 CI 的 macOS 真终端结果；Windows 真实控制台未验收不冒充通过。HTTP 场景本片只证明零请求与询问顺序，不宣称接受/拒绝后自动下载（5.2 后补）。
