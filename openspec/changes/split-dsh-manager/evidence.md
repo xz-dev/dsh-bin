@@ -580,3 +580,18 @@
 - 完整本机验证（**f2f6295**）：`zig build test --summary all` → **44/44**；`bun test ./test` → **215 pass / 18 skip / 0 fail / 2802 断言**，233 tests / 17 files，213.22s（`/var/tmp/dsh-64w/{units,full}.log`）。18 skip 原因不变：本机缺 zsh、Windows/PowerShell 5.1 专属场景、未配置真实 HTTPS proxy；真实应用与 office 测试本机实际执行通过。
 - `zig fmt --check src test/fake-native.zig`、Windows x64 `zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-64w/windows`、macOS arm64 `zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-64w/macos` 均 exit 0。首次 `git diff --check` 发现本证据文件 EOF 多一个空行，删除后复跑通过。
 - **尚未声称 Windows 原生 green**：本机只能 cross-build。Windows 开放后代 handle 阻止 rename、释放自身 guard 后闲置目录能退役、post-preflight 失败报告、未加锁 guard-open 场景的 Windows 分支，都待父会话原生 CI 证明。未 push、未运行 gh、未新建分支、未勾选任务；另两个 change 未触碰。
+
+### 6.4 父会话验收
+
+- 实现：a014b40、980403c、4389160、5ff2713、85c3b36；Windows 修复：f2f6295、8270dc7。
+- 父会话裁定的设计决定：
+  - 删除或替换期间一直持有 exclusive claim。
+  - 运行包缺 guard 时拒绝启动，但仍可通过 `--force` 或 uninstall 修复。
+  - addon 缺 guard 时降级启动，stderr 提示一条。
+  - 删除改为「重命名退役，再删除」。删除失败的残留会被点名报告，留给 6.6 的 clean 处理。
+  - 获锁后核对 guard 身份，代际已变则返回 Busy。
+- CI 36879404161（85c3b36）：Windows 23 项失败。原因是重命名目录时，目录内的 claim 句柄还开着，Windows 拒绝这类重命名。f2f6295 改为 Windows 上先释放 claim 再重命名；若此时有会话打开了 guard，重命名会被拒绝，这本身就起到占用保护的作用。POSIX 顺序不变。
+- **CI 36883854618（8270dc7）三平台全绿**：ubuntu 214 pass、macOS 213 pass、windows 184 pass，均 0 fail。在 Windows 上实际执行（非 skip）的场景：MC-IN-USE 全部（busy 启动、guard open→lock 竞争、预检后删除失败、force 前和下载期间的复查、批量删除）、RB-RESTART 两项、ancestor-swap 三项、MC-REINSTALL、DL-CORRUPT。Windows 行为由 CI 实测证明；只有本机 cross-build 不算证据。
+- 独立复审（run 587dc39f）：**OK with notes**，无 P0/P1/P2。复审员独立复跑：Zig 44/44；manager 七个测试文件 108 pass；runtime 重启/持锁测试 9 pass；另做 probe 确认批量卸载被固定选择拦下时零删除。
+- 残余风险：Windows 上「manager 被强杀后的完整启动链」没有单独复现；`.remove-*` 和 `.previous-*` 残留由 6.6 清理。
+- 勾选 **6.4**。
