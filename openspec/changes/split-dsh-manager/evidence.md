@@ -779,3 +779,18 @@
   - `zig fmt --check src test build.zig`、`git diff --check` 通过。
   - `zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-72/windows --summary all`、`zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-72/macos --summary all` 各 **4/4**。cross-build 不是原生验收；macOS 必须由原生 CI 执行，Windows 6 项 POSIX 新测试明确 skip（helper 留给 7.3），既有 7.1 测试在 Windows 不 skip。
 - 残余边界：继承 7.1 浅层原生头/可信索引真实性约束；same-user 最后 inode/hash 检查到 rename 间仍有 syscall 级竞争窗口，保留 `ponytail:` 注释，不新增锁或恢复。此次证明进程 SIGKILL 边界，不宣称断电 durability 或提供沙箱。完整 Bun、三平台 CI 与独立复审仍由父会话完成，checkbox 不动。
+
+### 7.2 独立复审
+
+- 独立复审 run `33b31f9b`：**BLOCK**，三项 P1：可信候选哈希从可变 staging 建立；索引等待后重新打开安装路径可能误更新另一安装；候选硬链接会让 metadata 修改影响外部文件。
+- 父会话批准修复边界：从已校验 ZIP 的解压字节建立二进制哈希；网络前保留并核对真实安装目录/入口句柄，后续候选与替换只用这些句柄；修改候选 metadata 前必须 `st_nlink == 1`。不加等待/重试/恢复机制。
+- **Red**（2026-10-02，`10b40eb` 产品代码，新增三项黑盒）：`TMPDIR=/var/tmp/dsh-72-fix-runs/tmp bun test ./test/self-update.test.ts -t 'MC-SELF-FAIL review: (extracted source|index-time ancestor|candidate hardlinks)'` → **0 pass / 3 fail / 11 断言**。三项均因应拒绝却返回 0 失败，日志 `/var/tmp/dsh-72-fix-runs/red.log`。
+- **P1-1 green**：新增 ZIP 解压摘要入口；manager 路径对已打开的归档在解压前后核对索引的 size/sha256，并在读取解压流时计算指定 `dsh(.exe)` 的 SHA-256。摘要仅存内存；每次更新仍从重新核验的缓存 ZIP 解压，不信任先前候选。staging 读取、最终发布文件和替换前均与该摘要比较。`bun test ./test/self-update.test.ts -t 'extracted source'` → **1 pass / 0 fail / 9 断言**，日志 `green-1.log`。提交 `f4fe5b4`。
+- **P1-2 green**：第一项索引请求之前打开真实安装父目录和入口；Linux 对比 `/proc/self/exe` 的 dev/ino，macOS 对比 context 初始化时记录的真实入口 dev/ino。候选 staging、检查、metadata 和替换沿用保留句柄；路径身份检查只决定拒绝，不重新选择目标。索引返回后、创建数据前以及替换前检查父目录身份，祖先被换则清楚拒绝。`bun test ./test/self-update.test.ts -t 'index-time ancestor'` → **1 pass / 0 fail / 8 断言**，日志 `green-2.log`。
+- **P1-3 green**：对已校验候选句柄 `fstat`，`nlink != 1` 时返回 `ManagerCandidateHardlinked`，先于 owner/mode 写操作。`bun test ./test/self-update.test.ts -t 'candidate hardlinks'` → **1 pass / 0 fail / 11 断言**，日志 `green-3.log`。
+- **定向最终验证**：`zig build test --summary all` → **45/45**；`bun test ./test/self-update.test.ts ./test/clean.test.ts` → **32 pass / 0 fail / 612 断言**；`zig fmt --check src test build.zig`、`zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-72-fix-runs/windows`、`zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-72-fix-runs/macos`、`git diff --check` 全通过。TMPDIR 始终 `/var/tmp/dsh-72-fix-runs/tmp`。按父会话要求未运行完整 Bun suite、未 push、未发 CI、未改 task 勾选。
+- **复跑原 reviewer probe**：将 `/var/tmp/dsh-review-72-runs/{broken-source,safety,hardlink-candidate}.ts` import 改为当前 repo，保存至 `/var/tmp/dsh-72-fix-runs/` 后运行。
+  - `broken-source`：拒绝（exit 1，`ManagerFileChanged`），旧入口字节不变；随后 `manager --version` exit 0、仍是旧版本，无 SIGSEGV。
+  - `safety` 两项：均拒绝（exit 1）；原入口仍旧版本，另一安装未替换、credential 仍 `KEEP`；被改动 staging 未激活。
+  - `hardlink-candidate`：拒绝（exit 1，`ManagerCandidateHardlinked`），外部权限 **0700 → 0700**，未与已安装入口共享 inode。
+- **残余风险/门禁**：macOS/Windows 本机仅 cross-build，原生 CI 和独立复审仍由父会话执行。既有同用户最终 identity-check→rename/unlink 窗口、同用户可改候选以及不承诺 power-loss durability 的接受边界不变；本次没有加重试/等待/锁。ZIP 摘要取自解压流，并在同一打开归档句柄上前后完整核验；不为同用户在两次核验之间恶意原地改写又还原归档增加文件隔离机制。
