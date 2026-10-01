@@ -11,7 +11,7 @@ const NEXT = "9.8.8", A = "1.0.0-b1.1.gdeadbeef", reason = " — SKIP: Windows i
 const native = test.skipIf(!hasZig || !WIN);
 const hash = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 let next: string;
-beforeAll(() => { if (hasZig && WIN) next = build(NEXT).manager; }, 300_000);
+beforeAll(() => { if (hasZig) { build(); if (WIN) next = build(NEXT).manager; } }, 300_000);
 afterAll(cleanup);
 function fixture() {
     const i = newInstall(); addRuntime(i.data, A);
@@ -119,9 +119,23 @@ native(`MC-SELF-FAIL Windows: candidate denies tampering through handoff; anothe
     } finally { mapped?.stdin?.end("x"); s.stop(); await finish(u); }
 }, 60_000);
 
-native(`MC-CLEAN Windows: helper exact valid files reclaim; helper-named user files and junctions survive${WIN ? "" : reason}`, () => {
+test.skipIf(!hasZig)("MC-CLEAN: helper exact valid files reclaim; helper-named user files and junctions survive", () => {
     const i = fixture(), helper = join(i.dir, ".dsh-manager-helper-ab12.exe"), unknown = join(i.dir, ".dsh-manager-helper-cd34.exe"), linked = join(i.dir, ".dsh-manager-helper-ef56.exe");
     cpSync(build().manager, helper); writeFileSync(unknown, "USER FILE");
-    const external = join(i.home, "external"); mkdirSync(external); writeFileSync(join(external, "credential"), "KEEP"); symlinkSync(external, linked, "junction");
+    const external = join(i.home, "external"); mkdirSync(external); writeFileSync(join(external, "credential"), "KEEP"); symlinkSync(external, linked, WIN ? "junction" : "dir");
     expect(run(i, ["manager", "clean"]).status).toBe(0); expect(existsSync(helper)).toBe(false); expect(readFileSync(unknown, "utf8")).toBe("USER FILE"); expect(readFileSync(join(linked, "credential"), "utf8")).toBe("KEEP");
-});
+}, 60_000);
+
+native(`MC-SELF-FAIL Windows: tampered candidate before handle handoff refuses without installing or claiming success${WIN ? "" : reason}`, async () => {
+    const i = fixture(), old = hash(readFileSync(i.exe)), before = protectedState(i), s = source();
+    const p = spawn(i.exe, ["manager", "self-update"], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: s.origin, DSH_MANAGER_TEST_PAUSE: "self-update-before-handoff" }, stdio: "pipe" });
+    let stderr = "", stdout = ""; p.stderr!.on("data", b => stderr += b); p.stdout!.on("data", b => stdout += b);
+    const done = new Promise<number | null>((resolve, reject) => { p.on("close", resolve); p.on("error", reject); });
+    const timer = setTimeout(() => p.kill("SIGKILL"), 25_000);
+    try {
+        await until(() => stderr.includes("test pause: self-update-before-handoff"), "pre-handoff barrier");
+        writeFileSync(join(i.dir, `.dsh-manager-candidate-${NEXT}`), "unverified bytes"); p.stdin!.end("go");
+        expect(await done).toBe(1); expect(stdout).not.toContain("handed off"); expect(stdout).not.toContain("updated");
+        expect(hash(readFileSync(i.exe))).toBe(old); expect(protectedState(i)).toEqual(before); expect(existsSync(resultPath(i))).toBe(false);
+    } finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await done; } s.stop(); }
+}, 60_000);

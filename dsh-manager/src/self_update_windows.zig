@@ -80,6 +80,7 @@ pub fn openFile(dir: std.fs.Dir, name: []const u8, deleting: bool) !std.fs.File 
 }
 
 pub fn start(ctx: *Ctx, dir: std.fs.Dir, installed: std.fs.File, name: []const u8, version: []const u8, expected: [32]u8, mutex: std.fs.File.Handle, tmp: std.fs.Dir) !void {
+    binary.testPause(ctx, "self-update-before-handoff", name);
     const candidate = try openFile(dir, name, true);
     defer candidate.close();
     try binary.validateFile(ctx.a, candidate, version);
@@ -100,7 +101,7 @@ pub fn start(ctx: *Ctx, dir: std.fs.Dir, installed: std.fs.File, name: []const u
     try copy.sync();
     copy.close();
     opened = false;
-    const helper = try openFile(dir, helper_name, false);
+    const helper = try openFile(dir, helper_name, true);
     defer helper.close();
     try binary.validateFile(ctx.a, helper, options.version);
     if (!std.mem.eql(u8, &(try binary.digest(helper)), &original_hash)) return error.ManagerFileChanged;
@@ -186,6 +187,10 @@ pub fn run(a: std.mem.Allocator, args: []const []const u8) u8 {
     const r = std.json.parseFromSliceLeaky(Request, a, json, .{}) catch return 1;
     const tmp = std.fs.Dir{ .fd = handle(r.tmp) };
     check(tmp.fd, r.tmp_id, true) catch return 1;
+    check(handle(r.dir), r.dir_id, true) catch return 1;
+    check(handle(r.entry), r.entry_id, false) catch return 1;
+    check(handle(r.candidate), r.candidate_id, false) catch return 1;
+    check(handle(r.mutex), r.mutex_id, false) catch return 1;
     const env = std.process.getEnvMap(a) catch return 1;
     execute(a, r, env) catch |err| {
         writeResult(a, tmp, tryFormat(a, "failed: {s}; installed entry remains complete", .{@errorName(err)})) catch {};
@@ -226,6 +231,9 @@ fn execute(a: std.mem.Allocator, r: Request, env: std.process.EnvMap) !void {
     if (!std.mem.eql(u8, &(try binary.digest(candidate)), &hash)) return error.ManagerFileChanged;
     try check(dir.fd, r.dir_id, true);
     if (!binary.sameFile(dir, std.fs.path.basename(r.entry_path), installed) or !binary.sameFile(dir, r.candidate_name, candidate)) return error.ManagerFileChanged;
+    // Classic FileRenameInformation cannot retire a target with an outstanding open handle.
+    // Parent has exited; release only our checked target handle immediately before the single rename.
+    installed.close();
     try renameHandle(a, candidate.handle, dir, std.fs.path.basename(r.entry_path));
     if (!binary.sameFile(dir, std.fs.path.basename(r.entry_path), candidate) or !std.mem.eql(u8, &(try binary.digest(candidate)), &hash)) return error.ManagerFileChanged;
     pause(env, "helper-after-move", win.GetCurrentProcessId());
@@ -246,11 +254,14 @@ fn renameHandle(a: std.mem.Allocator, file: win.HANDLE, dir: std.fs.Dir, name: [
 fn writeResult(a: std.mem.Allocator, tmp: std.fs.Dir, message: []const u8) !void {
     const name = try std.fmt.allocPrint(a, ".self-update-result-{x}.tmp", .{std.crypto.random.int(u64)});
     const file = try tmp.createFile(name, .{ .exclusive = true });
+    defer tmp.deleteFile(name) catch {};
+    var open = true;
+    defer if (open) file.close();
     try file.writeAll(message);
     try file.writeAll("\n");
     try file.sync();
     file.close();
-    defer tmp.deleteFile(name) catch {};
+    open = false;
     // No-replace prevents overwriting any preexisting result/user file.
     const src = try win.sliceToPrefixedFileW(tmp.fd, name);
     const dst = try win.sliceToPrefixedFileW(tmp.fd, result_name);
@@ -266,7 +277,12 @@ pub fn consume(ctx: *const Ctx) void {
     const file = binary.openRegular(tmp, result_name) catch return;
     defer file.close();
     const bytes = file.readToEndAlloc(ctx.a, 4096) catch return;
-    if (!std.mem.startsWith(u8, bytes, "updated ") and !std.mem.startsWith(u8, bytes, "failed: ")) return;
+    if (bytes.len > 2048 or !std.mem.endsWith(u8, bytes, "\n") or std.mem.indexOfScalar(u8, bytes[0 .. bytes.len - 1], '\n') != null) return;
+    if (std.mem.startsWith(u8, bytes, "updated ")) {
+        const arrow = std.mem.indexOf(u8, bytes, " -> ") orelse return;
+        _ = std.SemanticVersion.parse(bytes[8..arrow]) catch return;
+        _ = std.SemanticVersion.parse(bytes[arrow + 4 .. bytes.len - 1]) catch return;
+    } else if (!std.mem.startsWith(u8, bytes, "failed: ")) return;
     if (!binary.sameFile(tmp, result_name, file)) return;
     tmp.deleteFile(result_name) catch return;
     util.warn("self-update result: {s}", .{std.mem.trim(u8, bytes, "\r\n")});
