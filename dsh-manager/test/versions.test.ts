@@ -187,6 +187,28 @@ test.skipIf(!hasZig)("MC-LAST / MC-REINSTALL: unpin then uninstall all, preserve
 	} finally { s.stop(); }
 });
 
+test.skipIf(!hasZig)("FB-MISSING review: missing stored snapshot fails before bootstrap without requests, snapshot creation or app execution", async () => {
+	const i = newInstall(), s = source();
+	try {
+		s.entries.splice(s.entries.findIndex(e => e.id === B), 1); // Restoring A would recreate its missing snapshot.
+		expect((await manager(i, s, ["install", A])).status).toBe(0);
+		expect(run(i, ["manager", "select", "--use", "latest", "--snapshot", `${A}@1`]).status).toBe(0);
+		expect(run(i, ["manager", "uninstall", A]).status).toBe(0);
+		rmSync(join(i.data, "snapshots", `${A}@1`), { recursive: true });
+		const saved = selection(i), snapshots = tree(join(i.data, "snapshots"));
+		const counters = readFileSync(join(i.data, "snapshots", ".counters.json"));
+		s.requests.length = 0;
+		const result = await command(i, s, ["probe"]);
+		expect(result.status).toBe(1); expect(result.stderr).toContain(`cannot use selected snapshot ${A}@1`);
+		expect(s.requests).toEqual([]); expect(started(i)).toBe(false);
+		expect(readdirSync(join(i.data, "bundles"))).toEqual([]);
+		expect(existsSync(join(i.data, "snapshots", `${A}@1`))).toBe(false);
+		expect(tree(join(i.data, "snapshots"))).toEqual(snapshots);
+		expect(readFileSync(join(i.data, "snapshots", ".counters.json"))).toEqual(counters);
+		expect(selection(i)).toBe(saved);
+	} finally { s.stop(); }
+});
+
 test.skipIf(!hasZig)("FB-RESTORE-CHANNEL: uninstall last live then plain launch restores live; new empty installation defaults release", async () => {
 	const i = newInstall(), s = source();
 	try {

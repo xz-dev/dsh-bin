@@ -60,6 +60,11 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
         .ok => |s| s,
         .invalid => |why| util.fatal("cannot use the selection {s} ({s}); run `dsh manager select --use latest` to reset it", .{ state.selectionPath(ctx), why }),
     };
+    const stored_snapshot: ?snapshot.Snapshot = if (opts.use == null and opts.snapshot == null and selection != null) blk: {
+        const id = @import("manage.zig").snapshotChoice(selection.?) orelse break :blk null;
+        break :blk snapshot.existing(ctx, id) catch |err|
+            util.fatal("cannot use selected snapshot {s}: {s}; run `dsh manager select --use latest` to reset it", .{ id, @errorName(err) });
+    } else null;
     if (bundles.len == 0 and opts.use == null and opts.snapshot == null and
         (selection == null or std.mem.eql(u8, selection.?.use, "latest")))
     {
@@ -90,10 +95,7 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
         .ok => |p| p,
         else => |p| runtimes.report(resolved.version, p),
     };
-    const stored_snapshot = if (selection) |s| @import("manage.zig").snapshotChoice(s) else null;
-    const snap = explicit_snapshot orelse if (opts.use == null and stored_snapshot != null)
-        snapshot.existing(ctx, stored_snapshot.?) catch |err| util.fatal("cannot use selected snapshot {s}: {s}; run `dsh manager select --use latest` to reset it", .{ stored_snapshot.?, @errorName(err) })
-    else
+    const snap = explicit_snapshot orelse stored_snapshot orelse
         snapshot.prepare(ctx, resolved.version, runtimes.metaOf(bundles, resolved.version).?);
     const payload = std.json.Stringify.valueAlloc(ctx.a, .{
         .protocol = select.protocol,
