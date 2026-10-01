@@ -46,7 +46,7 @@ fn prepare(ctx: *Ctx, force: bool) !void {
     defer parent.close();
     const name = try std.fmt.allocPrint(ctx.a, "{s}{s}", .{ binary.candidate_prefix, candidate.entry.version });
     // A conflicting user file/link is not ours to overwrite.
-    if (install.existsIn(parent, name)) try binary.validate(ctx.a, parent, name, candidate.entry.version);
+    try reusable(ctx, parent, name, candidate.entry.version);
     var tmp = ctx.ensureDir(&.{"tmp"});
     defer tmp.close();
     const staging = try install.fetchTree(ctx, tmp, candidate.asset, candidate.entry.tag);
@@ -76,7 +76,23 @@ fn prepare(ctx: *Ctx, force: bool) !void {
     open = false;
     try binary.validate(ctx.a, parent, part, candidate.entry.version);
     // Refuse a concurrent change rather than overwrite unknown input; maintenance serializes managers.
-    if (install.existsIn(parent, name)) try binary.validate(ctx.a, parent, name, candidate.entry.version);
+    try reusable(ctx, parent, name, candidate.entry.version);
     try parent.rename(part, name);
+    var old = parent.iterate();
+    while (try old.next()) |item| {
+        if (item.kind != .file or std.mem.eql(u8, item.name, name)) continue;
+        const old_version = binary.candidateVersion(item.name) orelse continue;
+        binary.validate(ctx.a, parent, item.name, old_version) catch continue;
+        parent.deleteFile(item.name) catch |err| util.warn("candidate prepared; leftover {s}: {s}; run `dsh manager clean`", .{ item.name, @errorName(err) });
+    }
     util.print("Manager {s} prepared, not installed: {s}/{s}; installed manager remains {s}.\n", .{ candidate.entry.version, ctx.dir, name, options.version });
+}
+
+fn reusable(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, version: []const u8) !void {
+    const file = binary.openRegular(parent, name) catch |err| {
+        if (err == error.FileNotFound) return;
+        return err;
+    };
+    file.close();
+    try binary.validate(ctx.a, parent, name, version);
 }

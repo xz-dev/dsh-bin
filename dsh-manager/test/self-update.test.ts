@@ -10,8 +10,8 @@ import { addRuntime, baseEnv, build, bundleMeta, cleanup, EXE, hasZig, MANAGER_V
 const NEXT = "9.8.8", A = "1.0.0-b1.1.gdeadbeef", OLD = "0.1.0-b1.1.gcafebabe";
 const TARGET = `${process.platform === "win32" ? "windows" : process.platform === "darwin" ? "darwin" : "linux"}-${process.arch === "x64" ? "x64" : "arm64"}`;
 const sha = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
-let next: string;
-beforeAll(() => { if (hasZig) { build(); next = build(NEXT).manager; } }, 300_000);
+let next: string, numeric: string, prerelease: string;
+beforeAll(() => { if (hasZig) { build(); next = build(NEXT).manager; numeric = build("9.10.0").manager; prerelease = build("9.8.8-rc.10").manager; } }, 300_000);
 afterAll(cleanup);
 function archive(binary = next, extra: ZipInput[] = []) {
 	const zip = join(tempDir("dsh-manager-zip-"), "manager.zip");
@@ -65,26 +65,30 @@ test.skipIf(!hasZig)("MC-SELF-ONLY: same-protocol newer manager is prepared, nev
 		expect(s.requests).toEqual(["/manager-index.json", `/download/manager-v${NEXT}/manager-${TARGET}.zip`]);
 		const added = tree(i.data).filter(p => !allBefore.includes(p));
 		expect(added.filter(p => !["cache", "cache/downloads", `cache/downloads/${sha(bytes)}.zip`, "tmp", "state/manager.lock"].includes(p))).toEqual([]);
-		expect(run(i, ["manager", "--version"]).stdout).toContain(MANAGER_VERSION);
+		expect(run(i, ["manager", "--version"]).stdout).toContain(MANAGER_VERSION); expect(tree(i.home)).toEqual([]);
+		cpSync(build().manager, join(i.dir, `.dsh-manager-candidate-${MANAGER_VERSION}`));
 		expect((await command(i, s)).status).toBe(0); expect(readdirSync(i.dir).filter(n => n.startsWith(".dsh-manager-candidate-"))).toEqual([`.dsh-manager-candidate-${NEXT}`]);
 	} finally { s.stop(); }
-});
+}, 60_000);
 
 test.skipIf(!hasZig)("MC-SELF-ONLY: SemVer 1.10 > 1.9, prerelease ordering and same-version force repair ignore build metadata", async () => {
 	const bytes = archive();
+	const repairFile = join(tempDir("manager-repair-"), `dsh${EXE}`); writeFileSync(repairFile, Buffer.concat([readFileSync(build().manager), Buffer.from("same-version-rebuild")]));
+	const repaired = archive(repairFile);
 	for (const [versions, force, status, text, asset] of [
-		[["1.9.0", "1.10.0", NEXT], false, 0, "prepared", true],
+		[["9.9.0", "9.10.0"], false, 0, "9.10.0 prepared", true],
+		[["9.8.8-rc.2", "9.8.8-rc.10"], false, 0, "9.8.8-rc.10 prepared", true],
 		[[MANAGER_VERSION], false, 0, "already current", false],
 		[[MANAGER_VERSION], true, 0, "prepared", true],
 		[["9.8.7-test.0"], true, 1, "Downgrade", false],
 		[["9.8.7-test.1+repair"], false, 0, "already current", false],
 	] as const) {
-		const i = newInstall(), version = versions[0], payload = version === MANAGER_VERSION ? archive(build().manager) : bytes;
+		const i = newInstall(), version = versions[0], payload = version === MANAGER_VERSION ? (force ? repaired : archive(build().manager)) : version === "9.9.0" ? archive(numeric) : version === "9.8.8-rc.2" ? archive(prerelease) : bytes;
 		const s = source(versions.map(v => entry(v, payload)), payload);
-		try { const r = await command(i, s, ["manager", "self-update", ...(force ? ["--force"] : [])]); expect(r.status).toBe(status); expect(r.stdout + r.stderr).toContain(text); expect(s.requests.some(p => p.startsWith("/download/"))).toBe(asset); }
+		try { const r = await command(i, s, ["manager", "self-update", ...(force ? ["--force"] : [])]); expect(r.status).toBe(status); expect(r.stdout + r.stderr).toContain(text); expect(s.requests.some(p => p.startsWith("/download/"))).toBe(asset); if (version === MANAGER_VERSION && force) { expect(sha(readFileSync(join(i.dir, `.dsh-manager-candidate-${version}`)))).toBe(sha(readFileSync(repairFile))); expect(sha(readFileSync(repairFile))).not.toBe(sha(readFileSync(i.exe))); } }
 		finally { s.stop(); }
 	}
-});
+}, 60_000);
 
 test.skipIf(!hasZig)("MC-SELF-FAIL: incompatible protocol/target, downgrade, duplicate or invalid identity refuse before archive", async () => {
 	const bytes = archive(), good = entry(NEXT, bytes);
@@ -93,7 +97,7 @@ test.skipIf(!hasZig)("MC-SELF-FAIL: incompatible protocol/target, downgrade, dup
 		try { const r = await command(i, s); expect(r.status).toBe(1); expect(s.requests).toEqual(["/manager-index.json"]); expect(sha(readFileSync(i.exe))).toBe(before); expect(readdirSync(i.dir).some(n => n.startsWith(".dsh-manager-candidate-"))).toBe(false); }
 		finally { s.stop(); }
 	}
-});
+}, 60_000);
 
 test.skipIf(!hasZig)("MC-SELF-FAIL: bad digest/size, wrong binary marker/type, extra roots and traversal never publish a candidate", async () => {
 	const valid = archive();
@@ -101,18 +105,20 @@ test.skipIf(!hasZig)("MC-SELF-FAIL: bad digest/size, wrong binary marker/type, e
 	const file = join(tempDir("bad-manager-"), "bad.zip"); writeZip(file, [{ name: `dsh${EXE}`, data: wrong, mode: 0o755 }]);
 	const traversed = Buffer.from(archive(next, [{ name: "safe_file_", data: Buffer.from("bad") }]));
 	for (let at = traversed.indexOf("safe_file_"); at !== -1; at = traversed.indexOf("safe_file_", at + 10)) traversed.write("../outside", at);
-	for (const [bytes, patch] of [[valid, { sha256: "a".repeat(64) }], [valid, { size: valid.length + 1 }], [archive(build().manager), {}], [readFileSync(file), {}], [archive(next, [{ name: "user-file", data: Buffer.from("bad") }]), {}], [traversed, {}]] as const) {
+	const wrongProtocolFile = join(tempDir("wrong-protocol-"), `dsh${EXE}`), wrongProtocol = Buffer.from(readFileSync(next)), protocolAt = wrongProtocol.indexOf("DSH_MANAGER_LAUNCH_PROTOCOL=1\0");
+	expect(protocolAt).toBeGreaterThanOrEqual(0); wrongProtocol[protocolAt + "DSH_MANAGER_LAUNCH_PROTOCOL=".length] = "2".charCodeAt(0); writeFileSync(wrongProtocolFile, wrongProtocol);
+	for (const [bytes, patch] of [[valid, { sha256: "a".repeat(64) }], [valid, { size: valid.length + 1 }], [archive(build().manager), {}], [readFileSync(file), {}], [archive(wrongProtocolFile), {}], [archive(next, [{ name: "user-file", data: Buffer.from("bad") }]), {}], [traversed, {}]] as const) {
 		const i = fixture(), before = protectedBytes(i), e = entry(NEXT, bytes); Object.assign(e.assets[TARGET], patch); const s = source([e], bytes);
 		try { const r = await command(i, s); expect(r.status).toBe(1); expect(protectedBytes(i)).toEqual(before); expect(readdirSync(i.dir).some(n => n.startsWith(".dsh-manager-candidate-"))).toBe(false); expect(started(i)).toBe(false); }
 		finally { s.stop(); }
 	}
-});
+}, 60_000);
 
 test.skipIf(!hasZig)("DL-MANAGED-SELF: portage/scoop refuse before any request, state creation or candidate staging", async () => {
 	const bytes = archive(), s = source([entry(NEXT, bytes)], bytes);
 	try { for (const owner of ["portage", "scoop"]) { const i = newInstall(); writeFileSync(join(i.dir, ".dsh-manager-install.json"), JSON.stringify({ schema: 1, owner })); const r = await command(i, s, undefined, { LOCALAPPDATA: join(i.home, "local") }); expect(r.status).toBe(1); expect(r.stderr).toContain(owner === "portage" ? "emerge" : "scoop update"); expect(tree(i.home)).toEqual([]); expect(s.requests).toEqual([]); } }
 	finally { s.stop(); }
-});
+}, 60_000);
 
 test.skipIf(!hasZig)("MC-OLD-RUNTIME: older upstream install/select never changes the manager identity or prepared newer candidate", async () => {
 	const i = fixture(), meta = bundleMeta(OLD, { commitTime: "2020-01-01T00:00:00.000Z", patch: { target: hostTargetId() } }), file = join(tempDir("old-runtime-"), "runtime.zip");
@@ -121,11 +127,30 @@ test.skipIf(!hasZig)("MC-OLD-RUNTIME: older upstream install/select never change
 	const bytes = archive(), s = source([entry(NEXT, bytes)], bytes, { entry: e, bytes: runtimeBytes }), exe = sha(readFileSync(i.exe));
 	try { expect((await command(i, s)).status).toBe(0); const staged = join(i.dir, `.dsh-manager-candidate-${NEXT}`), before = sha(readFileSync(staged)); expect((await command(i, s, ["manager", "install", OLD])).status).toBe(0); expect(run(i, ["manager", "select", "--use", OLD]).status).toBe(0); expect(run(i, ["manager", "--version"]).stdout).toContain(MANAGER_VERSION); expect(sha(readFileSync(i.exe))).toBe(exe); expect(sha(readFileSync(staged))).toBe(before); expect(run(i, []).status).toBe(0); }
 	finally { s.stop(); }
-});
+}, 60_000);
+
+test.skipIf(!hasZig)("MC-SELF-FAIL: a conflicting candidate path refuses before download without changing user bytes", async () => {
+	const bytes = archive(), s = source([entry(NEXT, bytes)], bytes);
+	try {
+		for (const linked of [false, true]) {
+			const i = fixture(), name = `.dsh-manager-candidate-${NEXT}`, path = join(i.dir, name), external = join(i.home, "external");
+			if (linked) { mkdirSync(external); writeFileSync(join(external, "keep"), "KEEP"); symlinkSync(external, path, WIN ? "junction" : "dir"); }
+			else writeFileSync(path, "USER FILE");
+			const before = protectedBytes(i), requests = s.requests.length, r = await command(i, s);
+			expect(r.status).toBe(1); expect(r.stderr).toContain("application data unchanged"); expect(protectedBytes(i)).toEqual(before);
+			expect(s.requests.slice(requests)).toEqual(["/manager-index.json"]);
+			if (linked) expect(readFileSync(join(external, "keep"), "utf8")).toBe("KEEP"); else expect(readFileSync(path, "utf8")).toBe("USER FILE");
+			expect(readdirSync(i.dir).filter(n => n.startsWith(name))).toEqual([name]);
+		}
+	} finally { s.stop(); }
+}, 60_000);
 
 test.skipIf(!hasZig)("MC-CLEAN: portable manager candidates reclaim only exact marked regular files, never links or unknown bytes", () => {
 	const i = fixture(), real = join(i.dir, `.dsh-manager-candidate-${NEXT}`), unknown = join(i.dir, ".dsh-manager-candidate-8.0.0"), alias = join(i.dir, ".dsh-manager-candidate-7.0.0");
 	cpSync(next, real); writeFileSync(unknown, "USER FILE");
-	if (!WIN) symlinkSync(real, alias); else { mkdirSync(alias); writeFileSync(join(alias, "keep"), "KEEP"); }
-	expect(run(i, ["manager", "clean"]).status).toBe(0); expect(existsSync(real)).toBe(false); expect(readFileSync(unknown, "utf8")).toBe("USER FILE"); expect(readdirSync(i.dir)).toContain(alias.split(/[\\/]/).at(-1)!);
-});
+	const external = join(i.home, "external"); mkdirSync(external); writeFileSync(join(external, "keep"), "KEEP");
+	if (!WIN) symlinkSync(real, alias); else symlinkSync(external, alias, "junction");
+	const partial = join(i.dir, `.dsh-manager-candidate-${NEXT}.part-ab12`), prereleasePart = join(i.dir, ".dsh-manager-candidate-9.8.8-rc.10.part-cd34"), malformedPart = join(i.dir, `.dsh-manager-candidate-${NEXT}.part-nothex`), partialAlias = join(i.dir, `.dsh-manager-candidate-${NEXT}.part-ef56`);
+	writeFileSync(partial, "interrupted"); writeFileSync(prereleasePart, "interrupted prerelease"); writeFileSync(malformedPart, "USER PART FILE"); symlinkSync(external, partialAlias, WIN ? "junction" : "dir");
+	expect(run(i, ["manager", "clean"]).status).toBe(0); expect(existsSync(partial)).toBe(false); expect(existsSync(prereleasePart)).toBe(false); expect(readFileSync(malformedPart, "utf8")).toBe("USER PART FILE"); expect(existsSync(partialAlias)).toBe(true); expect(existsSync(real)).toBe(false); expect(readFileSync(unknown, "utf8")).toBe("USER FILE"); expect(readdirSync(i.dir)).toContain(alias.split(/[\\/]/).at(-1)!); expect(readFileSync(join(external, "keep"), "utf8")).toBe("KEEP");
+}, 60_000);

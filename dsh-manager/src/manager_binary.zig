@@ -58,7 +58,23 @@ pub fn openRegular(dir: std.fs.Dir, name: []const u8) !std.fs.File {
         break :blk .{ .handle = try win.OpenFile(path.span(), .{ .dir = dir.fd, .access_mask = win.GENERIC_READ, .creation = win.FILE_OPEN, .filter = .any, .follow_symlinks = false }) };
     } else .{ .handle = try std.posix.openat(dir.fd, name, .{ .ACCMODE = .RDONLY, .NOFOLLOW = true, .NONBLOCK = true }, 0) };
     errdefer file.close();
-    if ((try file.stat()).kind != .file) return error.InvalidManagerFile;
+    const stat = try file.stat();
+    if (stat.kind != .file) return error.InvalidManagerFile;
+    if (builtin.os.tag == .windows) {
+        // OpenFile(follow_symlinks=false) omits FILE_SYNCHRONOUS_IO_NONALERT.
+        // File.read passes no OVERLAPPED, so reopen synchronously and verify the same file index.
+        const readable = try dir.openFile(name, .{});
+        const current = readable.stat() catch |err| {
+            readable.close();
+            return err;
+        };
+        if (current.kind != .file or current.inode != stat.inode) {
+            readable.close();
+            return error.ManagerFileChanged;
+        }
+        file.close();
+        return readable;
+    }
     return file;
 }
 pub fn validate(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, version: []const u8) !void {
@@ -81,4 +97,40 @@ pub fn candidateVersion(name: []const u8) ?[]const u8 {
     if (name.len > 255) return null;
     _ = std.SemanticVersion.parse(version) catch return null;
     return version;
+}
+
+pub fn partialCandidate(name: []const u8) bool {
+    const at = std.mem.lastIndexOf(u8, name, ".part-") orelse return false;
+    if (candidateVersion(name[0..at]) == null) return false;
+    const nonce = name[at + 6 ..];
+    if (nonce.len == 0 or nonce.len > 16) return false;
+    for (nonce) |c| if (!std.ascii.isHex(c)) return false;
+    return true;
+}
+
+/// Only exact complete candidates or an exclusive-write partial name belong to self-update.
+pub fn reclaimable(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8) bool {
+    // A prerelease partial name is itself parseable SemVer (rc.1.part-ab12); classify it first.
+    if (partialCandidate(name)) {
+        const file = openRegular(dir, name) catch return false;
+        file.close();
+        return true;
+    }
+    const v = candidateVersion(name) orelse return false;
+    validate(a, dir, name, v) catch return false;
+    return true;
+}
+
+test "MC-SELF-ONLY regular candidate handles support synchronous reads and refuse directories" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "candidate", .data = "manager bytes" });
+    const file = try openRegular(tmp.dir, "candidate");
+    defer file.close();
+    const bytes = try file.readToEndAlloc(t.allocator, 64);
+    defer t.allocator.free(bytes);
+    try t.expectEqualStrings("manager bytes", bytes);
+    try tmp.dir.makeDir("directory");
+    try t.expectError(error.InvalidManagerFile, openRegular(tmp.dir, "directory"));
 }
