@@ -11,7 +11,7 @@ const manager = @import("manager.zig");
 pub const version: []const u8 = options.version;
 
 /// Byte-readable marker of the manager version (read without executing the file).
-pub const marker = "DSH_MANAGER_VERSION=" ++ version ++ "\x00";
+pub const marker = @import("manager_binary.zig").version_marker;
 
 comptime {
     for (version) |c| {
@@ -23,6 +23,7 @@ comptime {
 
 pub fn main() void {
     std.mem.doNotOptimizeAway(marker.ptr);
+    std.mem.doNotOptimizeAway(@import("manager_binary.zig").protocol_marker.ptr);
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const a = arena.allocator();
     const args: []const []const u8 = if (context.is_windows) launch.windowsArgs(a) else blk: {
@@ -55,4 +56,5 @@ test {
     _ = @import("http.zig");
     _ = @import("target.zig");
     _ = @import("index.zig");
+    _ = @import("manager_index.zig");
 }

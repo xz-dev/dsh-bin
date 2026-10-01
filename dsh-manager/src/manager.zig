@@ -23,7 +23,7 @@ pub const help_text =
     \\  snapshot new [--use <version>] [--target <id> | --empty] [--name <alias>] | remove <id>... | list [--json]
     \\                                                            plugin-runtime snapshots
     \\  clean                                                     remove interrupted downloads and leftovers (offline)
-    \\  self-update                                               update this manager only
+    \\  self-update [--force]                                     prepare a verified manager candidate (not installed yet)
     \\  completion script|install|uninstall <bash|zsh|fish|pwsh|powershell>
     \\                                                            shell completion (--dry-run; PowerShell: --profile <path>)
     \\  info                                                      install mode, data root and application home
@@ -64,11 +64,7 @@ pub fn run(ctx: *Ctx, opts: select.Options, args: []const []const u8) u8 {
         return 0;
     }
     if (std.mem.eql(u8, cmd, "clean")) return @import("clean.zig").run(ctx, args[1..]);
-    const known = [_][]const u8{"self-update"};
-    for (known) |k| if (std.mem.eql(u8, cmd, k)) {
-        util.warn("`dsh manager {s}` is not available in this build yet", .{cmd});
-        return 1;
-    };
+    if (std.mem.eql(u8, cmd, "self-update")) return @import("self_update.zig").run(ctx, args[1..]);
     util.warn("unknown manager command {s}; see `dsh manager --help`", .{cmd});
     return 1;
 }

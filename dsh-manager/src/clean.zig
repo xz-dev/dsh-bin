@@ -259,6 +259,19 @@ fn protectHome(ctx: *const Ctx, items: []const Item) !void {
 }
 
 fn collect(c: *Cleanup, root: Store) !void {
+    if (c.ctx.mode == .portable) {
+        var dir = try std.fs.cwd().openDir(c.ctx.dir, .{ .iterate = true, .no_follow = true });
+        errdefer dir.close();
+        const store = Store{ .dir = dir, .path = "manager-directory" };
+        try c.stores.append(c.ctx.a, store);
+        var files = dir.iterate();
+        while (try files.next()) |entry| {
+            if (entry.kind != .file) continue;
+            const version = @import("manager_binary.zig").candidateVersion(entry.name) orelse continue;
+            @import("manager_binary.zig").validate(c.ctx.a, dir, entry.name, version) catch continue;
+            try c.add(store, entry);
+        }
+    }
     const cache = try c.open(root, "cache");
     if (cache) |s| {
         var it = s.dir.iterate();
@@ -359,6 +372,10 @@ fn perform(ctx: *const Ctx) !void {
     // Private residue has no launch identity. Release its guard before deleteTree on Windows.
     // Installed-object claims and store mutexes remain held until all cleanup is done.
     for (c.items.items) |item| {
+        if (eq(u8, item.store.path, "manager-directory")) {
+            const version = @import("manager_binary.zig").candidateVersion(item.name) orelse return error.InvalidManagerCandidate;
+            @import("manager_binary.zig").validate(ctx.a, item.store.dir, item.name, version) catch return error.InvalidManagerCandidate;
+        }
         item.store.dir.deleteTree(item.name) catch |err| {
             util.warn("cannot clean {s}/{s}: {s}; earlier reported removals remain removed", .{ item.store.path, item.name, @errorName(err) });
             return error.Reported;
