@@ -124,6 +124,23 @@ fn independentPath(root: std.fs.Dir, path: []const u8) bool {
             if (eq(u8, entry.name, part)) break entry.kind;
         } else return false;
         if (kind != .file and kind != .directory) return false;
+        if (@import("builtin").os.tag == .windows) {
+            // Zig's iterator reports directory reparse points as directories. Inspect the
+            // component itself before accepting a final path or descending through it.
+            const win = std.os.windows;
+            const path_w = win.sliceToPrefixedFileW(parent.fd, part) catch return false;
+            const file = std.fs.File{ .handle = win.OpenFile(path_w.span(), .{
+                .dir = parent.fd,
+                .access_mask = win.FILE_READ_ATTRIBUTES,
+                .creation = win.FILE_OPEN,
+                .filter = .any,
+                .follow_symlinks = false,
+            }) catch return false };
+            defer file.close();
+            const inspected = (file.stat() catch return false).kind;
+            // File.stat distinguishes all reparse points (sym_link or unknown).
+            if (inspected != .file and inspected != .directory) return false;
+        }
         const next = parts.next() orelse return true;
         if (kind != .directory) return false;
         var child = parent.openDir(part, .{ .iterate = true, .no_follow = true }) catch return false;
