@@ -256,4 +256,7 @@
 - **残余风险**：
   - 由其他模块或另一个 profile 在运行时注册的 dsh completer，用公开 API 检测不到，后注册的那个生效。
   - Fish 只拥有 completions/dsh.fish；config.fish 或 conf.d 中用户自己写的 `complete -c dsh` 不做扫描。
-- **4.4 暂不勾选**：Windows PowerShell 5.1 与 Windows pwsh 的真实执行，以及默认 Documents 路径与 `$PROFILE.CurrentUserAllHosts` 的比对，都要等 windows-2022 CI 跑完。
+- **Windows CI 首轮（36812154908）**：powershell/pwsh 的 collision、dry-run 及默认 `$PROFILE.CurrentUserAllHosts` 比对通过，但 load/transport 共 4 项失败。在临时分支 diag/ps-completion 上跑诊断 CI（36812651256、36812811596）：5.1.20348 与 pwsh 7.6 不论直接运行、经 bun spawnSync 运行还是在完整环境下运行，`--words-env`、`--` 和 TabExpansion2 都返回正确候选，**产品本身没有问题**。失败的根因在测试 harness 的精简环境：① powershell.exe 冷启动 module 准备耗时 23–30 秒，超过 psRun 的 20 秒 timeout，进程被 kill 后 status=null；② 精简环境下 shell 内的原生调用无输出，TabExpansion2 于是回落到文件名补全。没有逐一定位到具体是哪个变量，因为用户真实环境不会剥掉系统变量。
+- **修正（eb4b9f2）**：psRun 改为以真实进程环境为基础（滤掉 `DSH_*`），只覆盖 HOME/USERPROFILE/XDG/FAKE_OUT/PATH；profile 仍通过 -NoProfile/--profile 隔离；timeout 调到 90 秒。
+- **CI 36813128417 三平台全绿**：windows-2022 上 powershell 5.1 与 pwsh 共 **10 项实际执行全部通过**（load/候选/重复注册/逐字节还原、words-env 的空前缀/空格/引号/非 ASCII、foreign completer 拒绝、改写块保护与 dry-run 零写入、默认路径与真实 `$PROFILE.CurrentUserAllHosts` 一致）；ubuntu-24.04 与 macos-15 的 Fish 三项实际执行通过。Windows 上 Fish/Bash/Zsh 写明原因 skip。
+- **勾选 4.4**。4.5（稳定 PATH、搬迁、四种 shell 的完整 quoting 矩阵）未做。
