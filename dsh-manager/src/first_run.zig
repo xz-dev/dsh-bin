@@ -204,9 +204,9 @@ fn menu(ctx: *Ctx) ?Choice {
 
 pub fn run(ctx: *Ctx) void {
     if (!std.fs.File.stdin().isTty() or !std.fs.File.stderr().isTty()) return;
-    var s = readState(ctx);
+    const previous = readState(ctx);
     const detected = detect(ctx);
-    if (saved(&s, detected)) return;
+    if (saved(&previous, detected)) return;
     const choice: Choice = if (detected) |shell| blk: {
         const path = completion.registrationPath(ctx, shell, null) catch break :blk menu(ctx) orelse return;
         while (true) {
@@ -224,6 +224,13 @@ pub fn run(ctx: *Ctx) void {
         result = if (completion.runReporting(ctx, &.{ "install", @tagName(shell) }, true) == 0) .registered else .failed;
         if (result == .failed) util.warn("completion is not registered; retry with `dsh manager completion install {s}`; continuing runtime check", .{@tagName(shell)});
     }
+    // Lock only the merge/write, never the prompt or completion registration.
+    var state_dir = ctx.ensureDir(&.{"state"});
+    state_dir.close();
+    const mutex = @import("lock.zig").acquire(ctx.path(&.{ "state", "completion.lock" }), .exclusive, true, null) catch |err|
+        util.fatal("cannot lock completion choice: {s}", .{@errorName(err)});
+    defer mutex.release();
+    var s = readState(ctx);
     if (choice.shell) |shell| record(&s, shell, result);
     if (detected) |shell| {
         if (choice.shell != shell) record(&s, shell, .declined);

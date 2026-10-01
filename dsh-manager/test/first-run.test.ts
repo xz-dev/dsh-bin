@@ -136,3 +136,15 @@ test.skipIf(!!reason)(`FB-ORDER: accepted first-run completion writes hints only
 		expect(readFileSync(stdoutFile, "utf8")).toBe("application stdout\n");
 	} finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGTERM"); await done; } }
 }, 120_000);
+
+test.skipIf(!!crossShellReason)(`FB-ORDER review: concurrent Bash and Fish consent merges choices without holding a prompt lock${crossShellReason ? ` — SKIP: ${crossShellReason}` : ""}`, async () => {
+	const i = newInstall(); addRuntime(i.data, "1.0.0");
+	// Prepare the runtime snapshot before the two PTYs; this scenario isolates consent state merging.
+	expect(run(i, []).status).toBe(0);
+	const a = terminal(i, "bash"), b = terminal(i, "fish");
+	await Promise.all([a.wait("Register bash completion at "), b.wait("Register fish completion at ")]);
+	a.answer("n\n"); expect(await a.done).toBe(0); expect(state(i).shells.bash.result).toBe("declined");
+	b.answer("n\n"); expect(await b.done).toBe(0);
+	expect(state(i).shells.bash.result).toBe("declined"); expect(state(i).shells.fish.result).toBe("declined");
+	const again = terminal(i, "bash"); expect(await again.done).toBe(0); expect(again.output).not.toContain("Register bash");
+}, 120_000);
