@@ -116,6 +116,8 @@ dsh-bin/
 
 运行包和 addon 更新使用同卷暂存与原子激活；选择与渠道状态原子写入，失败不先切换。创建快照完成后再发布其元数据，编号计数不能因删除而回退。重装已存在版本不重置已有快照，管理器不运行 pnpm 自动修复它们。清理仅针对本工具可识别且可独占的残留与缓存，不自动删除有效用户数据。
 
+6.6 经 supervisor 确认：clean 在任何维护锁/快照锁/会话 claim 忙时整次拒绝、零删除；`.previous-*` 仅在对应公开 generation 完整有效时可回收，否则保留并提示显式 install 恢复，显式 addon install 同 runtime 一样先恢复已校验的中断退役副本。
+
 HTTPS 下载支持 `HTTPS_PROXY/https_proxy`（以及 `ALL_PROXY/all_proxy`）指向 HTTP 代理：先发送 `CONNECT <origin-host>:<port> HTTP/1.1`，有 URL userinfo 时仅在 CONNECT 中携带解码后的 Basic 代理认证；只有 2xx 才在同一 socket 上用 Zig 标准 TLS Client 验证 origin 的证书链、主机名与 SNI，再发送 GET。`NO_PROXY/no_proxy` 按逗号列表、域名边界后缀、`*` 和可选端口匹配（无端口时匹配全部端口，支持 localhost）；每个手动重定向重新判断。CONNECT 前即设置读写 inactivity timeout，Windows 同步 socket adapter 覆盖 CONNECT、隧道 TLS 握手和 body。403/407 为不重试的代理拒绝，认证/证书错误不会退回直连；`https://` 代理 URL（TLS 到代理自身）仍明确拒绝，不静默直连。Zig 0.15.2 的 `Connection.Tls` 不公开且 CONNECT 不升级 TLS，因此内部连接复制其两个字段及分配布局，交由标准 HTTP Request/TLS 负责读写和销毁；编译期锁定 0.15.2，工具链升级必须复核布局。此 inactivity 约束不是 DNS/TCP 建连或直连 TLS 的总 deadline。
 
 管理器自更新走独立索引，按自身版本比较，而不是仅按启动协议号决定是否换文件。POSIX 使用校验后的同卷替换；Windows 使用同一 Zig 程序的一次性临时 helper 等待旧进程释放映像后替换，helper 带原安装上下文，不能按自身临时位置建立另一个数据根。交接不等于升级成功；只有替换完成才报告成功。临时 helper 不成为第二个分发产品，所有残留可在数据根内恢复/清理。若目标文件系统无法保证完整入口则停止，不使用先删除入口再复制的降级方案。

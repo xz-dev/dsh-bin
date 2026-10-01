@@ -595,3 +595,39 @@
 - 独立复审（run 587dc39f）：**OK with notes**，无 P0/P1/P2。复审员独立复跑：Zig 44/44；manager 七个测试文件 108 pass；runtime 重启/持锁测试 9 pass；另做 probe 确认批量卸载被固定选择拦下时零删除。
 - 残余风险：Windows 上「manager 被强杀后的完整启动链」没有单独复现；`.remove-*` 和 `.previous-*` 残留由 6.6 清理。
 - 勾选 **6.4**。
+
+## 6.6 离线 clean 与可恢复残留
+
+- 范围仅 MC-CLEAN；任务勾选由父会话在独立复审和 CI 后处理。
+- **先红**：`cd dsh-manager && TMPDIR=/var/tmp/dsh-66-tmp bun test ./test/clean.test.ts` → **0 pass / 6 fail / 18 断言**（`/var/tmp/dsh-66-logs/red.log`）。预期原因：`dsh manager clean` 尚未实现，返回 `not available in this build yet`。
+- **Supervisor 已批准边界**：没有有效公开 generation 时保留 `.previous-*` 唯一副本并点名恢复命令；clean 对 maintenance、snapshot store、安装对象与残留的 usage claims 做 fail-fast 整体预检，任何 busy 都零删除，提示退出会话后重试；只认实际生成的缓存名/位置，无 root/空 root/无残留不初始化。初始化残留仍须人工处理，不接管。
+- **边界红**：补显式 DSH_HOME 位于缓存/暂存及其链接别名、伪装残留名的普通用户文件、无残留但会话仍在用的场景；同命令 → **5 pass / 3 fail / 103 断言**（`boundaries-red.log`）。先确认这些边界未受保护，再补共享清理预检。
+- **自动恢复缺口红**：`bun test ./test/addons.test.ts -t 'MC-CLEAN'` → **0 pass / 1 fail / 3 断言**（`addon-red.log`）；addon 与 runtime 不同，缺公开版本时未恢复已校验的 `.previous-addon-office-*`，还下载新包。Supervisor 批准只补与 runtime 同样的 handle-relative restore，不加新的自动清理/恢复状态机。
+
+### 残留边界与场景映射
+
+| 位置／精确名称 | 处理 |
+|---|---|
+| `cache/downloads/<64 hex>.zip` / `.zip.part`（文件／链接） | 离线回收下载缓存与中断下载；其他名字和伪装成 zip 的目录保留 |
+| `cache/bun`、`transpiler`、`npm`、`pnpm`（目录／链接） | 已停止应用的受控缓存；名称与 launch 环境共享一处声明，`state/pnpm` 不清理 |
+| `tmp/.install-<1..16 hex>`（目录／链接） | 未发布 install staging |
+| `tmp/.remove-<runtime-id|addon-id|snapshot-id>-<1..16 hex>`（目录／链接） | 6.4 已从公开位置退役的对象残留 |
+| `tmp/.previous-<runtime-id>`、`.previous-addon-office-<addon-id>`（目录／链接） | 只有相应公开 generation 可正常使用时回收；缺失／损坏则保留并点名 `install ... --force` 恢复命令；maintenance 锁内再次核对 |
+| `snapshots/.staging-<1..16 hex>`（目录／链接） | 未发布 snapshot staging；不动公开 `<runtime-id>@<n>`、`.counters.json`、`.lock` |
+| 其他 `cache/`／`tmp/`／`snapshots/`／root 项 | 保留。只像残留名但类型不是目录／链接的普通用户文件也保留 |
+
+- `test/clean.test.ts` **8 项**：逐类断言缓存清除、runtime/snapshot/addon 字节不变、selection/config/user shell config/应用和外部凭据分别不变；无网络／无应用执行；空／缺 root／无残留不创建文件；维护/快照/运行包/addon/残留占用整次零删除；唯一 previous generation 保留；symlink/junction unlink 不跟随外部目录；显式 DSH_HOME 与缓存／残留重叠（含 home link 别名）整次拒绝；祖先替换后仍通过已验证 parent handle 删除，外部 sentinel 不变。所有新增测试仅在缺 Zig 时 skip，不按 Windows skip；Windows junction 与祖先 swap（或 OS 明确阻止 swap）都实际尝试。
+- 所有删除调用 `item.store.dir.deleteTree(item.name)`，保留 no-follow 打开的数据根及存储 parent handle，不重建绝对删除路径。维护锁和公开 runtime/snapshot/addon 的 exclusive claims 持有至 clean 完成；仅不可直接 launch 的私有 staging/retirement guard 在整体预检通过后释放（否则 Windows delete-pending 不能删目录）。没有新增等待、重试或后台恢复。
+- **自动恢复映射**：已有 runtime install 在 maintenance 锁内把已验证的 `.previous-<id>` 恢复回缺失公开版本；addon 补同样步骤，测试 `MC-CLEAN: explicit addon install restores a validated interrupted retirement before downloading` 验证只请求索引、没有重新下载、旧 generation 的用户 marker 保留。普通 launch 不清理残留。已有 snapshot 原子 publication 留下 staging 但不发布 metadata，编号先预留，clean 不改 counter；既有 `snapshots.test.ts` interruption/counter 回归继续通过。无 marker 的初始化残留仍拒绝人工检查，不接管。
+
+### Green 与完整验证
+
+- 首次 green：`bun test ./test/clean.test.ts` → **6 pass / 0 fail / 100 断言**（`green.log`），提交 `2eebcf4`。
+- 边界 green：同命令 → **8 pass / 0 fail / 136 断言**（`boundaries-green.log`），提交 `4ed823b`。额外封住显式 DSH_HOME 位于 cache/staging 时的误删边界；任何重叠清理候选先报错、零删除。
+- addon 恢复 green：`bun test ./test/addons.test.ts ./test/clean.test.ts` → **17 pass / 0 fail / 270 断言**（`addon-green.log`），提交 `e94bc1c`。之后测试真实 versioned package label（`package@version` 对应磁盘不带 version 的路径）与健康 addon backup 回收，提交 `7aaf127`。
+- **最终全套**（`TMPDIR=/var/tmp/dsh-66-tmp`，PATH 含 `/var/tmp/dsh-section4.4-validation/pwsh`）：
+  - `zig build test --summary all` → **44/44**；日志 `zig-final.log`。
+  - `bun test ./test` → **224 pass / 18 skip / 0 fail / 2947 断言**；日志 `all-final.log`。真实应用、插件和 office 场景在本机执行通过，新增 clean/recovery 全执行。
+  - `zig fmt --check src/*.zig`、`zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-66-windows`、`zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-66-macos`、`git diff --check` → 全通过。
+- 日志统一 `/var/tmp/dsh-66-logs/`。18 skips 为既有 zsh 缺失、Windows/PowerShell 5.1 专属及真实 HTTPS proxy 未配置；未将跨编译计为 Windows/macOS 行为通过。
+- **残余风险／待验收**：Windows 原生 junction unlink、锁与目录删除仍须三平台 CI 实测；本工作未 push/未运行 CI。独立复审和父会话验证仍待执行，6.6 checkbox 保持未勾。并发手动改用户 home/目录别名不做自动恢复；若预检后删除失败，明确列出之前已删除项，不回滚、不隐藏部分成功。普通应用任意独立后代不在 manager 使用保护范围内（沿用 D3/D5）。
