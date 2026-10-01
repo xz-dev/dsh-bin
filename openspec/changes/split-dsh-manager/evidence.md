@@ -442,3 +442,9 @@
 - 用复审 reproducer（指向当前工作区）复跑 43c4d66：已存快照被删后，普通启动退出 1、请求数为 0、不启动应用；`bundles/stray-file` 存在时，`update --channel live` 退出 0 并如实报告成功，渠道为 live，固定版本的提示只写在 stderr。
 - **CI 36851770783（43c4d66）三平台全绿**：两项复审回归在 ubuntu、macOS、windows 都实际通过。6.1、6.5 维持勾选。
 - **6.2 勾选撤回，待复审**：6.2 的勾选是 worker 自己打的（297e723），不符合「复审通过（或问题修复）且 CI 全绿后由父会话勾选」的规则。CI 36848465930 已全绿，RB-PLUGIN 也由父会话在干净 worktree 上用真实应用跑过（1 pass、24 断言），但第一次独立复审 30 分钟超时、没有出报告，所以先撤回勾选，复审重新进行中。
+
+## 6.3 — native office addons (work in progress)
+
+- **RED (before product edits)**: `cd dsh-manager && TMPDIR=/var/tmp bun test ./test/addons.test.ts` → **0 pass / 3 fail**. Expected unmet MC-ADDON reason: install returns 1, stderr `addon management is not available in this build yet`; digest assertion receives that unsupported diagnostic instead of HashMismatch. Native lifecycle, slot/degrade and integrity cases recorded before implementation.
+- **First GREEN**: `cd dsh-manager && TMPDIR=/var/tmp bun test ./test/addons.test.ts` → **3 pass / 0 fail / 72 assertions**; `TMPDIR=/var/tmp zig build test --summary all` → **44/44**. Download/extract/activation reuse runtime helpers; management never executes app. Real-office acceptance and whole-suite validation still pending at this checkpoint.
+- **Supervisor decision**: automatic launch uses newest installed in-slot (seq); explicit/stored incompatible selection degrades, never runs out of slot; force cannot bypass slot; select still requires use, office:none disables and omission resets {}. Recorded in design.md. Runtime already consumes manager-selected office directory; no runtime policy edits needed.

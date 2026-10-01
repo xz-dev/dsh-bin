@@ -180,6 +180,8 @@ CI 分开筛选 manager 与 build/runtime 变更。组合测试显式选已验�
 
 快照移植（6.2，经 supervisor 确认）：`snapshot new [--use <version>] [--target <snapshot>|--empty] [--name <alias>]` 只保留既有 `--target` 拼写；复制仅限 `profiles`，文件独立复制、内部相对符号链接原样保留，绝对或越界链接明确拒绝并丢弃暂存，不执行 pnpm 修复。已发布快照的普通启动不取存储互斥；只有首次创建和管理变更取 fail-fast 锁，首次创建竞争可给明确 Busy/retry 诊断，不新增等待或恢复机制。
 
+Office addon 移植（6.3，经 supervisor 确认）：无选择时离线使用最高 seq 的已安装同 slot 版本，显式/已存不兼容或缺失版本降级并给一次 stderr 提示；`--force` 仅替换、不越过 slot，`select` 仍需 `--use`，`office:none` 禁用，省略 `--addon` 重置为空（有意收紧旧版越 slot 行为）。
+
 **PowerShell 候选传输**：模板把命令词（最后一项为可空光标前缀）以 U+001F 分隔存入仅本次调用的进程环境 `DSH_COMPLETE_WORDS`，调用 `manager __complete --shell pwsh --words-env` 后在 finally 恢复环境和 UTF-8 输出编码；Windows 经 std.process.EnvMap 的 UTF-16 环境读取，模板拒绝 NUL/U+001F 词，避免 5.1 legacy argv 对空词、空格及引号的破坏，不执行 AST 表达式。
 
 **证据**：每个切片的场景 ID、命令、red 原因和 green 结果都记录在变更目录的 `evidence.md`。
