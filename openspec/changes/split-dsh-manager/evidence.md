@@ -310,3 +310,17 @@
 - 实现提交：`8ec4dca`（P1-a/P1-b）；`b5a603d`（Fish 原始候选与真实插入、PATH canary 回归）。没有 push/CI 调用，没有改动 first_run.zig、tasks.md、其他 change 或真实用户配置；父会话需发起跨平台 CI 和复审，4.5 checkbox 本 worker 未变更。日志 `/var/tmp/dsh-review-fix/{red-p1,red-fish,green,full,zig}.log`。
 
 - P1-a 同类 Windows 边界：Zig `isAbsolute` 会把 `\foo` 判为 absolute，但它依赖当前 drive；因此也要求 Windows PATH segment 含 disk designator。`076e0b7` 加入该 guard 和仅 Windows 运行的 dry-run 回归（从 manager 所在 drive/cwd 以 `\...` PATH 注册仍须绝对绑定），本机明确 skip，windows cross-build 成功。最终 full suite 为上述 **163 pass / 18 skip / 0 fail**。
+
+### 4.5 复审修复的父会话验收
+
+- 独立复审（run 96185f43）给出 BLOCK：P1 cwd 相关的 PATH 段会被绑定为 `name:dsh`，Tab 时会执行当前目录下的 `dsh`；P1 ``Re`gister-ArgumentCompleter`` 绕过冲突扫描；P2 Fish 用 `string escape` 导致两次转义。4.5 因此一度重新打开，修复后恢复勾选。
+- 父会话手工复现（e39cc17，隔离 HOME）：在 `PATH=':/usr/bin:/bin'`、`''`、`'.:...'`、`'bin:...'` 下生成的脚本都绑定绝对路径，切到放有假 `dsh` 的目录按 Tab，canary 没有被创建；PATH 为绝对目录时仍绑定 `command 'dsh'`。转义 cmdlet 的 foreign 注册让 install 返回 1，profile 逐字节不变。修复前同一组命令能复现 canary 被执行和 profile 被覆盖。
+- **CI 36823946979（e39cc17）三平台全绿**：ubuntu 164 pass、macOS 163 pass、windows 140 pass，均 0 fail。cwd shadow 回归在 Bash 和 Fish 上实际执行；Windows 当前盘根相对 PATH 场景执行；powershell 5.1 与 pwsh 的转义 cmdlet 回归执行；Fish 真实 Tab 插入（SC-QUOTING）在 ubuntu 和 macOS 上执行。
+- 4.5 维持勾选。
+
+## 5.1 父会话验收
+
+- 4 个 worker 提交（40d15f1、c706182、f9f76e1、088398b）。按用户的决定：先推测 shell 再确认，每种 shell 各问一次；从推测出的 shell 按 `o` 改选或跳过时，把该 shell 记为 declined（父会话按用户规则推导，已告知用户）。
+- 本地 `bun test ./test/first-run.test.ts` **10 pass / 0 fail**。**CI 36822121395 三平台全绿**：ubuntu-24.04 与 macos-15 上真实 PTY 的 10 个 FB 场景全部实际通过（顺序 × 未安装/已安装/损坏、等待期间安装、拒绝后在另一个 shell 再问、注册失败、检测不到时的菜单、`o` 与 EOF、终端输入不丢、状态无效时拒绝及非交互保持 stdin）。
+- **Windows 的 10 个场景全部 skip**（windows-2022 上没有真实控制台/ConPTY 测试框架），Windows 的父进程 shell 检测和询问流程尚无运行证据。任务 5.1 没有点名 Windows，按此勾选；Windows 的真实控制台验收归入 8.2，作为明确的残余风险。
+- 勾选 **5.1**。
