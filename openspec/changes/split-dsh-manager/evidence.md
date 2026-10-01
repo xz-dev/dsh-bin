@@ -675,3 +675,30 @@
 - **CI 36906330150（679405a）三平台全绿**：ubuntu 227 pass、macOS 226 pass、windows 197 pass，均 0 fail。13 项 MC-CLEAN 在 Windows 上全部实际执行并通过，没有 skip。
 - 设计决定已写入 design.md：`.previous-*` 只有在对应公开版本有效时才回收；任何会话或锁处于忙状态时整次拒绝，零删除；缓存只清理明确列出的名字。
 - 勾选 **6.6**。
+
+## 7.1 管理器独立索引与候选验证
+
+- 范围仅 discovery/decision；不实现 7.2 POSIX 替换或 7.3 Windows helper，不把候选准备当成升级成功，checkbox 不动。
+- Supervisor 批准：严格 SemVer（复用 Zig std.SemanticVersion），忽略 build metadata 的排序影响；相同版本默认 already current，`self-update --force` 可重准备同版本修复，永不降级。候选仅一个 `dsh(.exe)` ZIP 根文件，核验本机 ELF/PE/Mach-O、版本和启动协议固定字节标记，不执行候选。
+- Supervisor 批准：同卷候选直接保存 ctx.dir/.dsh-manager-candidate-<strict semver>，输出 `prepared, not installed`；再次运行替换同名候选，不积累副本。portable clean 在同一 maintenance 锁下仅删除该精确名字、regular/no-follow 且标记有效的文件；托管模式不枚举 ctx.dir，链接/未知文件保留。
+- Supervisor 批准：复用 fetchTree；允许新增候选、cache/downloads/<hash>.zip、维护锁和空 tmp，其他变化失败。runtime/selection/snapshot/addon/config/home/credential 全部独立比对文件哈希。
+- **red**：`TMPDIR=/var/tmp/dsh-71 bun test ./test/self-update.test.ts` → **0 pass / 7 fail / 15 断言**（`/var/tmp/dsh-71/red.log`）；主场景因 self-update stub 的 `not available in this build yet` 失败。恶意归档场景首次是 writer 拒绝 `../outside` 的 fixture 错误，将改为字节修改已生成 ZIP，不算产品 red。
+- 续跑先验证继承修改：`TMPDIR=/var/tmp/dsh-71-finish bun test ./test/self-update.test.ts` → **7 pass / 0 fail / 127 断言**（`targeted-inherited.log`）。
+- 补充 **red**：prerelease 候选的 `.part` 名称也能被解析成完整 SemVer；先按完整候选检查会因为内容未写完而漏清理。`bun test ./test/self-update.test.ts -t 'MC-CLEAN'` → **0 pass / 1 fail / 5 断言**（`partial-red.log`），失败断言为 `.dsh-manager-candidate-9.8.8-rc.10.part-cd34` 仍存在。修复为先识别严格 partial 名称，再检查完整候选。
+- **green**：`TMPDIR=/var/tmp/dsh-71-finish bun test ./test/self-update.test.ts` → **8 pass / 0 fail / 146 断言**（`targeted-green.log`）。覆盖完整/中断候选、prerelease 中断候选、坏 nonce 保留、候选/partial 链接保留、同名未知文件及链接拒绝、单候选替换。Zig 新增 regular/no-follow 文件可同步读取且拒绝目录检查，**45/45**。
+
+### 7.1 Windows 首轮 CI 与收尾
+
+- CI **36910619779**（`ccb2b78`）：ubuntu/macOS 通过，Windows 4 项失败；候选准备报 `Unexpected`，clean 留下本应识别的完整候选。根因定位于 Zig 0.15.2 `std.os.windows.OpenFile`：`follow_symlinks=false` 时省略 `FILE_SYNCHRONOUS_IO_NONALERT`，返回异步句柄；`File.read` 随后以空 OVERLAPPED 同步读取，错误映射为 `Unexpected`。不是目录退役顺序问题。
+- `6599c39`：保留 no-follow regular 检查，Windows 再通过同一目录句柄同步重开并比对 file-index，拒绝身份变化；POSIX 打开方式不变。继承的同名冲突检查也纳入，拒绝未知文件或链接，不写外部文件；发布新候选后只清其他严格名称且内容有效的候选。clean 回收严格 `.part-<1..16 hex>` regular/no-follow 文件（partial 内容不要求完整标记，经 supervisor 批准），包括 prerelease。
+- 本机无原生 Windows 环境；**Windows 修复尚未通过原生 CI 验证**。现有 8 项 self-update 黑盒未增加 Windows skip，Zig 同步读取检查也会在 Windows 执行；cross-build 不能替代原生证据。
+
+### 7.1 收尾全量验证与待验收项
+
+- 原命令 `TMPDIR=/var/tmp/dsh-71-finish PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH zig build test --summary all` → **45/45**。
+- 原命令 `bun test ./test` 全量尝试 → **215 pass / 18 skip / 15 fail / 4 errors / 2878 断言**，耗时 531s，日志 `/var/tmp/dsh-71-finish/full.log`。7.1 八项全部通过。其余失败为既有 5s 测试时限（spawnSync 返回 null/143）及 real-runtime beforeAll 的 local-build **240s ETIMEDOUT**。未修改测试时限、未隐藏失败。
+- 调查：主机 `/proc/pressure/io` full avg300 约 40%，CPU pressure 不到 1%，未见本次残留 manager 进程。资源争用是时限失败的合理原因，**不据此声称全量已通过**。重跑 clean/versions/snapshots/launch/install 五文件 → **82 pass / 10 fail / 1124 断言**，再次全为 5s 超时/null/143（`timeout-recheck.log`）；失败集合随运行变化，无 7.1 语义断言失败。
+- `zig fmt --check src build.zig`、`zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-71-finish/windows --summary all`、`zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-71-finish/macos --summary all` 通过；源码 cross-build 不算 Windows 功能验收。文档收尾后再 `git diff --check`。
+- 18 skips：本机无 zsh、Windows PowerShell 5.1/Windows 路径语义需 Windows、未配置真实 HTTPS proxy；7.1 新增测试无 skip（除缺 Zig 的公共门禁）。pwsh Core 已按要求加入 PATH。
+- **7.2/7.3 必须承接**：同卷替换、故障恢复、Windows helper 以及完整 MC-SELF-ONLY 的 M1→M2 实际版本变化、保护状态哈希证明；本切片只输出 `prepared, not installed`，不能算已升级。
+- 未改任务勾选、未 push、未运行 gh、未触碰其他 change；验收仍需父会话独立复审与三平台最终 CI。
