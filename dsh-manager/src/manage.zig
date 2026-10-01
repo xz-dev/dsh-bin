@@ -50,7 +50,7 @@ pub fn selection(ctx: *Ctx, args: []const []const u8) u8 {
     const use = if (std.mem.eql(u8, query, "latest")) query else require(bundles, query);
     const snap: ?snapshot.Snapshot = if (opts.snapshot) |id| snapshot.existing(ctx, id) catch |err|
         util.fatal("cannot select snapshot {s}: {s}; run `dsh manager snapshot list`", .{ id, @errorName(err) }) else null;
-    if (addon != null) {
+    if (addon != null and !std.mem.eql(u8, addon.?, "none")) {
         const version = addons.runtime(ctx, .{ .use = use }) catch |err| util.fatal("cannot select addon: {s}", .{@errorName(err)});
         addons.validateChoice(ctx, version, addon) catch |err| util.fatal("cannot select addon: {s}", .{@errorName(err)});
     }

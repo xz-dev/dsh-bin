@@ -78,7 +78,15 @@ fn same(a: Release, b: Release) bool {
 pub fn available(ctx: *const Ctx, t: Table, bytes: []const u8) ![]Release {
     const list = try remote(ctx, bytes);
     var out: std.ArrayList(Release) = .empty;
-    for (list) |r| if (compatible(t, r.slot)) try out.append(ctx.a, r);
+    const p = try platform(ctx);
+    const expected = try std.fmt.allocPrint(ctx.a, "dsh-addon-office-{s}.zip", .{p});
+    for (list) |r| if (compatible(t, r.slot)) {
+        const asset = r.assets.map.get(p) orelse continue;
+        if (!eq(u8, asset.name, expected) or asset.size == 0 or asset.sha256.len != 64) continue;
+        var digest: [32]u8 = undefined;
+        _ = std.fmt.hexToBytes(&digest, asset.sha256) catch continue;
+        try out.append(ctx.a, r);
+    };
     return out.items;
 }
 fn platform(ctx: *const Ctx) ![]const u8 {

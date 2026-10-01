@@ -1,7 +1,7 @@
 // MC-ADDON: native manager operations and launch payload, no application needed.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeZip } from "../../dsh-bun-build/runtime/zip.ts";
 import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
@@ -82,6 +82,11 @@ test.skipIf(!hasZig)("MC-ADDON: slots never bypassed by force; missing/incompati
 		rmSync(join(i.data, "addons/office", A), { recursive: true });
 		const missing = run(i, ["probe"]); expect(missing.status).toBe(0); expect(missing.stderr).toContain("missing"); expect(launchOf(i).addons.office).toBeUndefined(); expect(selection(i)).toBe(saved); expect(s.requests.length).toBe(count);
 		for (const addon of ["../../bad", "office:../bad", "unknown:1", "office:"]) expect(run(i, ["--addon", addon, "probe"]).status).toBe(1);
+		expect(run(i, ["--addon", "office:../bad", "--addon", "office:none", "probe"]).status).toBe(1);
+		expect(run(i, ["manager", "select", "--use", V, "--addon", "office:none"]).status).toBe(0);
+		expect(run(i, ["manager", "select", "--use", "latest", "--addon", "office:none"]).status).toBe(0);
+		expect(run(i, ["manager", "uninstall", V, W]).status).toBe(0);
+		expect(run(i, ["manager", "select", "--use", "latest", "--addon", "office:none"]).status).toBe(0);
 	} finally { s.stop(); }
 });
 
@@ -97,5 +102,19 @@ test.skipIf(!hasZig)("MC-ADDON: digest/size/metadata failures publish nothing; f
 		expect((await command(i, s, ["--use", V, "manager", "install", "--addon", "office", "--force"])).status).toBe(0); expect(existsSync(marker)).toBe(false); expect(started(i)).toBe(false);
 		const available = await command(i, s, ["--use", V, "manager", "list", "--available", "--json"]); expect(available.status).toBe(0); expect(JSON.parse(available.stdout).availableAddons.office.map((e: any) => e.version).sort()).toEqual([A, B]);
 		s.entries[0].assets[platform].sha256 = "c".repeat(64); const conflict = await install(i, s, `office:${A}`); expect(conflict.status).toBe(1); expect(conflict.stderr).toContain("Conflict");
+	} finally { s.stop(); }
+});
+
+
+test.skipIf(!hasZig)("MC-ADDON: verified bytes still require matching metadata and addon-only archive roots", async () => {
+	const i = newInstall(), s = source(i);
+	try {
+		const e = s.entries[1], asset = e.assets[platform], zip = join(tempDir("dsh-addon-invalid-"), "addon.zip");
+		const path = `/download/${e.tag}/${asset.name}`;
+		for (const [patch, extra] of [[{ slot: other }, []], [{ tag: "dsh-addon-office-vold" }, []], [{}, [{ name: "dsh-native", data: Buffer.from("unexpected application"), mode: 0o755 }]]] as const) {
+			writeZip(zip, [{ name: "addon.json", data: Buffer.from(JSON.stringify({ name: "office", version: B, tag: e.tag, slot, kitVersion: slot.kitVersion, platform, packages: [], ...patch })), mode: 0o644 }, { name: "node_modules/", dir: true }, ...extra]);
+			const bytes = readFileSync(zip); s.assets.set(path, bytes); asset.size = bytes.length; asset.sha256 = createHash("sha256").update(bytes).digest("hex");
+			const r = await install(i, s); expect(r.status).toBe(1); expect(r.stderr).toMatch(/Metadata|UnexpectedAddonRoot/); expect(existsSync(join(i.data, "addons/office", B))).toBe(false); expect(started(i)).toBe(false);
+		}
 	} finally { s.stop(); }
 });
