@@ -45,7 +45,7 @@ fn prepare(ctx: *Ctx, force: bool) !void {
     defer mutex.release();
     var parent = try std.fs.cwd().openDir(ctx.dir, .{ .iterate = true, .no_follow = true });
     defer parent.close();
-    const installed = if (builtin.os.tag == .windows) null else try binary.openRegular(parent, std.fs.path.basename(ctx.exe));
+    const installed: ?std.fs.File = if (builtin.os.tag == .windows) null else try binary.openRegular(parent, std.fs.path.basename(ctx.exe));
     defer if (installed) |f| f.close();
     const name = try std.fmt.allocPrint(ctx.a, "{s}{s}", .{ binary.candidate_prefix, candidate.entry.version });
     // A conflicting user file/link is not ours to overwrite.
