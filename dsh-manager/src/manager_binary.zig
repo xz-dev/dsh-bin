@@ -94,13 +94,14 @@ fn validateFile(a: std.mem.Allocator, file: std.fs.File, version: []const u8) !v
     const bytes = try file.readToEndAlloc(a, 128 << 20);
     defer a.free(bytes);
     if (!native(bytes)) return error.WrongManagerTarget;
-    const marker = try std.fmt.allocPrint(a, "DSH_MANAGER_VERSION={s}\x00", .{version});
-    defer a.free(marker);
-    if (!uniqueMarker(bytes, version_marker[0..20], marker)) return error.ManagerVersionMismatch;
-    if (!uniqueMarker(bytes, protocol_marker[0..28], protocol_marker)) return error.ManagerProtocolMismatch;
+    if (!uniqueMarker(bytes, version_marker[0..20], version)) return error.ManagerVersionMismatch;
+    if (!uniqueMarker(bytes, protocol_marker[0..28], protocol_marker[28 .. protocol_marker.len - 1])) return error.ManagerProtocolMismatch;
 }
-fn uniqueMarker(bytes: []const u8, prefix: []const u8, expected: []const u8) bool {
-    return std.mem.count(u8, bytes, prefix) == 1 and std.mem.indexOf(u8, bytes, expected) != null;
+fn uniqueMarker(bytes: []const u8, prefix: []const u8, value: []const u8) bool {
+    const at = std.mem.indexOf(u8, bytes, prefix) orelse return false;
+    if (std.mem.indexOf(u8, bytes[at + prefix.len ..], prefix) != null) return false;
+    const record = bytes[at + prefix.len ..];
+    return record.len > value.len and std.mem.startsWith(u8, record, value) and record[value.len] == 0;
 }
 /// Deterministic race barrier; production ignores both variables.
 pub fn testPause(ctx: *const @import("context.zig").Ctx, stage: []const u8, name: []const u8) void {
