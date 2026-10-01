@@ -81,10 +81,14 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool) !void
     const backup = ctx.path(&.{ "tmp", try std.fmt.allocPrint(ctx.a, ".previous-{s}", .{e.id}) });
     // Windows cannot atomically replace a nonempty directory. Restore an interrupted retirement
     // on the next explicit install, under the maintenance lock; never delete the only generation.
-    if (!util.exists(dest) and util.exists(backup)) try std.fs.cwd().rename(backup, dest);
+    if (!util.exists(dest) and util.exists(backup)) {
+        try recognized(ctx, backup, e.id);
+        try std.fs.cwd().rename(backup, dest);
+    }
     const exists = util.exists(dest);
+    if (exists) try recognized(ctx, dest, e.id);
     if (exists and !force) {
-        if (runtimes.check(ctx, runtimes.list(ctx), e.id) != .ok) return error.IncompleteRuntimeUseForce;
+        _ = validate(ctx, dest, e, host) catch return error.IncompleteRuntimeUseForce;
         _ = snapshot.prepare(ctx, e.id, e.bundle().meta.?);
         util.print("dsh {s} is already installed.\n", .{e.id});
         return;
@@ -102,15 +106,28 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool) !void
     try zip.extract(ctx.a, archive, staging);
     const meta = try validate(ctx, staging, e, host);
     var dir = try std.fs.cwd().openDir(staging, .{});
+    var dir_open = true;
+    defer if (dir_open) dir.close();
     const installed_meta = try std.json.Stringify.valueAlloc(ctx.a, .{ .kind = "dsh-runtime-install", .schema = @as(u32, 1), .id = e.id, .target = host, .tag = e.tag, .asset = candidate.asset, .seq = e.seq }, .{});
     try dir.writeFile(.{ .sub_path = ".dsh-install.json", .data = installed_meta });
     try dir.writeFile(.{ .sub_path = runtimes.guard_name, .data = "" });
     dir.close(); // No open directory/file handles at Windows activation.
+    dir_open = false;
     crashPoint(ctx, "before-activation");
     try activate(ctx, staging, dest, backup, exists);
     crashPoint(ctx, "after-activation");
     _ = snapshot.prepare(ctx, e.id, meta);
     util.print("Installed dsh {s} ({s}); selection unchanged.\n", .{ e.id, host });
+}
+
+fn recognized(ctx: *const Ctx, path: []const u8, id: []const u8) !void {
+    var dir = std.fs.cwd().openDir(path, .{ .no_follow = true }) catch return error.RuntimeDirectoryConflict;
+    defer dir.close();
+    if ((try dir.stat()).kind != .directory) return error.RuntimeDirectoryConflict;
+    const bytes = dir.readFileAlloc(ctx.a, "bundle.json", 1 << 20) catch return error.RuntimeDirectoryConflict;
+    const Identity = struct { kind: []const u8, schemaVersion: u32, id: []const u8 };
+    const m = std.json.parseFromSliceLeaky(Identity, ctx.a, bytes, .{ .ignore_unknown_fields = true }) catch return error.RuntimeDirectoryConflict;
+    if (m.schemaVersion != 1 or !std.mem.eql(u8, m.kind, "dsh-runtime") or !std.mem.eql(u8, m.id, id)) return error.RuntimeDirectoryConflict;
 }
 
 fn crashPoint(ctx: *const Ctx, point: []const u8) void {
@@ -123,7 +140,10 @@ fn crashPoint(ctx: *const Ctx, point: []const u8) void {
 fn safeRelative(path: []const u8) bool {
     if (path.len == 0 or path[0] == '/' or std.mem.indexOfAny(u8, path, "\\:\x00") != null) return false;
     var parts = std.mem.splitScalar(u8, path, '/');
-    while (parts.next()) |p| if (!index.component(p)) return false;
+    while (parts.next()) |p| {
+        if (p.len == 0 or std.mem.eql(u8, p, ".") or std.mem.eql(u8, p, "..")) return false;
+        for (p) |c| if (c < 32 or c == 127) return false;
+    }
     return true;
 }
 
@@ -136,9 +156,20 @@ fn validate(ctx: *const Ctx, staging: []const u8, e: index.Entry, host: []const 
     const meta = select.parseMeta(ctx.a, bytes) orelse return error.InvalidBundle;
     const root = try std.json.parseFromSliceLeaky(std.json.Value, ctx.a, bytes, .{});
     if (root != .object or root.object.contains("launcherProtocol") or meta.format != .runtime_v1) return error.LegacyBundle;
-    const Meta = struct { kind: []const u8, schemaVersion: u32, id: []const u8, target: []const u8, launchProtocol: u64, entry: []const u8, requiredPaths: []const []const u8 };
+    const Meta = struct {
+        kind: []const u8,
+        schemaVersion: u32,
+        id: []const u8,
+        target: []const u8,
+        launchProtocol: u64,
+        entry: []const u8,
+        requiredPaths: []const []const u8,
+        upstream: @FieldType(index.Entry, "upstream"),
+        builderCommit: []const u8,
+    };
     const m = std.json.parseFromSliceLeaky(Meta, ctx.a, bytes, .{ .ignore_unknown_fields = true }) catch return error.InvalidBundle;
     if (!std.mem.eql(u8, m.id, e.id) or !std.mem.eql(u8, m.target, host) or m.launchProtocol != select.protocol or meta.entry == null or !meta.ordered()) return error.BundleMismatch;
+    if (!std.mem.eql(u8, m.upstream.commit, e.upstream.commit) or !std.mem.eql(u8, m.upstream.version, e.upstream.version) or !std.mem.eql(u8, m.builderCommit, e.builderCommit)) return error.BundleMismatch;
     const expected_entry = if (builtin.os.tag == .windows) "dsh-native.exe" else "dsh-native";
     if (!std.mem.eql(u8, m.entry, expected_entry) or !std.mem.eql(u8, meta.channel.?, e.channel) or !std.mem.eql(u8, meta.commit_time.?, e.upstream.commitTime) or meta.run.? != e.run or meta.attempt.? != e.attempt) return error.BundleMismatch;
     var file = dir.openFile(m.entry, .{}) catch return error.MissingEntry;
@@ -148,7 +179,8 @@ fn validate(ctx: *const Ctx, staging: []const u8, e: index.Entry, host: []const 
     if (m.requiredPaths.len == 0) return error.MissingRequiredPath;
     for (m.requiredPaths) |path| {
         if (!safeRelative(path)) return error.UnsafeRequiredPath;
-        dir.access(path, .{}) catch return error.MissingRequiredPath;
+        const required = dir.statFile(path) catch return error.MissingRequiredPath;
+        if (required.kind != .file and required.kind != .directory) return error.MissingRequiredPath;
     }
     return meta;
 }
@@ -176,8 +208,14 @@ fn activate(ctx: *const Ctx, staging: []const u8, dest: []const u8, backup: []co
         if (renamex_np(src_z, dst_z, 2) != 0) return error.AtomicReplacementFailed;
         return;
     }
-    if (claim) |l| { l.release(); claim = null; } // Windows rename refuses our own guard handle too.
-    if (util.exists(backup)) try std.fs.cwd().deleteTree(backup);
+    if (claim) |l| {
+        l.release();
+        claim = null;
+    } // Windows rename refuses our own guard handle too.
+    if (util.exists(backup)) {
+        try recognized(ctx, backup, std.fs.path.basename(dest));
+        try std.fs.cwd().deleteTree(backup);
+    }
     try std.fs.cwd().rename(dest, backup);
     std.fs.cwd().rename(staging, dest) catch |err| {
         std.fs.cwd().rename(backup, dest) catch return error.RestoreFailed;

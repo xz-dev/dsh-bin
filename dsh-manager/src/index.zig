@@ -19,8 +19,12 @@ pub const Entry = struct {
 
     pub fn bundle(self: Entry) select.Bundle {
         return .{ .version = self.id, .meta = .{
-            .format = .runtime_v1, .channel = self.channel, .commit_time = self.upstream.commitTime,
-            .run = self.run, .attempt = self.attempt, .protocol = self.launchProtocol,
+            .format = .runtime_v1,
+            .channel = self.channel,
+            .commit_time = self.upstream.commitTime,
+            .run = self.run,
+            .attempt = self.attempt,
+            .protocol = self.launchProtocol,
         } };
     }
 };
@@ -60,7 +64,9 @@ pub fn choose(a: std.mem.Allocator, list: []const Candidate, query: []const u8) 
     if (list.len == 0) return .none;
     if (std.mem.eql(u8, query, "latest")) {
         var best = list[0];
-        for (list[1..]) |c| if (select.before(best.entry.bundle(), c.entry.bundle())) { best = c; };
+        for (list[1..]) |c| if (select.before(best.entry.bundle(), c.entry.bundle())) {
+            best = c;
+        };
         return .{ .found = best };
     }
     const bundles = try a.alloc(select.Bundle, list.len);

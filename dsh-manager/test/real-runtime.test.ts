@@ -12,7 +12,7 @@ import { MANAGER_DIR, EXE } from "./harness.ts";
 const RUNTIME_PROJECT = resolve(MANAGER_DIR, "../dsh-bun-build");
 const available = existsSync(join(RUNTIME_PROJECT, "work/app"));
 const skipReason = "requires local dsh-bun-build/work/app (absent on CI; real archive not tested)";
-let root: string, bundle: string, id: string, managers: string[], home: string, cwd: string, path: string, version: string;
+let root: string, bundle: string, id: string, managers: string[], home: string, cwd: string, path: string, version: string, runtimeZip: string, runtimeManifest: string;
 
 beforeAll(() => {
 	if (!available) return;
@@ -23,6 +23,8 @@ beforeAll(() => {
 	const result = execFileSync(process.execPath, ["scripts/local-build.mjs", out, "release", "1"], { cwd: RUNTIME_PROJECT, encoding: "utf8", timeout: 240_000 });
 	const built = JSON.parse(result.trim().split("\n").at(-1)!);
 	id = built.id;
+	runtimeZip = built.zip;
+	runtimeManifest = join(out, `${built.tag}.json`);
 	const tools = join(root, "tools");
 	mkdirSync(tools);
 	const data = join(tools, "dsh-bin");
@@ -240,5 +242,60 @@ test.skipIf(!available)(`PS-CONTAIN: isolated HOME file-change audit over real r
 		expect(existsSync(join(pnpmProject, "node_modules/dsh-cache-probe/index.js"))).toBe(true);
 		expect(tree(userHome)).toEqual([]);
 		expect(tree(audit).filter((p) => !p.startsWith("tools/dsh-bin/"))).toEqual(["isolated-home", "tools", `tools/dsh${EXE}`, "tools/dsh-bin"].sort());
+	} finally { await server.stop(true); }
+}, 180_000);
+
+// 3.4: local-build's real archive and the release writer, through the public install command.
+test.skipIf(!available)(`MC-EMPTY / MC-BROKEN: only manager -> local runtime index -> verified real archive -> launch -> force repair${available ? "" : ` — SKIP: ${skipReason}`}`, async () => {
+	const fresh = join(root, "native-install");
+	const tools = join(fresh, "tools"), userHome = join(fresh, "isolated-home"), working = join(fresh, "workspace");
+	for (const dir of [tools, userHome, working]) mkdirSync(dir, { recursive: true });
+	const exe = join(tools, `dsh${EXE}`);
+	cpSync(managers[0]!, exe);
+	const indexPath = join(fresh, "runtime-index.json");
+	execFileSync(process.execPath, ["scripts/index.mjs", "append-bundle", indexPath, runtimeManifest], { cwd: RUNTIME_PROJECT, timeout: 30_000 });
+	const index = JSON.parse(readFileSync(indexPath, "utf8")), entry = index.channels.release[0];
+	const asset = entry.assets[JSON.parse(readFileSync(join(bundle, "bundle.json"), "utf8")).target];
+	const requests: string[] = [];
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+		const url = new URL(req.url);
+		requests.push(url.pathname);
+		if (url.pathname === "/runtime-index.json") return Response.json(index);
+		if (url.pathname === `/download/${entry.tag}/${asset.name}`) return new Response(Bun.file(runtimeZip));
+		if (url.pathname === "/manager-index.json") return Response.json({ schema: 1, versions: [{ version: "99.0.0", tag: "manager-v99.0.0", assets: {} }] });
+		return new Response(null, { status: 404 });
+	} });
+	const childEnv = { PATH: path, HOME: userHome, USERPROFILE: userHome, NO_COLOR: "1", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) };
+	const install = async (force = false) => {
+		const proc = Bun.spawn([exe, "manager", "install", entry.tag, ...(force ? ["--force"] : [])], { cwd: working, env: { ...childEnv, DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: `http://127.0.0.1:${server.port}` }, stdout: "pipe", stderr: "pipe" });
+		const timer = setTimeout(() => proc.kill("SIGKILL"), 120_000);
+		try {
+			const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+			if (code !== 0) console.error(stdout, stderr);
+			expect(code).toBe(0);
+		} finally { clearTimeout(timer); if (proc.exitCode === null) { proc.kill("SIGKILL"); await proc.exited; } }
+	};
+	const data = join(tools, "dsh-bin"), installed = join(data, "bundles", id), native = join(installed, `dsh-native${EXE}`);
+	try {
+		expect(tree(tools)).toEqual([`dsh${EXE}`]);
+		await install();
+		expect(requests).toEqual(["/runtime-index.json", `/download/${entry.tag}/${asset.name}`]);
+		expect(existsSync(join(data, "snapshots", `${id}@1`, "snapshot.json"))).toBe(true);
+		const metadata = readFileSync(join(data, "snapshots", `${id}@1`, "snapshot.json"), "utf8");
+		for (const args of [["--version"], ["--help"]]) {
+			const result = spawnSync(exe, ["--use", id, ...args], { cwd: working, env: childEnv, encoding: "utf8", timeout: 30_000 });
+			if (result.status !== 0) console.error(result.stdout, result.stderr);
+			expect(result.status).toBe(0);
+			expect(result.stdout).toContain(args[0] === "--version" ? version : "dsh: boot a DeepSeek Harness profile");
+		}
+		const before = readFileSync(native);
+		rmSync(native);
+		expect(spawnSync(exe, ["--use", id, "--version"], { env: childEnv, encoding: "utf8", timeout: 30_000 }).status).toBe(1);
+		await install(true);
+		expect(readFileSync(native).equals(before)).toBe(true);
+		expect(readFileSync(join(data, "snapshots", `${id}@1`, "snapshot.json"), "utf8")).toBe(metadata);
+		expect(spawnSync(exe, ["--use", id, "--version"], { env: childEnv, encoding: "utf8", timeout: 30_000 }).status).toBe(0);
+		expect(tree(userHome)).toEqual([]);
+		expect(tree(working)).toEqual([]);
 	} finally { await server.stop(true); }
 }, 180_000);

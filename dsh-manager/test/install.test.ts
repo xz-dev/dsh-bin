@@ -1,12 +1,13 @@
 // Native install acceptance: local HTTP source, real manager, no host JS in tested PATH.
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeZip, type ZipInput } from "../../dsh-bun-build/runtime/zip.ts";
 import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
 import { acquireClaim } from "./claim-probe.ts";
-import { addRuntime, argvOf, baseEnv, build, bundleMeta, cleanup, EXE, hasZig, launchOf, newInstall, run, started, tempDir, tree, type Install } from "./harness.ts";
+import { addRuntime, argvOf, baseEnv, build, bundleMeta, cleanup, EXE, hasZig, launchOf, MANAGER_DIR, newInstall, run, started, tempDir, tree, type Install } from "./harness.ts";
 
 const TARGET = hostTargetId();
 const ID = "0.1.7-b1.1.gdeadbeef";
@@ -100,4 +101,303 @@ test.skipIf(!hasZig)("RB-LEGACY: only legacy/protocol/target mismatches cause no
 			expect(installed(i)).toBe(false);
 		} finally { await s.stop(); }
 	}
+});
+
+const OLD = "0.1.6-b1.1.gcafebabe";
+function existingInstall() {
+	const i = newInstall();
+	addRuntime(i.data, OLD);
+	const state = join(i.data, "state");
+	// Create selection through fixture only; select command belongs to section 6.
+	mkdirSync(state);
+	writeFileSync(join(state, "selection.json"), JSON.stringify({ schema: 1, use: OLD, snapshot: null, addons: {} }));
+	writeFileSync(join(state, "channel"), "release\n");
+	return i;
+}
+const original = (i: Install) => readFileSync(join(i.data, "bundles", OLD, `dsh-native${EXE}`));
+const selection = (i: Install) => readFileSync(join(i.data, "state/selection.json"), "utf8");
+
+test.skipIf(!hasZig).each(["bad hash", "interrupted"])("DL-CORRUPT / FB-RETRY: %s download never installs; rerun verifies and completes", async (fault) => {
+	const i = existingInstall(), a = archive(), e = entry(ID, a.bytes);
+	const previous = original(i), pin = selection(i);
+	if (fault === "bad hash") e.assets[TARGET].sha256 = "a".repeat(64);
+	let broken = true;
+	const s = source([e], new Map([[assetPath(e), a.bytes]]), (req, bytes) => {
+		if (!broken) return ranged(req, bytes);
+		if (fault === "bad hash") return new Response(bytes); // Valid ZIP but not the digest promised by index.
+		const start = Number(/^bytes=(\d+)-$/.exec(req.headers.get("range") ?? "")?.[1] ?? 0);
+		return new Response(new ReadableStream({ start(c) {
+			c.enqueue(bytes.subarray(start, start + 37));
+			setTimeout(() => { try { c.error(null); } catch {} }, 20);
+		} }), { status: start ? 206 : 200, headers: start ? { "content-range": `bytes ${start}-${bytes.length - 1}/${bytes.length}` } : {} });
+	});
+	try {
+		const failed = await install(i, s.origin);
+		expect(failed.status).toBe(1);
+		expect(failed.stderr).toContain(fault === "bad hash" ? "HashMismatch" : "Network");
+		expect(installed(i)).toBe(false);
+		expect(existsSync(join(i.data, "snapshots", `${ID}@1`))).toBe(false);
+		expect(original(i).equals(previous)).toBe(true);
+		expect(selection(i)).toBe(pin);
+		expect(started(i)).toBe(false);
+		if (fault === "interrupted") {
+			const partials = readdirSync(join(i.data, "cache/downloads")).filter((n) => n.endsWith(".part"));
+			expect(partials.length).toBe(1);
+			expect(statSync(join(i.data, "cache/downloads", partials[0]!)).size).toBeGreaterThan(0);
+		}
+		const requestsBefore = s.requests.length;
+		broken = false;
+		e.assets[TARGET].sha256 = sha(a.bytes);
+		expect((await install(i, s.origin)).status).toBe(0);
+		expect(installed(i)).toBe(true);
+		expect(selection(i)).toBe(pin);
+		if (fault === "interrupted") expect(s.requests.slice(requestsBefore).some((r) => r.range !== null)).toBe(true);
+	} finally { await s.stop(); }
+	expect(run(i, ["--version"]).status).toBe(0); // top-level is still read-only manager version
+	expect(run(i, ["--use", OLD, "probe"]).status).toBe(0);
+});
+
+function renameMember(bytes: Buffer, from: string, to: string) {
+	const old = Buffer.from(from), replacement = Buffer.from(to);
+	expect(replacement.length).toBe(old.length);
+	const copy = Buffer.from(bytes);
+	let at = 0, count = 0;
+	while ((at = copy.indexOf(old, at)) !== -1) { replacement.copy(copy, at); at += old.length; count++; }
+	expect(count).toBe(2); // local and central header, payload unchanged
+	return copy;
+}
+
+test.skipIf(!hasZig).each(["absolute", "traversal", "link"])("DL-ESCAPE: %s archive cannot write outside staging or damage usable version", async (fault) => {
+	const i = existingInstall(), sentinel = join(i.dir, "escape");
+	writeFileSync(sentinel, "external file stays");
+	const previous = original(i), pin = selection(i);
+	const badName = fault === "absolute" ? sentinel.replaceAll("\\", "/") : "../../../escape";
+	const placeholder = "x".repeat(Buffer.byteLength(badName));
+	let bytes = archive(ID, {}, [{ name: placeholder, data: Buffer.from(fault === "link" ? sentinel : "overwrite"), mode: 0o644 }]).bytes;
+	if (fault === "link") {
+		bytes = Buffer.from(bytes);
+		for (let at = 0; at < bytes.length - 46; at++) if (bytes.readUInt32LE(at) === 0x02014b50 && bytes.toString("utf8", at + 46, at + 46 + bytes.readUInt16LE(at + 28)) === placeholder) bytes.writeUInt32LE((0o120777 << 16) >>> 0, at + 38);
+	} else bytes = renameMember(bytes, placeholder, badName);
+	const e = entry(ID, bytes), s = source([e], new Map([[assetPath(e), bytes]]));
+	try {
+		const result = await install(i, s.origin);
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain(fault === "link" ? "UnsupportedEntry" : "UnsafeEntryName");
+		expect(installed(i)).toBe(false);
+		expect(readFileSync(sentinel, "utf8")).toBe("external file stays");
+		expect(original(i).equals(previous)).toBe(true);
+		expect(selection(i)).toBe(pin);
+		expect(readdirSync(join(i.data, "tmp")).filter((n) => n.startsWith(".install-"))).toEqual([]);
+	} finally { await s.stop(); }
+});
+
+test.skipIf(!hasZig).each([
+	["legacy", { schemaVersion: 2, launcherProtocol: 2 }, "LegacyBundle"],
+	["wrong id", { id: "foreign" }, "BundleMismatch"],
+	["wrong target", { target: "foreign" }, "BundleMismatch"],
+	["protocol", { launchProtocol: 2 }, "BundleMismatch"],
+	["wrong entry", { entry: "bundle.json" }, "BundleMismatch"],
+	["upstream mismatch", { upstream: { commit: "e".repeat(40), commitTime: "2026-09-01T00:00:00.000Z", version: "0.1.7" } }, "BundleMismatch"],
+	["builder mismatch", { builderCommit: "e".repeat(40) }, "BundleMismatch"],
+	["missing required path", { requiredPaths: ["app/missing.js"] }, "MissingRequiredPath"],
+	["required traversal", { requiredPaths: ["../escape"] }, "UnsafeRequiredPath"],
+])("DL-CORRUPT / RB-LEGACY: %s bundle rejected before activation", async (_name, patch, error) => {
+	const i = existingInstall(), a = archive(ID, patch), e = entry(ID, a.bytes), pin = selection(i), previous = original(i);
+	const s = source([e], new Map([[assetPath(e), a.bytes]]));
+	try {
+		const result = await install(i, s.origin);
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain(error);
+		expect(installed(i)).toBe(false);
+		expect(original(i).equals(previous)).toBe(true);
+		expect(selection(i)).toBe(pin);
+		expect(started(i)).toBe(false);
+	} finally { await s.stop(); }
+});
+
+test.skipIf(!hasZig).each(["before-activation", "after-activation"])("DL-CORRUPT / FB-RETRY: crash %s leaves previous runtime usable and rerun completes", async (point) => {
+	const i = existingInstall(), a = archive(), e = entry(ID, a.bytes), pin = selection(i), previous = original(i);
+	const s = source([e], new Map([[assetPath(e), a.bytes]]));
+	try {
+		const result = await install(i, s.origin, [ID], { DSH_MANAGER_TEST_CRASH: point });
+		expect(result.status).toBe(86);
+		expect(result.stderr).toContain(`test crash at ${point}`);
+		expect(installed(i)).toBe(point === "after-activation");
+		expect(original(i).equals(previous)).toBe(true);
+		expect(selection(i)).toBe(pin);
+		expect(run(i, ["--use", OLD, "probe"]).status).toBe(0);
+		if (point === "after-activation") expect(run(i, ["--use", ID, "probe"]).status).toBe(0);
+		expect((await install(i, s.origin)).status).toBe(0);
+		expect(installed(i)).toBe(true);
+		expect(selection(i)).toBe(pin);
+	} finally { await s.stop(); }
+});
+
+test.skipIf(!hasZig)("MC-BROKEN: force reinstall repairs missing entry without executing it or resetting snapshot/home/selection", async () => {
+	const i = newInstall(), a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
+	try {
+		expect((await install(i, s.origin)).status).toBe(0);
+		const state = join(i.data, "state/selection.json");
+		writeFileSync(state, JSON.stringify({ schema: 1, use: ID, snapshot: `${ID}@1`, addons: {} }));
+		const pin = readFileSync(state, "utf8"), snapshot = join(i.data, "snapshots", `${ID}@1`);
+		writeFileSync(join(snapshot, "plugin-state"), "keep plugin");
+		writeFileSync(join(i.data, "home-secret"), "keep credentials");
+		const metadata = readFileSync(join(snapshot, "snapshot.json"), "utf8");
+		rmSync(join(i.data, "bundles", ID, `dsh-native${EXE}`));
+		expect(run(i, ["--use", ID, "probe"]).status).toBe(1);
+		expect((await install(i, s.origin)).stderr).toContain("IncompleteRuntimeUseForce");
+		expect((await install(i, s.origin, [e.tag, "--force"])).status).toBe(0);
+		expect(started(i)).toBe(false);
+		expect(readFileSync(state, "utf8")).toBe(pin);
+		expect(readFileSync(join(snapshot, "snapshot.json"), "utf8")).toBe(metadata);
+		expect(readFileSync(join(snapshot, "plugin-state"), "utf8")).toBe("keep plugin");
+		expect(readFileSync(join(i.data, "home-secret"), "utf8")).toBe("keep credentials");
+		expect(run(i, ["probe"]).status).toBe(0);
+	} finally { await s.stop(); }
+});
+
+test.skipIf(!hasZig)("MC-EMPTY: exact tags/unique prefixes reused; ambiguous prefix never downloads", async () => {
+	const other = "0.1.7-b2.1.gdeadbeef", i = newInstall(), a = archive(), b = archive(other, { run: 2 });
+	const e = entry(ID, a.bytes, { seq: 2 }), f = entry(other, b.bytes, { run: 2, seq: 1 });
+	const s = source([e, f], new Map([[assetPath(e), a.bytes], [assetPath(f), b.bytes]]));
+	try {
+		const ambiguous = await install(i, s.origin, ["0.1.7"]);
+		expect(ambiguous.status).toBe(1);
+		expect(ambiguous.stderr).toContain("ambiguous");
+		expect(s.requests.map((r) => r.path)).toEqual(["/runtime-index.json"]);
+		const newest = newInstall();
+		expect((await install(newest, s.origin, ["latest"])).status).toBe(0);
+		expect(installed(newest, other)).toBe(true); // Build order, not manager version or index array order.
+		expect(installed(newest, ID)).toBe(false);
+		expect((await install(i, s.origin, ["0.1.7-b1"])).status).toBe(0);
+		expect((await install(i, s.origin, [f.tag])).status).toBe(0);
+		expect(run(i, ["manager", "list"]).stdout).toContain(other);
+		const before = s.requests.length;
+		expect(run(i, ["manager", "list", "--available"]).status).toBe(1);
+		expect(s.requests.length).toBe(before);
+	} finally { await s.stop(); }
+});
+
+test.skipIf(!hasZig)("MC-EMPTY: maintenance and usage locks block install/replacement without starting runtime", async () => {
+	const i = existingInstall(), a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
+	writeFileSync(join(i.data, "state/manager.lock"), "");
+	const guard = acquireClaim(join(i.data, "state/manager.lock"), "exclusive");
+	if (guard === "busy") throw new Error("fixture could not acquire lock");
+	try {
+		const blocked = await install(i, s.origin);
+		expect(blocked.status).toBe(1);
+		expect(blocked.stderr).toContain("maintenance lock");
+		expect(s.requests).toEqual([]);
+	} finally { guard.release(); }
+	try {
+		expect((await install(i, s.origin)).status).toBe(0);
+		const usage = acquireClaim(join(i.data, "bundles", ID, ".usage.lock"), "shared");
+		if (usage === "busy") throw new Error("fixture could not claim runtime");
+		try {
+			const before = readFileSync(join(i.data, "bundles", ID, `dsh-native${EXE}`));
+			const blocked = await install(i, s.origin, [ID, "--force"]);
+			expect(blocked.status).toBe(1);
+			expect(blocked.stderr).toContain("RuntimeInUse");
+			expect(readFileSync(join(i.data, "bundles", ID, `dsh-native${EXE}`)).equals(before)).toBe(true);
+			expect(started(i)).toBe(false);
+		} finally { usage.release(); }
+	} finally { await s.stop(); }
+});
+
+test.skipIf(!hasZig).each(["before-activation", "after-activation"])("DL-CORRUPT: same-id force crash %s leaves complete runtime and existing snapshot usable", async (point) => {
+	const i = newInstall(), a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
+	try {
+		expect((await install(i, s.origin)).status).toBe(0);
+		const snapshot = join(i.data, "snapshots", `${ID}@1`, "plugin-state");
+		writeFileSync(snapshot, "keep this");
+		const result = await install(i, s.origin, [ID, "--force"], { DSH_MANAGER_TEST_CRASH: point });
+		expect(result.status).toBe(86);
+		expect(run(i, ["--use", ID, "probe"]).status).toBe(0);
+		expect(readFileSync(snapshot, "utf8")).toBe("keep this");
+		expect((await install(i, s.origin, [ID, "--force"])).status).toBe(0);
+	} finally { await s.stop(); }
+});
+
+test.skipIf(!hasZig)("DL-CORRUPT: failed force candidate keeps current entry, install metadata and snapshot unchanged", async () => {
+	const i = newInstall(), a = archive(), good = entry(ID, a.bytes);
+	const bad = archive(ID, { requiredPaths: ["missing"] }), e = entry(ID, bad.bytes);
+	let bytes = a.bytes;
+	let current = good;
+	const requests: string[] = [];
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+		const path = new URL(req.url).pathname;
+		requests.push(path);
+		if (path === "/runtime-index.json") return Response.json({ schema: 1, channels: { release: [current], live: [] }, addons: { office: [] } });
+		return new Response(bytes);
+	} });
+	try {
+		const origin = `http://127.0.0.1:${server.port}`;
+		expect((await install(i, origin)).status).toBe(0);
+		const installedDir = join(i.data, "bundles", ID);
+		const entryBefore = readFileSync(join(installedDir, `dsh-native${EXE}`));
+		const metaBefore = readFileSync(join(installedDir, ".dsh-install.json"));
+		bytes = bad.bytes; current = e;
+		const failed = await install(i, origin, [ID, "--force"]);
+		expect(failed.status).toBe(1);
+		expect(failed.stderr).toContain("MissingRequiredPath");
+		expect(readFileSync(join(installedDir, `dsh-native${EXE}`)).equals(entryBefore)).toBe(true);
+		expect(readFileSync(join(installedDir, ".dsh-install.json")).equals(metaBefore)).toBe(true);
+		expect(run(i, ["--use", ID, "probe"]).status).toBe(0);
+	} finally { await server.stop(true); }
+});
+
+test.skipIf(!hasZig).each(["missing entry", "old outer tree"])("DL-CORRUPT / RB-LEGACY: %s archive is never activated", async (fault) => {
+	const i = existingInstall();
+	const a = archive(ID, {}, fault === "old outer tree" ? [{ name: "bundles/old/entry", data: Buffer.from("do not execute"), mode: 0o755 }] : []);
+	const bytes = fault === "missing entry" ? renameMember(a.bytes, `dsh-native${EXE}`, `not-native${EXE}`) : a.bytes;
+	const e = entry(ID, bytes), s = source([e], new Map([[assetPath(e), bytes]]));
+	try {
+		const result = await install(i, s.origin);
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain(fault === "missing entry" ? "MissingEntry" : "LegacyBundle");
+		expect(installed(i)).toBe(false);
+		expect(started(i)).toBe(false);
+	} finally { await s.stop(); }
+});
+
+test.skipIf(!hasZig)("DL-CORRUPT: HTTPS_PROXY remains fail-closed at install discovery (3.2 open gap)", async () => {
+	const i = newInstall();
+	const requests: string[] = [];
+	const proxy = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) { requests.push(req.url); return new Response(null, { status: 200 }); } });
+	try {
+		const result = await install(i, "https://fixture.invalid", [ID], { HTTPS_PROXY: `http://private:secret@127.0.0.1:${proxy.port}` });
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain("UnsupportedProxy");
+		expect(result.stderr).not.toContain("private");
+		expect(result.stderr).not.toContain("secret");
+		expect(requests).toEqual([]);
+		expect(installed(i)).toBe(false);
+	} finally { await proxy.stop(true); }
+});
+
+test.skipIf(!hasZig || process.platform !== "linux")(`FB-EMPTY: static musl-ABI manager detects actual host libc without installed bundle${process.platform === "linux" ? "" : " — SKIP: executing Linux ELF requires Linux host"}`, async () => {
+	const prefix = tempDir("dsh-musl-manager-");
+	execFileSync("zig", ["build", `-Dtarget=${process.arch === "arm64" ? "aarch64" : "x86_64"}-linux-musl`, "--prefix", prefix], { cwd: MANAGER_DIR, stdio: "inherit", timeout: 300_000 });
+	// This runtime target is from the executing userspace, not the manager's musl compile target.
+	const i = newInstall(join(prefix, "bin/dsh")), a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
+	try {
+		const result = await install(i, s.origin);
+		expect(result.status).toBe(0);
+		expect(result.stdout).toContain(`(${TARGET})`);
+		expect(installed(i)).toBe(true);
+	} finally { await s.stop(); }
+}, 360_000);
+
+test.skipIf(!hasZig)("DL-CORRUPT: --force refuses an unrecognized same-id directory instead of deleting user files", async () => {
+	const i = existingInstall(), a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
+	const foreign = join(i.data, "bundles", ID);
+	mkdirSync(foreign);
+	writeFileSync(join(foreign, "user-file"), "not a runtime");
+	try {
+		const result = await install(i, s.origin, [ID, "--force"]);
+		expect(result.status).toBe(1);
+		expect(result.stderr).toContain("RuntimeDirectoryConflict");
+		expect(readFileSync(join(foreign, "user-file"), "utf8")).toBe("not a runtime");
+		expect(s.requests.map((r) => r.path)).toEqual(["/runtime-index.json"]);
+	} finally { await s.stop(); }
 });

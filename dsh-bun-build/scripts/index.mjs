@@ -41,9 +41,11 @@ export function appendBundle(index, manifest) {
 		assets: Object.fromEntries(Object.entries(manifest.targets).map(([target, a]) => [target, { name: a.file, size: a.size, sha256: a.sha256 }])),
 		seq: Math.max(0, ...list.map((e) => e.seq)) + 1,
 	};
+	const fields = ["kind", "tag", "id", "channel", "upstream", "run", "attempt", "launchProtocol", "builderCommit", "addons", "assets"];
 	const existing = list.find((e) => e.tag === entry.tag);
 	if (existing) {
-		if (JSON.stringify({ ...existing, seq: 0 }) === JSON.stringify({ ...entry, seq: 0 })) return existing;
+		const content = (e) => JSON.stringify(Object.fromEntries(fields.map((key) => [key, e[key]])));
+		if (content(existing) === content(entry)) return existing;
 		throw new Error(`index already lists ${entry.tag} with different content; entries are never modified`);
 	}
 	parseIndex(JSON.stringify({ ...index, channels: { ...index.channels, [manifest.channel]: [...list, entry] } }));
