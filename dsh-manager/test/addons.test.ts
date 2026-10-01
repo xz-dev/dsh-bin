@@ -1,7 +1,7 @@
 // MC-ADDON: native manager operations and launch payload, no application needed.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { writeZip } from "../../dsh-bun-build/runtime/zip.ts";
@@ -54,6 +54,8 @@ test.skipIf(!hasZig)("MC-CLEAN: explicit addon install restores a validated inte
 	try {
 		expect((await install(i, s, `office:${A}`)).status).toBe(0);
 		const dir = join(i.data, "addons/office", A), backup = join(i.data, "tmp", `.previous-addon-office-${A}`);
+		cpSync(dir, backup, { recursive: true }); const cleaned = run(i, ["manager", "clean"]);
+		expect(cleaned.status).toBe(0); expect(existsSync(backup)).toBe(false); expect(existsSync(dir)).toBe(true);
 		writeFileSync(join(dir, "node_modules/keep"), "last generation"); renameSync(dir, backup);
 		const before = s.requests.length, recovered = await install(i, s, `office:${A}`);
 		expect(recovered.status).toBe(0); expect(s.requests.slice(before)).toEqual(["/runtime-index.json"]);

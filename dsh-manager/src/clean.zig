@@ -118,7 +118,10 @@ fn publicValid(ctx: *const Ctx, parent: ?Store, id: []const u8, addon: bool) boo
         for (meta.packages) |p| {
             if (!index.component(p) and !std.mem.startsWith(u8, p, "@")) return false;
             if (std.mem.indexOf(u8, p, "..") != null or std.mem.indexOfScalar(u8, p, '\\') != null) return false;
-            dir.access(util.join(ctx.a, &.{ "node_modules", p }), .{}) catch return false;
+            // addon packages use package@version labels; the installed directory omits that version suffix.
+            const end = std.mem.lastIndexOfScalar(u8, p, '@') orelse p.len;
+            const package = if (end == 0) p else p[0..end];
+            dir.access(util.join(ctx.a, &.{ "node_modules", package }), .{}) catch return false;
         }
         return true;
     }
