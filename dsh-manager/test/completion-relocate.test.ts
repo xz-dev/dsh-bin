@@ -59,7 +59,8 @@ for (const shell of ["bash", "zsh", "fish", "pwsh", "powershell"] as const) {
  }, 180_000);
  test.skipIf(!!reason)(`SC-QUOTING: ${shell} special path and candidate insertion remain literal${reason ? ` — SKIP: ${reason}` : ""}`, () => {
   let i = newInstall(); i = move(i, WIN ? "space ' é $(x) &" : "space ' \" é $(x) &");
-  const name = ps ? "1.0.0@space $(New-Item CANARY) ` ; * | & [x] é '" : "1.0.0@space $(touch CANARY) ` ; * | & [x] é '";
+  // Windows filenames cannot contain * or | (snapshots are directories); those stay covered on POSIX.
+  const name = WIN ? "1.0.0@space $(New-Item CANARY) ` ; & [x] é '" : ps ? "1.0.0@space $(New-Item CANARY) ` ; * | & [x] é '" : "1.0.0@space $(touch CANARY) ` ; * | & [x] é '";
   snapshot(i, name);
   const generated = join(i.home, ps ? "generated.ps1" : "generated");
   const script = run(i, ["manager", "completion", "script", shell]); expect(script.status).toBe(0); writeFileSync(generated, (ps ? "\ufeff" : "") + script.stdout);
