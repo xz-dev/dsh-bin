@@ -1,5 +1,6 @@
 // Native runtime management: real processes, recording origin, isolated data and no JS on child PATH.
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -41,6 +42,26 @@ const statePath = (i: Install, file: string) => join(i.data, "state", file);
 const selection = (i: Install) => readFileSync(statePath(i, "selection.json"), "utf8");
 const channel = (i: Install) => readFileSync(statePath(i, "channel"), "utf8").trim();
 const manager = (i: Install, s: ReturnType<typeof source>, args: string[]) => command(i, s, ["manager", ...args]);
+
+test.skipIf(!hasZig)("MC-IN-USE: a guard retired between open and lock refuses the stale launch", async () => {
+	const i = newInstall(), s = source();
+	try {
+		expect((await manager(i, s, ["install", A])).status).toBe(0);
+		const p = spawn(i.exe, ["--use", A, "probe"], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_CLAIM_PAUSE: join(i.data, "bundles", A, ".usage.lock") }, stdio: "pipe" });
+		let stderr = "", stdout = ""; p.stderr.on("data", b => { stderr += b.toString(); }); p.stdout.on("data", b => { stdout += b.toString(); });
+		const done = new Promise<number | null>((resolve, reject) => { p.on("close", resolve); p.on("error", reject); });
+		const timer = setTimeout(() => p.kill("SIGKILL"), 15_000);
+		try {
+			const deadline = Date.now() + 5000;
+			while (!stderr.includes("test pause: claim-open") && p.exitCode === null && Date.now() < deadline) await Bun.sleep(10);
+			expect(stderr).toContain("test pause: claim-open");
+			expect((await manager(i, s, ["install", A, "--force"])).status).toBe(0);
+			p.stdin.end("x"); expect(await done).toBe(1); expect(stdout).toBe(""); expect(stderr).toContain(A); expect(stderr).toContain("retry"); expect(started(i)).toBe(false);
+			expect(stderr.trim().split("\n").filter(l => !l.includes("test pause: claim-open"))).toHaveLength(1);
+			expect(run(i, ["--use", A, "probe"]).status).toBe(0);
+		} finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await done; } }
+	} finally { s.stop(); }
+});
 
 test.skipIf(!hasZig)("MC-IN-USE: force runtime activation rechecks a session that starts during download", async () => {
 	const i = newInstall(); let armed = false, session: Awaited<ReturnType<typeof holdSession>> | undefined;

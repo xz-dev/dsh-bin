@@ -40,22 +40,56 @@ pub fn tryAcquireIn(dir: std.fs.Dir, path: []const u8, mode: Mode, create: bool)
             dir.createFile(path, .{ .truncate = false, .read = true })
         else
             dir.openFile(path, .{})) catch |err| return if (err == error.FileNotFound) error.Missing else error.Failed;
+        testPause(path, mode);
         var ov = std.mem.zeroes(win.OVERLAPPED);
         const flags: win.DWORD = 1 | (if (mode == .exclusive) @as(win.DWORD, 2) else 0);
         if (LockFileEx(file.handle, flags, 0, 1, 0, &ov) == 0) {
             file.close();
             return error.Busy;
         }
-        return .{ .handle = file.handle };
+        return checked(dir, path, .{ .handle = file.handle });
     }
     const flags: std.posix.O = .{ .ACCMODE = .RDONLY, .CREAT = create };
     const fd = std.posix.openat(dir.fd, path, flags, 0o644) catch |err| return if (err == error.FileNotFound) error.Missing else error.Failed;
+    testPause(path, mode);
     const op: i32 = @as(i32, if (mode == .shared) std.posix.LOCK.SH else std.posix.LOCK.EX) | std.posix.LOCK.NB;
     std.posix.flock(fd, op) catch |err| {
         std.posix.close(fd);
         return if (err == error.WouldBlock) error.Busy else error.Failed;
     };
-    return .{ .handle = fd };
+    return checked(dir, path, .{ .handle = fd });
+}
+
+/// The opened inode may have been retired before we took the lock. Never protect one generation and run another.
+fn checked(dir: std.fs.Dir, path: []const u8, held: Lock) Error!Lock {
+    const opened = (std.fs.File{ .handle = held.handle }).stat() catch {
+        held.release();
+        return error.Failed;
+    };
+    const current = dir.statFile(path) catch {
+        held.release();
+        return error.Busy;
+    };
+    if (opened.inode != current.inode) {
+        held.release();
+        return error.Busy;
+    }
+    return held;
+}
+
+/// Test-only barrier between open and flock/LockFileEx; production ignores both variables.
+fn testPause(path: []const u8, mode: Mode) void {
+    if (mode != .shared) return;
+    const a = std.heap.page_allocator;
+    const enabled = std.process.getEnvVarOwned(a, "DSH_MANAGER_TEST") catch return;
+    defer a.free(enabled);
+    if (!std.mem.eql(u8, enabled, "1")) return;
+    const target = std.process.getEnvVarOwned(a, "DSH_MANAGER_TEST_CLAIM_PAUSE") catch return;
+    defer a.free(target);
+    if (!std.mem.eql(u8, target, path)) return;
+    @import("util.zig").warn("test pause: claim-open", .{});
+    var byte: [1]u8 = undefined;
+    if ((std.fs.File.stdin().read(&byte) catch 0) == 0) std.process.exit(1);
 }
 
 /// Wait for the lock; `on_wait` is called once when another holder makes us wait.
