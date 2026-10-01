@@ -26,7 +26,7 @@
 - [x] 4.2 实现只读候选查询和管理器命令/本地版本/快照/addon 候选，使用有效选择读取运行包描述；通过不存在数据根、离线源、禁止启动的应用 fixture 验证无创建、无网络、无应用执行，并验证候选不泄露敏感配置（SC-COLD、SC-LOCAL）。
 - [x] 4.3 实现 Bash/Zsh 脚本生成及用户级 install/uninstall，保留用户配置和已有自定义补全；在真实 shell 中验证加载、参数候选、重复注册、撤销与当前会话生效提示（SC-SHELLS、SC-IDEMPOTENT、SC-COLLISION、SC-CURRENT）。
 - [x] 4.4 实现 Fish/PowerShell 对应能力，并在真实 Fish 与 Windows PowerShell 环境重复注册、撤销和冲突测试；不能仅断言生成了字符串或文件（SC-SHELLS、SC-IDEMPOTENT、SC-COLLISION、SC-CURRENT）。
-- [ ] 4.5 处理稳定 PATH 入口、直接路径调用与搬迁后的重新注册提示；四种 shell 覆盖空格/引号/非 ASCII 路径和元字符候选，确认不执行输入且稳定入口指向新位置后读取新数据根（SC-QUOTING、SC-RELOCATE、SC-VERSIONS）。
+- [x] 4.5 处理稳定 PATH 入口、直接路径调用与搬迁后的重新注册提示；四种 shell 覆盖空格/引号/非 ASCII 路径和元字符候选，确认不执行输入且稳定入口指向新位置后读取新数据根（SC-QUOTING、SC-RELOCATE、SC-VERSIONS）。
 
 ## 5. 首次询问与自动安装
 

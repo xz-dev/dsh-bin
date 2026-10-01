@@ -261,7 +261,7 @@
 - **CI 36813128417 三平台全绿**：windows-2022 上 powershell 5.1 与 pwsh 共 **10 项实际执行全部通过**（load/候选/重复注册/逐字节还原、words-env 的空前缀/空格/引号/非 ASCII、foreign completer 拒绝、改写块保护与 dry-run 零写入、默认路径与真实 `$PROFILE.CurrentUserAllHosts` 一致）；ubuntu-24.04 与 macos-15 的 Fish 三项实际执行通过。Windows 上 Fish/Bash/Zsh 写明原因 skip。
 - **勾选 4.4**。4.5（稳定 PATH、搬迁、四种 shell 的完整 quoting 矩阵）未做。
 
-## 4.5 SC-RELOCATE / SC-QUOTING（实施中）
+## 4.5 SC-RELOCATE / SC-QUOTING
 
 - 用户通过 supervisor 批准：注册时 Zig 查询 PATH 的第一个 dsh 命中并解析 realpath；只有它与当前 exe 相同才绑定 `name:dsh`，否则 `abs:<path>`。绑定写入所有权标记，验证原模板后允许移动后重新注册/撤销。无 `--command` 或 argv[0] 猜测。允许本地候选的可打印 UTF-8 名字（拒绝控制字符与路径分隔符），严格 CLI command/flag 校验不变；各 shell 对插入文本转义。
 - 首轮 red：`TMPDIR=/var/tmp/dsh-45 PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH timeout 300 bun test ./test/completion-relocate.test.ts`：**0 pass / 4 skip / 6 fail**。Bash/Fish/pwsh 的 PATH 绑定仍固定旧绝对 exe，移动后读不到新 snapshot；特殊字符 snapshot 被 safeWord 过滤而没有候选。Zsh、Windows PowerShell 缺宿主而明确 skip。日志 `/var/tmp/dsh-45/red.log`，失败发生于缺目标候选而非 harness 解析错误。
@@ -278,3 +278,13 @@
 - **worker 超时后的接手（父会话）**：sol:high worker 跑满 60 分钟超时，此前已提交 8217a5e（4.5 主体）和 3dd1820（复审修复）。剩余未提交的是：PowerShell 绝对绑定改为先检查文件存在再调用、`completion-integrity.test.ts`（Bash/Zsh/Fish 篡改标记的回归测试）、元字符样本加入 `|`、`&`、`[x]`、PS 生成脚本加 BOM。父会话复跑通过后单独提交。
 - **父会话手工复现三项复审问题**（自建 manager，隔离 HOME）：① 已有的空 profile 安装后，把标记 `existing` 改成 `created`，uninstall 返回 1，文件和用户目录都保留；② ``-CommandName "d`sh"`` 的 foreign 注册让 install 返回 1，profile 逐字节不变；③ 自定义 `--profile` 的提示为 "activates in pwsh sessions that load '<file>'"。
 - **本地全量**：`zig build test` 通过；`bun test ./test` **151 pass / 17 skip / 0 fail**；completion 四个测试文件 **27 pass / 16 skip / 0 fail**（Bash/Fish/pwsh 的 relocate、quoting 和 review 场景都实际执行；skip 为本机缺 zsh 与 Windows PowerShell 5.1）。`zig fmt --check`、`git diff --check`、windows/macos 交叉编译成功。4.5 要等 CI 上 zsh 和 Windows PowerShell 真实跑过才勾选。
+- **CI 36818715586**：ubuntu 和 macOS 全绿，其中 zsh 的 relocate、quoting 和 review 场景都实际通过。Windows 上 SC-QUOTING 失败两项，原因是测试里的快照名含 `*` 和 `|`，这两个字符在 Windows 目录名里不合法（mkdir ENOENT），与产品无关。修正（917ccd6）：Windows 样本去掉这两个字符，POSIX 样本保留它们继续覆盖。
+- **CI 36819033894 三平台全绿**：
+  - windows-2022：powershell 5.1 与 pwsh 的 SC-RELOCATE、SC-QUOTING、三个 review 场景以及 4.4 原有场景全部实际通过。
+  - ubuntu-24.04 与 macos-15：Bash、Zsh、Fish 的 relocate、quoting 和 review 场景全部实际通过。
+  - 每个场景都在对应 shell 上真实执行过；skip 只出现在不适用的平台（Windows 上的 POSIX shell、非 Windows 上的 5.1）。
+- **勾选 4.5**。残余风险：
+  - PowerShell foreign 冲突扫描偏保守：含 dsh、反引号、`$` 或括号的无关动态 completer 也会被拒绝。
+  - checksum 用来发现误改，不能防有人故意重算。
+  - 运行时由其他模块注册的 completer 用公开 API 检测不到。
+  - 本机孤立构建的 zsh 曾出现 sigsuspend 挂起，zsh 的证据以 CI 为准。
