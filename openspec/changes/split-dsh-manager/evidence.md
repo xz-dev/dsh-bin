@@ -173,3 +173,7 @@
 - `cd dsh-bun-build && timeout 900 bun test ./test/unit ./test/runtime`：**96 pass / 0 fail**、**362** 次断言、24 文件。两个 Bun suite 合计 **209 pass / 0 fail**、**1412** 次断言；相比本轮前增加 manager **30** 场景、builder **2** 场景和 target **1** 个 Zig 单元场景。
 - `timeout 300 zig build -Dtarget=<target> --prefix /tmp/dsh-section3-final-<target>`：**x86_64-windows-gnu、aarch64-macos、aarch64-linux、x86_64-linux-musl 全通过**。`timeout 60 zig fmt --check` 和 `git diff --check` 通过。仅为交叉编译；新 Windows/macOS 安装行为未在本机实际运行，父会话继续真实 CI。
 - 勾选 **3.1、3.3、3.4**（限定本次授权场景）；**3.2 留空**，TLS-over-CONNECT gap 明列。普通自举/补全（第 4/5 节）、完整管理（第 6 节）、发布 pipeline（8.3）均未实现。无 package/self-update/addon/用户安装操作，无远程 push；未触碰 `openspec/changes/add-config-snapshots-and-paths/`。
+- 2026-10-01 第五次 CI（36fc55d，第 3 节 3.1/3.3/3.4 完成后）：https://github.com/xz-dev/dsh-bin/actions/runs/36797830958
+  - ubuntu-24.04、macos-15、windows-2022 全部通过。
+  - 父会话本机独立复验：Zig 44/44；dsh-manager Bun 113 pass / 0 skip；dsh-bun-build 96 pass；x86_64-windows-gnu、aarch64-macos、aarch64-linux、x86_64-linux-musl 交叉编译通过。
+  - 3.2 仍未勾选：HTTPS_PROXY 目前 fail closed，安全的 TLS-over-CONNECT 尚未实现。
