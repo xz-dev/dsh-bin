@@ -436,3 +436,9 @@
 - **独立复审原始 reproducer 复跑**：读取 `/var/tmp/dsh-review-61-tmp/probe.ts`，仅把 disposable worktree 的绝对 import 根替换为当前工作区，以 `TMPDIR=/var/tmp/dsh-fix61 bun --eval <probe>` 执行 → **退出 0，两项断言通过**（`reviewer-probe-green.log`）。缺失已存快照：退出 1、stdout 空、SnapshotNotFound 单条诊断、origin 零请求、bundles 空、未启动应用；pin 提示场景：退出 0、安装成功 stdout、记录渠道 live、固定选择保留、陌生 sibling 保留、未启动应用。
 - **最终验证**：`cd dsh-manager && TMPDIR=/var/tmp/dsh-fix61 zig build test --summary all` → **4/4 steps，44/44 tests passed**（`zig-test.log`）；`TMPDIR=/var/tmp/dsh-fix61 PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH bun test ./test` → **195 pass / 18 skip / 0 fail**（`suite.log`），真实插件继承场景实际执行。`zig fmt --check src test/fake-native.zig`、`zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-fix61/windows`、`zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-fix61/macos`、`git diff --check` 全通过。
 - **剩余门禁与简化**：本轮没有 Windows/macOS 原生运行，也未 push/dispatch；父会话需做三平台 CI/独立复核。18 项 skip 为既有缺 Zsh、Windows PowerShell 5.1/Windows PATH 平台差异及未配置 real-proxy；交叉编译不算原生运行证据，Windows 控制台交互仍待 8.2。pin 警告只读已知具体 ID；元数据或 selection 无效时跳过提示，不因提示失败改变已完成安装的退出状态。没有新增等待/锁/恢复流程，不改并行 change 或任务勾选。
+
+### 6.1 / 6.5 复审修复的父会话验收
+
+- 用复审 reproducer（指向当前工作区）复跑 43c4d66：已存快照被删后，普通启动退出 1、请求数为 0、不启动应用；`bundles/stray-file` 存在时，`update --channel live` 退出 0 并如实报告成功，渠道为 live，固定版本的提示只写在 stderr。
+- **CI 36851770783（43c4d66）三平台全绿**：两项复审回归在 ubuntu、macOS、windows 都实际通过。6.1、6.5 维持勾选。
+- **6.2 勾选撤回，待复审**：6.2 的勾选是 worker 自己打的（297e723），不符合「复审通过（或问题修复）且 CI 全绿后由父会话勾选」的规则。CI 36848465930 已全绿，RB-PLUGIN 也由父会话在干净 worktree 上用真实应用跑过（1 pass、24 断言），但第一次独立复审 30 分钟超时、没有出报告，所以先撤回勾选，复审重新进行中。
