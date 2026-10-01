@@ -3,7 +3,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { acquireClaim } from "./claim-probe.ts";
 import { tree } from "./harness.ts";
@@ -16,9 +16,7 @@ let root: string, bundle: string, id: string, managers: string[], home: string, 
 
 beforeAll(() => {
 	if (!available) return;
-	const cache = join(homedir(), ".cache");
-	mkdirSync(cache, { recursive: true });
-	root = realpathSync(mkdtempSync(join(cache, "dsh-real-runtime-")));
+	root = realpathSync(mkdtempSync(join(tmpdir(), "dsh-real-runtime-")));
 	const out = join(root, "build");
 	const result = execFileSync(process.execPath, ["scripts/local-build.mjs", out, "release", "1"], { cwd: RUNTIME_PROJECT, encoding: "utf8", timeout: 240_000 });
 	const built = JSON.parse(result.trim().split("\n").at(-1)!);
@@ -379,5 +377,66 @@ test.skipIf(!available)(`RB-PLUGIN / MC-SNAPSHOT / MC-CROSS-SNAPSHOT: real insta
 		expect(digest(snapshotA)).toEqual(crossSource);
 		expect(digest(join(data, "bundles", id))).toEqual(runtimeBefore); expect(digest(join(data, "bundles", built.id))).toEqual(runtimeBBefore); expect(readFileSync(exe)).toEqual(managerBefore);
 		expect(tree(userHome)).toEqual([]);
+	} finally { await server.stop(true); }
+}, 360_000);
+// MC-ADDON acceptance uses the real upstream office plugins and real kit/engine closure,
+// packaged locally from already-built work/addon-office (no substitute office implementation).
+const officeTree = join(RUNTIME_PROJECT, "work/addon-office");
+const officeAvailable = available && process.platform === "linux" && existsSync(join(officeTree, "node_modules/@deepseek-ai/libreoffice-kit-wasm/package.json"));
+const officeSkip = "requires Linux real work/app + work/addon-office with WASM kit engine; no real office artifact on this host";
+test.skipIf(!officeAvailable)(`MC-ADDON: real managed office addon enables both plugins; missing selected addon degrades with no download${officeAvailable ? "" : ` — SKIP: ${officeSkip}`}`, async () => {
+	const { createHash } = await import("node:crypto"), { archive } = await import("../../dsh-bun-build/scripts/archive.mjs");
+	const fresh = join(root, "real-office"), tools = join(fresh, "tools"), userHome = join(fresh, "user-home"), working = join(fresh, "workspace");
+	for (const dir of [tools, userHome, working]) mkdirSync(dir, { recursive: true });
+	const exe = join(tools, `dsh${EXE}`), data = join(tools, "dsh-bin"); cpSync(managers[0]!, exe);
+	const base = JSON.parse(readFileSync(join(officeTree, "addon.json"), "utf8"));
+	const slot = { commit: execFileSync("git", ["-C", join(RUNTIME_PROJECT, "work/src-rc2"), "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), kitVersion: base.kitVersion };
+	const out = join(fresh, "runtime");
+	const built = JSON.parse(execFileSync(process.execPath, ["scripts/local-build.mjs", out, "release", "3", "--slot", JSON.stringify(slot), "--native", join(bundle, `dsh-native${EXE}`)], { cwd: RUNTIME_PROJECT, encoding: "utf8", timeout: 240_000 }).trim().split("\n").at(-1)!);
+	const manifest = JSON.parse(readFileSync(join(out, `${built.tag}.json`), "utf8"));
+	const kitVersion = `${base.kitVersion}-b1.1.gdeadbeef`, kitTag = `addon-office-v${kitVersion}`, kitRoot = join(fresh, "addon"), zip = join(fresh, "office.zip");
+	cpSync(officeTree, kitRoot, { recursive: true });
+	writeFileSync(join(kitRoot, "addon.json"), JSON.stringify({ ...base, version: kitVersion, tag: kitTag, slot, platform: "linux" }));
+	archive(kitRoot, zip);
+	const bytes = readFileSync(zip), asset = { name: "dsh-addon-office-linux.zip", size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+	const requests: string[] = [];
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+		const p = new URL(req.url).pathname; requests.push(p);
+		if (p === "/runtime-index.json") return Response.json({ schema: 1, channels: { release: [{ ...manifest, seq: 1, assets: { [built.asset.name.slice(8, -4)]: built.asset } }], live: [] }, addons: { office: [{ version: kitVersion, tag: kitTag, seq: 1, slot, assets: { linux: asset } }] } });
+		if (p === `/download/${built.tag}/${built.asset.name}`) return new Response(Bun.file(built.zip));
+		if (p === `/download/${kitTag}/${asset.name}`) return new Response(Bun.file(zip));
+		return new Response(null, { status: 404 });
+	} });
+	const inherited = { PATH: path, HOME: userHome, USERPROFILE: userHome, NO_COLOR: "1", DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: `http://127.0.0.1:${server.port}` };
+	const command = async (args: string[]) => {
+		const p = Bun.spawn([exe, ...args], { cwd: working, env: inherited, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+		const timer = setTimeout(() => p.kill("SIGKILL"), 120_000);
+		try { const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]); return { code, stdout, stderr }; }
+		finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await p.exited; } }
+	};
+	try {
+		for (const args of [["manager", "install", built.id], ["manager", "install", "--addon", "office"]]) {
+			const r = await command(args); if (r.code !== 0) console.error(r.stdout, r.stderr); expect(r.code).toBe(0);
+			expect(r.stderr).not.toContain("MISSING_CREDENTIAL"); expect(existsSync(join(data, "home"))).toBe(false);
+		}
+		const addon = join(data, "addons/office", kitVersion), native = join(data, "bundles", built.id, `dsh-native${EXE}`);
+		expect(readFileSync(join(addon, "node_modules/@deepseek-ai/libreoffice-kit-wasm/package.json"))).toEqual(readFileSync(join(officeTree, "node_modules/@deepseek-ai/libreoffice-kit-wasm/package.json")));
+		const nativeBefore = readFileSync(native), managerBefore = readFileSync(exe);
+		const selected = await command(["manager", "select", "--use", built.id, "--addon", `office:${kitVersion}`]); expect(selected.code).toBe(0);
+		const profile = join(data, "snapshots", `${built.id}@1`, "profiles/office-probe"), shared = join(data, "home/profiles/office-probe");
+		mkdirSync(profile, { recursive: true }); mkdirSync(shared, { recursive: true });
+		writeFileSync(join(profile, "package.json"), JSON.stringify({ name: "office-probe", private: true, dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless"] } } }));
+		writeFileSync(join(shared, "cordis.patch.yml"), "- insert:\n    - id: office-to-pdf\n      name: '@deepseek-ai/dsh-office-to-pdf'\n    - id: skill-office\n      name: '@deepseek-ai/dsh-skill-office'\n");
+		const seen = requests.length, args = ["--profile", "office-probe", "hi"];
+		const enabled = await command(args);
+		if (!enabled.stderr.includes("MISSING_CREDENTIAL")) console.error(enabled.stdout, enabled.stderr);
+		expect(enabled.code).toBe(1); expect(enabled.stderr).toContain("MISSING_CREDENTIAL");
+		expect(enabled.stderr).not.toContain("DeclaredDegradation"); expect(enabled.stderr).not.toContain("did not activate"); expect(enabled.stderr).not.toContain("failed to import");
+		rmSync(addon, { recursive: true });
+		const missing = await command(args);
+		expect(missing.code).toBe(1); expect(missing.stderr).toContain("MISSING_CREDENTIAL"); expect(missing.stderr).toContain(`office addon ${kitVersion} is missing`);
+		for (const name of ["office-to-pdf", "skill-office"]) expect(missing.stderr).toMatch(new RegExp(`${name} \\(@deepseek-ai/dsh-${name}\\): DeclaredDegradation: .*office addon is not installed`));
+		expect(requests.length).toBe(seen); expect(readFileSync(native)).toEqual(nativeBefore); expect(readFileSync(exe)).toEqual(managerBefore);
+		expect(tree(userHome)).toEqual([]); expect(tree(working)).toEqual([]);
 	} finally { await server.stop(true); }
 }, 360_000);
