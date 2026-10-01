@@ -157,7 +157,7 @@ fn publicValid(ctx: *const Ctx, parent: ?Store, id: []const u8, addon: bool) boo
             // addon packages use package@version labels; the installed directory omits that version suffix.
             const end = std.mem.lastIndexOfScalar(u8, p, '@') orelse p.len;
             const package = if (end == 0) p else p[0..end];
-            if (!independentPath(dir, util.join(ctx.a, &.{ "node_modules", package }))) return false;
+            if (!independentPath(dir, std.fmt.allocPrint(ctx.a, "node_modules/{s}", .{package}) catch return false)) return false;
         }
         return true;
     }
