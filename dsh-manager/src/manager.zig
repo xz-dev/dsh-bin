@@ -63,7 +63,8 @@ pub fn run(ctx: *Ctx, opts: select.Options, args: []const []const u8) u8 {
             util.print("External DSH_HOME is outside the portability guarantee; only manager data moves with the installation.\n", .{});
         return 0;
     }
-    const known = [_][]const u8{ "clean", "self-update" };
+    if (std.mem.eql(u8, cmd, "clean")) return @import("clean.zig").run(ctx, args[1..]);
+    const known = [_][]const u8{"self-update"};
     for (known) |k| if (std.mem.eql(u8, cmd, k)) {
         util.warn("`dsh manager {s}` is not available in this build yet", .{cmd});
         return 1;

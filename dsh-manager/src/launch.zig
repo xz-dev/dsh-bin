@@ -127,14 +127,14 @@ fn childEnv(ctx: *Ctx, p: Plan) void {
     ctx.env.put("DSH_HOME", ctx.home()) catch util.oom();
     ctx.env.put("DSH_MANAGER_LAUNCH", p.payload) catch util.oom();
     // Bun 1.4.2 and bundled pnpm honour these specific variables (real-runtime acceptance probes them).
+    inline for (@import("clean.zig").cache_env) |pair| {
+        var dir = ctx.ensureDir(pair[1]);
+        dir.close();
+        ctx.env.remove(pair[0]);
+        ctx.env.put(pair[0], ctx.path(pair[1])) catch util.oom();
+    }
     const paths = .{
-        .{ "BUN_INSTALL_CACHE_DIR", &.{ "cache", "bun" } },
-        .{ "BUN_RUNTIME_TRANSPILER_CACHE_PATH", &.{ "cache", "transpiler" } },
-        .{ "npm_config_cache", &.{ "cache", "npm" } },
-        .{ "pnpm_config_store_dir", &.{ "cache", "pnpm", "store" } },
-        .{ "pnpm_config_cache_dir", &.{ "cache", "pnpm", "cache" } },
         .{ "pnpm_config_state_dir", &.{ "state", "pnpm" } },
-        .{ "PNPM_HOME", &.{ "cache", "pnpm", "home" } },
         .{ "TMPDIR", &.{"tmp"} },
         .{ "TEMP", &.{"tmp"} },
         .{ "TMP", &.{"tmp"} },
