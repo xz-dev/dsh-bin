@@ -390,3 +390,11 @@
 - `zig fmt --check src test/fake-native.zig`、`zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-534/windows`、`zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-534/macos` 通过。交叉编译不当作原生执行证据。
 - 本机 skip：Windows PowerShell 5.1/Windows PATH 语义、缺 Zsh、本轮无 real-proxy 环境；Windows PTY/ConPTY 仍需 8.2 原生证据。本轮 5.3/5.4 任务保持未勾选，等父会话三平台 CI/独立验收；不存在 Windows 交互 green 主张。
 - 初始化 crash 残留只提供安全重试/人工恢复指引，不自动删除/修复，是用户批准的简化；损坏存储明确失败，clean 的具体实现仍属 6.6。不改用户真实 HOME/安装、不碰并行 change、不 push/dispatch。
+
+### 5.2 复审与 5.3 / 5.4 父会话验收
+
+- **5.2 独立复审（run 9cbd750f）BLOCK，P1**：损坏的安装被当成空安装。`bundles/` 里有普通文件或悬空软链接，或 `bundles` 本身是个文件时，普通启动仍会自动下载并启动应用。修复期间 5.2 视为重新打开；修复为 a5c7294：只有 `bundles/` 不存在或为空目录才算空安装，其他情况在任何网络请求之前给出一条明确诊断并退出，不加锁内复查，也不加修复逻辑。
+- **用户决定（简单优先）**：并发首次初始化同一个空数据根时，后到的进程报错退出，提示重试（66542c0）。不加锁，不加等待或恢复机制，行为可预测即可。初始化留下的残余需要手动处理，诊断信息会说明。
+- **父会话手工复现**（4e0ab50，复审 reproducer 指向当前工作区）：bundles 是文件、bundles 是软链接、运行包是普通文件、运行包是悬空软链接，这 4 种都退出 1，origin 请求数为 0，没有激活，stdout 为空；真正的空安装按预期请求 index 和 archive、激活并启动。
+- **CI 36835396760（4e0ab50）三平台全绿**：ubuntu 180 pass、macOS 179 pass、windows 152 pass，均 0 fail。FB-PIPE（1 MiB 二进制 stdin 原样传递、跳过询问不记录选择）、FB-READONLY、FB-OFFLINE、FB-MISSING（含复审回归）、FB-CONCURRENT（24 轮全新数据根）、FB-RETRY 在三个平台都实际通过。只有「非交互之后的第一次交互仍会询问」这一项在 Windows 上因没有 ConPTY 而 skip，ubuntu 和 macOS 上已实际通过。
+- 勾选 **5.3、5.4**；5.2 维持勾选。第 5 节全部完成。
