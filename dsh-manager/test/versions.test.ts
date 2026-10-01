@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { writeZip } from "../../dsh-bun-build/runtime/zip.ts";
 import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
-import { baseEnv, build, bundleMeta, cleanup, EXE, hasZig, holdSession, launchOf, newInstall, run, started, tempDir, tree, type Install } from "./harness.ts";
+import { baseEnv, build, bundleMeta, cleanup, EXE, hasZig, holdSession, launchOf, newInstall, run, started, tempDir, tree, WIN, type Install } from "./harness.ts";
 
 beforeAll(() => { if (hasZig) build(); }, 300_000);
 afterAll(cleanup);
@@ -55,9 +55,20 @@ test.skipIf(!hasZig)("MC-IN-USE: a guard retired between open and lock refuses t
 			const deadline = Date.now() + 5000;
 			while (!stderr.includes("test pause: claim-open") && p.exitCode === null && Date.now() < deadline) await Bun.sleep(10);
 			expect(stderr).toContain("test pause: claim-open");
-			expect((await manager(i, s, ["install", A, "--force"])).status).toBe(0);
-			p.stdin.end("x"); expect(await done).toBe(1); expect(stdout).toBe(""); expect(stderr).toContain(A); expect(stderr).toContain("retry"); expect(started(i)).toBe(false);
-			expect(stderr.trim().split("\n").filter(l => !l.includes("test pause: claim-open"))).toHaveLength(1);
+			const forced = await manager(i, s, ["install", A, "--force"]);
+			if (WIN) {
+				// Even an opened-but-not-yet-locked descendant blocks Windows directory rename.
+				expect(forced.status).toBe(1); expect(forced.stderr).toContain(A); expect(forced.stderr).toContain("in use");
+				expect(forced.stderr).toContain("object unchanged"); expect(forced.stderr).toContain("retry");
+				expect(forced.stderr.trim().split("\n")).toHaveLength(1);
+				p.stdin.end("x"); expect(await done).toBe(0);
+				expect(launchOf(i).runtime).toBe(A);
+				expect((await manager(i, s, ["install", A, "--force"])).status).toBe(0);
+			} else {
+				expect(forced.status).toBe(0);
+				p.stdin.end("x"); expect(await done).toBe(1); expect(stdout).toBe(""); expect(stderr).toContain(A); expect(stderr).toContain("retry"); expect(started(i)).toBe(false);
+				expect(stderr.trim().split("\n").filter(l => !l.includes("test pause: claim-open"))).toHaveLength(1);
+			}
 			expect(run(i, ["--use", A, "probe"]).status).toBe(0);
 		} finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await done; } }
 	} finally { s.stop(); }

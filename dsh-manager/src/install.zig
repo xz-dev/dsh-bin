@@ -278,13 +278,28 @@ pub fn checkIdle(parent: std.fs.Dir, name: []const u8, label: []const u8) !void 
     if (try idleClaim(parent, name, label)) |c| c.release();
 }
 
-/// Retire under the usage claim, then release before deletion (Windows can keep an open file delete-pending).
-/// This same handle-relative sequence keeps both deletion and ancestor swaps independent of path re-resolution.
+/// POSIX renames under the claim. Windows must close our guard first: any open descendant blocks retirement.
+/// If another session opens its guard before rename, Windows refuses instead of removing a live object.
+fn retire(parent: std.fs.Dir, name: []const u8, tmp: std.fs.Dir, retired: []const u8, claim: *?lock.Lock) !void {
+    if (builtin.os.tag == .windows) {
+        if (claim.*) |c| c.release();
+        claim.* = null;
+    }
+    std.fs.rename(parent, name, tmp, retired) catch |err| {
+        if (builtin.os.tag == .windows and err == error.AccessDenied) {
+            util.warn("cannot retire {s}: in use or access denied; object unchanged, retry after sessions exit", .{name});
+            return error.UsageReported;
+        }
+        return err;
+    };
+}
+
+/// Retire relative to validated handles, then release before deleting the retired tree.
 pub fn remove(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, claim: *?lock.Lock) !void {
     var tmp = ctx.ensureDir(&.{"tmp"});
     defer tmp.close();
     const retired = try std.fmt.allocPrint(ctx.a, ".remove-{s}-{x}", .{ name, std.crypto.random.int(u64) });
-    try std.fs.rename(parent, name, tmp, retired);
+    try retire(parent, name, tmp, retired, claim);
     if (claim.*) |c| c.release();
     claim.* = null;
     tmp.deleteTree(retired) catch |err| util.warn("removed {s}; leftover tmp/{s} could not be deleted ({s}); run `dsh manager clean`", .{ name, retired, @errorName(err) });
@@ -313,17 +328,17 @@ pub fn activate(ctx: *const Ctx, tmp: std.fs.Dir, staging: []const u8, parent: s
         if (renameatx_np(tmp.fd, src_z, parent.fd, dst_z, 2) != 0) return error.AtomicReplacementFailed;
         return;
     }
-    // Close the directory (Windows blocks rename while it is open), not the share-delete usage guard.
+    // Windows requires both the directory and our descendant guard handles closed before retirement.
     current.close();
     current_open = false;
     if (existsIn(tmp, backup)) try tmp.deleteTree(backup);
-    try std.fs.rename(parent, dest, tmp, backup);
+    try retire(parent, dest, tmp, backup, &claim);
     std.fs.rename(tmp, staging, parent, dest) catch |err| {
         std.fs.rename(tmp, backup, parent, dest) catch return error.RestoreFailed;
         return err;
     };
     if (claim) |l| l.release();
-    claim = null; // New generation active; old guard may now finish delete-pending.
+    claim = null; // POSIX replacements retain the claim; Windows retirement already released it.
     tmp.deleteTree(backup) catch |err| util.warn("replacement {s} is active; leftover tmp/{s} could not be deleted ({s}); run `dsh manager clean`", .{ dest, backup, @errorName(err) });
 }
 extern "c" fn renameatx_np(c_int, [*:0]const u8, c_int, [*:0]const u8, c_uint) c_int;

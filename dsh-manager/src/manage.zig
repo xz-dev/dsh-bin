@@ -195,8 +195,10 @@ pub fn uninstall(ctx: *Ctx, args: []const []const u8) u8 {
     }
     if (failures.items.len != 0) util.fatal("cannot uninstall: {s}nothing was uninstalled; unpin selections or retry after sessions exit", .{failures.items});
     for (ids.items, claims) |id, *c| {
-        @import("install.zig").remove(ctx, root, id, c) catch |err|
+        @import("install.zig").remove(ctx, root, id, c) catch |err| {
+            if (err == error.UsageReported) return 1;
             util.fatal("cannot remove runtime {s}: {s}; earlier reported removals remain removed; inspect remaining runtime files; snapshots and home were kept", .{ id, @errorName(err) });
+        };
         util.print("Uninstalled dsh {s}; snapshots, selection and application home kept.\n", .{id});
         util.flush(); // Keep completed removals visible if a later item fails.
     }

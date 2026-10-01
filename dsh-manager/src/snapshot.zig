@@ -416,6 +416,7 @@ fn command(ctx: *Ctx, args: []const []const u8) !u8 {
     }
     for (targets.items, claims) |s, *c| {
         @import("install.zig").remove(ctx, root, s.id, c) catch |err| {
+            if (err == error.UsageReported) return 1;
             util.warn("cannot remove snapshot {s}: {s}; earlier reported removals remain removed", .{ s.id, @errorName(err) });
             return 1;
         };

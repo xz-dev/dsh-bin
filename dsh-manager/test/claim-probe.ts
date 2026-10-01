@@ -54,7 +54,7 @@ function posixBackend(): Backend {
 
 function windowsBackend(): Backend {
 	const GENERIC_READ = 0x80000000;
-	const SHARE_ALL = 0x7; // read | write | delete: the guard can be renamed into quarantine while locked
+	const SHARE_ALL = 0x7; // file sharing; Windows can still refuse renaming a directory with open descendants
 	const OPEN_EXISTING = 3;
 	const LOCKFILE_FAIL_IMMEDIATELY = 1;
 	const LOCKFILE_EXCLUSIVE_LOCK = 2;

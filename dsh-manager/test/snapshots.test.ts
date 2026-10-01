@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, closeSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { acquireClaim } from "./claim-probe.ts";
 import { addRuntime, baseEnv, build, cleanup, hasZig, launchOf, newInstall, run, started, tree, replaceAncestor, WIN, type Install } from "./harness.ts";
@@ -116,15 +116,25 @@ test.skipIf(!hasZig)("MC-IN-USE: a post-preflight removal failure reports the al
 	let stderr = "", stdout = ""; p.stderr.on("data", b => { stderr += b.toString(); }); p.stdout.on("data", b => { stdout += b.toString(); });
 	const done = new Promise<number | null>((resolve, reject) => { p.on("close", resolve); p.on("error", reject); });
 	const timer = setTimeout(() => p.kill("SIGKILL"), 15_000);
+	let blocker: number | undefined, preserved = saved;
 	try {
 		const deadline = Date.now() + 5000;
 		while (!stderr.includes("test pause: snapshot-remove") && p.exitCode === null && Date.now() < deadline) await Bun.sleep(10);
 		expect(stderr).toContain("test pause: snapshot-remove");
-		renameSync(dir(i, second), saved); p.stdin.end("x");
+		try { renameSync(dir(i, second), saved); }
+		catch (err) {
+			if (!WIN || (err as NodeJS.ErrnoException).code !== "EPERM") throw err;
+			// Our preflight guard blocks the test's rename too. A separate open descendant
+			// keeps the second item busy after the manager releases its own Windows claim.
+			preserved = dir(i, second); blocker = openSync(join(preserved, "snapshot.json"), "r");
+		}
+		p.stdin.end("x");
 		expect(await done).toBe(1); expect(stdout).toContain(`Removed snapshot ${first}`); expect(stdout).not.toContain(`Removed snapshot ${second}`);
-		expect(stderr).toContain(second); expect(stderr).toContain("earlier reported removals remain removed");
-		expect(existsSync(dir(i, first))).toBe(false); expect(existsSync(join(saved, "snapshot.json"))).toBe(true);
-	} finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await done; } }
+		expect(stderr).toContain(second);
+		if (blocker === undefined) expect(stderr).toContain("earlier reported removals remain removed");
+		else { expect(stderr).toContain("in use"); expect(stderr).toContain("object unchanged"); expect(stderr).toContain("retry"); }
+		expect(existsSync(dir(i, first))).toBe(false); expect(existsSync(join(preserved, "snapshot.json"))).toBe(true);
+	} finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await done; } if (blocker !== undefined) closeSync(blocker); }
 });
 
 test.skipIf(!hasZig)("MC-SNAPSHOT: concurrent starts reuse prepared snapshot without taking the busy store lock", async () => {

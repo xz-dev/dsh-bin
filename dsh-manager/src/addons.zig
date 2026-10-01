@@ -313,7 +313,10 @@ pub fn uninstall(ctx: *Ctx, raw: []const u8) u8 {
         if ((std.fs.File.stdin().read(&byte) catch 0) == 0) util.fatal("test pause aborted", .{});
     }
     for (list, claims) |m, *c| if (query == null or eq(u8, query.?, m.version)) {
-        @import("install.zig").remove(ctx, dir, m.version, c) catch |err| util.fatal("cannot remove office addon {s}: {s}; earlier reported removals remain removed", .{ m.version, @errorName(err) });
+        @import("install.zig").remove(ctx, dir, m.version, c) catch |err| {
+            if (err == error.UsageReported) return 1;
+            util.fatal("cannot remove office addon {s}: {s}; earlier reported removals remain removed", .{ m.version, @errorName(err) });
+        };
         util.print("Uninstalled the office addon {s}.\n", .{m.version});
         util.flush(); // Keep completed removals visible if a later item fails.
     };
