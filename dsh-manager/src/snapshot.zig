@@ -32,6 +32,10 @@ fn list(ctx: *const Ctx) ![]Meta {
         else => return err,
     };
     defer root.close();
+    return listIn(ctx, root);
+}
+
+fn listIn(ctx: *const Ctx, root: std.fs.Dir) ![]Meta {
     var result: std.ArrayList(Meta) = .empty;
     var it = root.iterate();
     while (try it.next()) |entry| {
@@ -348,7 +352,9 @@ fn command(ctx: *Ctx, args: []const []const u8) !u8 {
     defer maintenance.release();
     const mutex = try storeLock(ctx);
     defer mutex.release();
-    const all = try list(ctx);
+    var root = try std.fs.cwd().openDir(ctx.path(&.{"snapshots"}), .{ .iterate = true, .no_follow = true });
+    defer root.close();
+    const all = try listIn(ctx, root);
     if (std.mem.eql(u8, args[0], "new")) {
         const bundles = runtimes.list(ctx);
         const stored = state.readSelection(ctx);
@@ -389,8 +395,15 @@ fn command(ctx: *Ctx, args: []const []const u8) !u8 {
             return 1;
         };
     }
+    // Test-only stdin barrier permits deterministic ancestor replacement after validation.
+    if (std.mem.eql(u8, ctx.env.get("DSH_MANAGER_TEST") orelse "", "1") and std.mem.eql(u8, ctx.env.get("DSH_MANAGER_TEST_PAUSE") orelse "", "snapshot-remove")) {
+        util.warn("test pause: snapshot-remove", .{});
+        util.flush();
+        var byte: [1]u8 = undefined;
+        if (try std.fs.File.stdin().read(&byte) == 0) return error.TestPauseAborted;
+    }
     for (targets.items) |s| {
-        try std.fs.cwd().deleteTree(ctx.path(&.{ "snapshots", s.id }));
+        try root.deleteTree(s.id);
         util.print("Removed snapshot {s}.\n", .{s.id});
     }
     return 0;
