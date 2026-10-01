@@ -77,10 +77,18 @@ pub fn openRegular(dir: std.fs.Dir, name: []const u8) !std.fs.File {
     }
     return file;
 }
-pub fn validate(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, version: []const u8) !void {
+pub fn validated(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, version: []const u8) !std.fs.File {
     _ = std.SemanticVersion.parse(version) catch return error.InvalidManagerVersion;
     var file = try openRegular(dir, name);
-    defer file.close();
+    errdefer file.close();
+    try validateFile(a, file, version);
+    return file;
+}
+pub fn validate(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, version: []const u8) !void {
+    const file = try validated(a, dir, name, version);
+    file.close();
+}
+fn validateFile(a: std.mem.Allocator, file: std.fs.File, version: []const u8) !void {
     const st = try file.stat();
     if (builtin.os.tag != .windows and st.mode & 0o111 == 0) return error.ManagerNotExecutable;
     const bytes = try file.readToEndAlloc(a, 128 << 20);
@@ -119,15 +127,52 @@ pub fn partialCandidate(name: []const u8) bool {
 
 /// Only exact complete candidates or an exclusive-write partial name belong to self-update.
 pub fn reclaimable(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8) bool {
-    // A prerelease partial name is itself parseable SemVer (rc.1.part-ab12); classify it first.
-    if (partialCandidate(name)) {
-        const file = openRegular(dir, name) catch return false;
-        file.close();
-        return true;
-    }
-    const v = candidateVersion(name) orelse return false;
-    validate(a, dir, name, v) catch return false;
+    const file = reclaimableFile(a, dir, name) catch return false;
+    file.close();
     return true;
+}
+pub fn reclaimableFile(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8) !std.fs.File {
+    // A prerelease partial name is itself parseable SemVer (rc.1.part-ab12); classify it first.
+    if (partialCandidate(name)) return openRegular(dir, name);
+    const v = candidateVersion(name) orelse return error.InvalidManagerVersion;
+    return validated(a, dir, name, v);
+}
+
+pub fn sameFile(dir: std.fs.Dir, name: []const u8, file: std.fs.File) bool {
+    const opened = file.stat() catch return false;
+    if (builtin.os.tag == .windows) {
+        const current = openRegular(dir, name) catch return false;
+        defer current.close();
+        return (current.stat() catch return false).inode == opened.inode;
+    }
+    const current = std.posix.fstatat(dir.fd, name, std.posix.AT.SYMLINK_NOFOLLOW) catch return false;
+    return current.ino == opened.inode and current.mode & std.posix.S.IFMT == std.posix.S.IFREG;
+}
+
+pub fn deleteValidated(ctx: *const @import("context.zig").Ctx, dir: std.fs.Dir, name: []const u8, file: std.fs.File, stage: []const u8) bool {
+    testPause(ctx, stage, name);
+    if (!sameFile(dir, name, file)) {
+        @import("util.zig").warn("kept manager candidate {s}: identity changed; retry after inspecting it", .{name});
+        return false;
+    }
+    // ponytail: identity check -> unlink has a tiny same-user race; private directory ownership if stronger isolation is required.
+    dir.deleteFile(name) catch |err| {
+        @import("util.zig").warn("kept manager candidate {s}: {s}", .{ name, @errorName(err) });
+        return false;
+    };
+    return true;
+}
+
+pub fn digest(file: std.fs.File) ![32]u8 {
+    try file.seekTo(0);
+    var hash = std.crypto.hash.sha2.Sha256.init(.{});
+    var buf: [64 * 1024]u8 = undefined;
+    while (true) {
+        const n = try file.read(&buf);
+        if (n == 0) break;
+        hash.update(buf[0..n]);
+    }
+    return hash.finalResult();
 }
 
 test "MC-SELF-ONLY regular candidate handles support synchronous reads and refuse directories" {

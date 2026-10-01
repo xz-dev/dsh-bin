@@ -178,3 +178,21 @@ test.skipIf(!hasZig)("MC-CLEAN review: a candidate swapped for a user directory 
 	expect(r.status).toBe(0); expect(readFileSync(join(path, "credential"), "utf8")).toBe("USER CREDENTIAL");
 	expect(r.stderr).toContain("kept manager candidate"); expect(r.stdout).not.toContain(`Removed manager-directory/${name}`);
 }, 30_000);
+
+test.skipIf(!hasZig)("MC-SELF-FAIL review: concurrent candidate names and swapped partial bytes never get a false prepared result", async () => {
+	const bytes = archive(), s = source([entry(NEXT, bytes)], bytes);
+	try {
+		for (const mode of ["destination", "partial", "old", "clean"]) {
+			const i = fixture(), name = `.dsh-manager-candidate-${NEXT}`, dest = join(i.dir, name), old = join(i.dir, `.dsh-manager-candidate-${MANAGER_VERSION}`);
+			if (mode === "old" || mode === "clean") cpSync(build().manager, old);
+			const stage = mode === "old" ? "candidate-old-delete" : mode === "clean" ? "candidate-clean-delete" : "candidate-publish";
+			const r = await paused(i, mode === "clean" ? ["manager", "clean"] : ["manager", "self-update"], stage, pausedName => {
+				const path = mode === "destination" ? dest : mode === "partial" ? join(i.dir, pausedName) : old;
+				if (existsSync(path)) renameSync(path, join(i.home, "saved")); writeFileSync(path, "USER CREDENTIAL");
+			}, { DSH_MANAGER_TEST_ORIGIN: s.origin });
+			if (mode === "destination" || mode === "partial") {
+				expect(r.status).toBe(1); expect(r.stdout).not.toContain("prepared, not installed"); expect(readFileSync(dest, "utf8")).toBe("USER CREDENTIAL");
+			} else { expect(r.status).toBe(0); expect(readFileSync(old, "utf8")).toBe("USER CREDENTIAL"); expect(r.stderr).toContain("identity changed"); }
+		}
+	} finally { s.stop(); }
+}, 60_000);

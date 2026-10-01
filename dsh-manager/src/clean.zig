@@ -375,15 +375,12 @@ fn perform(ctx: *const Ctx) !void {
     // Installed-object claims and store mutexes remain held until all cleanup is done.
     for (c.items.items) |item| {
         if (eq(u8, item.store.path, "manager-directory")) {
-            if (!binary.reclaimable(ctx.a, item.store.dir, item.name)) {
+            const file = binary.reclaimableFile(ctx.a, item.store.dir, item.name) catch {
                 util.warn("kept manager candidate {s}: not a regular valid candidate", .{item.name});
                 continue;
-            }
-            binary.testPause(ctx, "candidate-clean-delete", item.name);
-            item.store.dir.deleteFile(item.name) catch |err| {
-                util.warn("kept manager candidate {s}: {s}", .{ item.name, @errorName(err) });
-                continue;
             };
+            defer file.close();
+            if (!binary.deleteValidated(ctx, item.store.dir, item.name, file, "candidate-clean-delete")) continue;
         } else item.store.dir.deleteTree(item.name) catch |err| {
             util.warn("cannot clean {s}/{s}: {s}; earlier reported removals remain removed", .{ item.store.path, item.name, @errorName(err) });
             return error.Reported;

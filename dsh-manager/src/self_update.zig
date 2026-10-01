@@ -1,5 +1,6 @@
 //! Self-update discovery/validation. 7.1 prepares a same-volume candidate; 7.2/7.3 own replacement.
 const std = @import("std");
+const builtin = @import("builtin");
 const options = @import("build_options");
 const util = @import("util.zig");
 const binary = @import("manager_binary.zig");
@@ -65,25 +66,45 @@ fn prepare(ctx: *Ctx, force: bool) !void {
     defer parent.deleteFile(part) catch {};
     var source = try binary.openRegular(tree, binary.executable);
     defer source.close();
+    var hash = std.crypto.hash.sha2.Sha256.init(.{});
     var buf: [64 * 1024]u8 = undefined;
     while (true) {
         const n = try source.read(&buf);
         if (n == 0) break;
+        hash.update(buf[0..n]);
         try file.writeAll(buf[0..n]);
     }
     try file.sync();
     file.close();
     open = false;
     try binary.validate(ctx.a, parent, part, candidate.entry.version);
-    // Refuse a concurrent change rather than overwrite unknown input; maintenance serializes managers.
-    try reusable(ctx, parent, name, candidate.entry.version);
-    try parent.rename(part, name);
+    // Remove an existing validated candidate only after checking its identity. Publication never replaces a name.
+    const existing = binary.validated(ctx.a, parent, name, candidate.entry.version) catch |err| blk: {
+        if (err == error.FileNotFound) break :blk null;
+        return err;
+    };
+    if (existing) |held| {
+        defer held.close();
+        if (!binary.deleteValidated(ctx, parent, name, held, "candidate-replace-delete")) return error.ManagerFileChanged;
+    }
+    binary.testPause(ctx, "candidate-publish", part);
+    publish(ctx.a, parent, part, name) catch |err| {
+        util.warn("cannot publish manager candidate {s}: {s}; existing file unchanged", .{ name, @errorName(err) });
+        return err;
+    };
+    const final = try binary.openRegular(parent, name);
+    defer final.close();
+    if (!std.mem.eql(u8, &(try binary.digest(final)), &hash.finalResult())) {
+        util.warn("manager candidate {s} changed after validation; not prepared; retained for inspection", .{name});
+        return error.ManagerFileChanged;
+    }
     var old = parent.iterate();
     while (try old.next()) |item| {
         if (item.kind != .file or std.mem.eql(u8, item.name, name)) continue;
         const old_version = binary.candidateVersion(item.name) orelse continue;
-        binary.validate(ctx.a, parent, item.name, old_version) catch continue;
-        parent.deleteFile(item.name) catch |err| util.warn("candidate prepared; leftover {s}: {s}; run `dsh manager clean`", .{ item.name, @errorName(err) });
+        const held = binary.validated(ctx.a, parent, item.name, old_version) catch continue;
+        defer held.close();
+        _ = binary.deleteValidated(ctx, parent, item.name, held, "candidate-old-delete");
     }
     util.print("Manager {s} prepared, not installed: {s}/{s}; installed manager remains {s}.\n", .{ candidate.entry.version, ctx.dir, name, options.version });
 }
@@ -96,3 +117,29 @@ fn reusable(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, version: []co
     file.close();
     try binary.validate(ctx.a, parent, name, version);
 }
+
+/// Handle-relative no-replace publication. Existing names, even links, are never overwritten.
+fn publish(a: std.mem.Allocator, parent: std.fs.Dir, part: []const u8, name: []const u8) !void {
+    if (builtin.os.tag == .windows) {
+        const win = std.os.windows;
+        const src = try win.sliceToPrefixedFileW(parent.fd, part);
+        const dst = try win.sliceToPrefixedFileW(parent.fd, name);
+        return std.posix.renameatW(parent.fd, src.span(), parent.fd, dst.span(), win.FALSE);
+    }
+    const src = try a.dupeZ(u8, part);
+    const dst = try a.dupeZ(u8, name);
+    if (builtin.os.tag == .linux) {
+        switch (std.posix.errno(std.os.linux.renameat2(parent.fd, src, parent.fd, dst, 1))) {
+            .SUCCESS => return,
+            .EXIST => return error.PathAlreadyExists,
+            .NOSYS, .INVAL => {}, // Older kernels/filesystems: link creates the final name exclusively.
+            else => return error.CandidatePublishFailed,
+        }
+    } else if (builtin.os.tag == .macos) {
+        if (renameatx_np(parent.fd, src, parent.fd, dst, 4) == 0) return; // RENAME_EXCL
+        return error.CandidatePublishFailed;
+    }
+    try std.posix.linkat(parent.fd, part, parent.fd, name, 0);
+    try parent.deleteFile(part);
+}
+extern "c" fn renameatx_np(c_int, [*:0]const u8, c_int, [*:0]const u8, c_uint) c_int;
