@@ -631,3 +631,4 @@
   - `zig fmt --check src/*.zig`、`zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-66-windows`、`zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-66-macos`、`git diff --check` → 全通过。
 - 日志统一 `/var/tmp/dsh-66-logs/`。18 skips 为既有 zsh 缺失、Windows/PowerShell 5.1 专属及真实 HTTPS proxy 未配置；未将跨编译计为 Windows/macOS 行为通过。
 - **残余风险／待验收**：Windows 原生 junction unlink、锁与目录删除仍须三平台 CI 实测；本工作未 push/未运行 CI。独立复审和父会话验证仍待执行，6.6 checkbox 保持未勾。并发手动改用户 home/目录别名不做自动恢复；若预检后删除失败，明确列出之前已删除项，不回滚、不隐藏部分成功。普通应用任意独立后代不在 manager 使用保护范围内（沿用 D3/D5）。
+- 最后补 explicit home 正好经过 residue symlink/junction 的 lexical 路径检查（只读目标与用户 home 不相交也不能移除这个 home 入口）：`bun test ./test/clean.test.ts` → **8 pass / 0 fail / 148 断言**（`home-link-green.log`）；fmt、两项 cross-build、diff check 再次通过。此前全套 224/18/0 后此项为最终追加 targeted 验证，未再重复全套；父会话 CI 会覆盖最终 HEAD。
