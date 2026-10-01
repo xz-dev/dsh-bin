@@ -412,3 +412,4 @@
 - **场景与测试**（`test/versions.test.ts`）：MC-PIN / MC-NAMESPACE（update 不解除固定，普通启动仍用固定版本）；MC-CHANNEL（live update 失败时渠道、运行包和选择都不变，成功后记录 live）；MC-NAMESPACE（list 离线只读，`--available` 不列管理器）；MC-PIN（选择器歧义或缺失时拒绝且状态不变）；MC-REINSTALL（`--force` 替换损坏的运行包，快照文件、编号和选择都保留）；MC-LAST / MC-REINSTALL（解除固定后卸载全部运行包，数据保留，重装后复用原快照）；FB-RESTORE-CHANNEL（卸载最后一个 live 后普通启动回装 live，全新安装默认 release）。所有场景都用 fake-native 证明管理命令从不启动应用。
 - **red 记录缺失**：worker 跑满 60 分钟超时，此前已有 4 个提交，但没有把 red 运行写进 evidence。这里不补一个没人跑过的 red→green，只记录父会话复跑的 green。
 - **父会话复跑**：`zig build test` **44/44**；`bun test ./test` **187 pass / 18 skip / 0 fail**；versions 与 launch 共 **24 pass**；`zig fmt --check`、`git diff --check`、windows 和 macOS 交叉编译成功。
+- **CI 36843683851（f3fcf1c）三平台全绿**：MC-PIN、MC-CHANNEL、MC-NAMESPACE、MC-REINSTALL、MC-LAST、FB-RESTORE-CHANNEL 和元数据回归在 ubuntu、macOS、windows 都实际通过。勾选 **6.1、6.5**；独立复审随 6.2 一起进行，如果不通过就重新打开。
