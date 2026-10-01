@@ -178,6 +178,8 @@ CI 分开筛选 manager 与 build/runtime 变更。组合测试显式选已验�
 
 选择状态移植（6.1，经 supervisor 确认）：`manager select` 无参数只读显示，写入必须给 `--use <version|latest>`，可选 `--snapshot` 仅解析已有编号或 `snapshot.json.alias` 名称并在保存前校验，省略则重置为 null；普通启动消费已存快照，前置 `--use/--snapshot` 覆盖默认、已存快照缺失明确失败，`use=latest` 加已存跨版本快照不固定运行包且卸载全部后仍按记录渠道回装并复用该快照。
 
+快照移植（6.2，经 supervisor 确认）：`snapshot new [--use <version>] [--target <snapshot>|--empty] [--name <alias>]` 只保留既有 `--target` 拼写；复制仅限 `profiles`，文件独立复制、内部相对符号链接原样保留，绝对或越界链接明确拒绝并丢弃暂存，不执行 pnpm 修复。已发布快照的普通启动不取存储互斥；只有首次创建和管理变更取 fail-fast 锁，首次创建竞争可给明确 Busy/retry 诊断，不新增等待或恢复机制。
+
 **PowerShell 候选传输**：模板把命令词（最后一项为可空光标前缀）以 U+001F 分隔存入仅本次调用的进程环境 `DSH_COMPLETE_WORDS`，调用 `manager __complete --shell pwsh --words-env` 后在 finally 恢复环境和 UTF-8 输出编码；Windows 经 std.process.EnvMap 的 UTF-16 环境读取，模板拒绝 NUL/U+001F 词，避免 5.1 legacy argv 对空词、空格及引号的破坏，不执行 AST 表达式。
 
 **证据**：每个切片的场景 ID、命令、red 原因和 green 结果都记录在变更目录的 `evidence.md`。
