@@ -810,3 +810,27 @@
 - 不变量：「文件系统安全不变量」已写入 design.md（9db8a22），之后的实现和复审都按它执行。
 - 在 POSIX 上，MC-SELF-ONLY 的完整替换证明到此完成：实际替换之后，受保护的状态逐项按哈希比较，结果不变。
 - 勾选 **7.2**。
+
+## 7.3 Windows 同程序 helper
+
+- 范围：同程序临时 helper，交接不等于成功；结果仅在完成替换后生成。Windows evidence = windows-2022 GitHub runner (assumption pending the user's answer about real Windows)。本机 Linux 无法运行 Windows red/green；不能把 cross-build 当原生验收。
+- Supervisor 批准替换 primitive 调整：MoveFileExW 解析绝对路径不满足安全不变量，改为继承句柄 + NtSetInformationFile(FileRenameInformation, ReplaceIfExists, RootDirectory=parent)。只通过 STARTUPINFOEX HANDLE_LIST 继承明确列出的句柄；候选持 DELETE + SHARE_READ，拒绝写入/删除；父进程退出后一次尝试，无重试。
+- Red 边界：旧实现 Windows 明确 prepared-only，无 helper/结果文件；新增 Windows 场景应在旧实现因没有 handoff/result 而失败。Windows red 未在本机执行，留 CI 实测；现有 POSIX 与 clean 定向测试用于回归门禁。
+
+### 7.3 实现与本机验证（尚未验收）
+
+- 实现：`self_update_windows.zig` 为同程序私有 helper 分支；在 `context.init` 前分发，helper 不按临时路径派生数据根。父进程在网络请求前固定原入口/目录，交接携带父 PID/进程句柄、parent-dir/entry/candidate/tmp/maintenance 句柄、volume/file-index、原 entry/dataRoot/mode、版本与可信 archive-derived SHA-256。只通过 STARTUPINFOEX 的 HANDLE_LIST 继承 6 个明确句柄；不继承 stdin/stdout/stderr 管道，因此父进程 close/exit 可被测试准确观察。
+- 原程序复制经 held source hash + marker 核验，先独占写 `.dsh-manager-candidate-<old>.part-<nonce>`，no-replace 发布为 `.dsh-manager-helper-<1..16hex>.exe`，创建进程期间禁止改写 helper image；候选同步 no-follow 句柄持 DELETE + SHARE_READ，跨父退出保持禁止写入。Windows 原入口启动时记录 file index，交接前再次核对。
+- helper 校验全部传递句柄的身份/type/reparse/nlink 及父 PID，等待父进程退出（默认 60s，测试专用变量可缩短）；之后 fail-fast 重取维护锁、完整核验候选与可信 hash、核对 installed/candidate 名字身份，再关掉自身旧入口句柄并一次 handle-relative rename。若其他 manager image 仍 mapped 或目标不能替换，明确失败，保留旧入口/候选、不循环重试。替换后核对最终 file index/hash，才记录 `updated <old> -> <new>`。
+- 父进程只输出 `update handed off to helper; run dsh manager --version to confirm`，不输出 updated。helper 通过已继承 tmp 句柄写单行结果（临时文件 + no-replace rename），下一次真正入口消费/报告一次。结果冲突不覆盖原文件。helper 映像残留由 clean/后续 self-update 回收 exact valid/no-follow/nlink==1 文件；中断结果 `.self-update-result-<1..16hex>.tmp` 仅以 identity-checked deleteFile 回收。
+- 场景 → 测试：
+  - MC-SELF-ONLY/MC-SELF-FAIL Windows success/result-once/context：真实 entry 替换，protected state hash 不变，home 没产生 helper-root，handed-off 不冒充成功；
+  - MC-SELF-FAIL Windows mapped-parent timeout：父仍运行，helper 等待超时，旧入口原样；
+  - MC-SELF-FAIL Windows TerminateProcess boundaries：before wait/before move 留旧入口与候选，after move 留完整新入口；
+  - MC-SELF-FAIL Windows write-share/mapped-image：handoff 后写候选被 OS 拒绝，另一个 manager image mapped 时一次替换失败；
+  - MC-SELF-FAIL Windows tampered-before-handoff：公开候选在再验证前被改，拒绝，不生成 handoff/result；
+  - MC-CLEAN helper/residue：exact valid helper 与 result part 被回收，未知普通文件、junction、外部 credential 保留。
+- 本机 intentional-break：暂时禁用 helper reclaim branch，`bun test ./test/self-update-windows.test.ts -t MC-CLEAN` → **0 pass / 1 fail**，helper 未被删除（Expected false, Received true）；还原 → **1 pass / 0 fail / 6 assertions**。Windows 五个原生场景的 red/green 本机均未运行，留 windows-2022 CI；不伪造 Windows red 记录。
+- 最终 targeted：`TMPDIR=/var/tmp/dsh-73 bun test ./test/self-update.test.ts ./test/clean.test.ts ./test/self-update-windows.test.ts` → **33 pass / 5 skip / 0 fail / 619 assertions**。五项 skip 均明确说明 Windows image/handle native evidence 必须 windows-2022，既有 POSIX 测试实际执行。
+- `zig build test --summary all` → **45/45**；`zig fmt --check src test build.zig`、x86_64-windows-gnu / aarch64-macos cross-build、`git diff --check` 全通过。两份 cross-built binary 都恰好 1 version / 1 protocol marker。
+- 剩余门禁：parent 全量 Bun、Windows 原生 CI、独立复审；7.3 checkbox 未改。不能因 cross-build 通过宣称 Windows replacement 通过。同用户最后 identity-check→rename 微窗口、可信索引内容与断电 durability 沿用不变量的接受边界。

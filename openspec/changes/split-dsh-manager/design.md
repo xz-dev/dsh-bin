@@ -233,3 +233,7 @@ Office addon 移植（6.3，经 supervisor 确认）：无选择时离线使用�
 - 同一用户的其他进程恰好在「最后一次身份核对」与「随后唯一一个修改系统调用」之间替换路径（系统调用级窗口）；
 - 断电后的持久性；
 - 已由可信索引哈希认证的输入本身的内容（例如只做浅层 native header 检查）。
+
+7.3 supervisor 批准：Windows helper 通过 STARTUPINFOEX 的 HANDLE_LIST 仅继承已固定的安装目录、入口、候选、tmp、维护锁及父进程句柄，显式传递身份/版本/可信哈希和原安装上下文。候选以 DELETE + FILE_SHARE_READ 打开，跨交接禁止修改；helper 校验句柄身份后等待父进程退出，重新验候选并用 NtSetInformationFile(FileRenameInformation, ReplaceIfExists, RootDirectory=安装目录句柄) 同卷原子替换（代替路径型 MoveFileExW），失败即保留旧入口/候选并记录结果，不重试。父命令仅报告 handed off；后续入口报告并消费 tmp/self-update-result.txt。精确 helper 文件名和有效 marker 经既有 clean/no-follow 单文件清理规则回收。
+
+7.3 残留与测试边界：同程序 helper copy 用既有 `.dsh-manager-candidate-<old>.part-<nonce>` 私有暂存后 no-replace 发布，半写 copy 由既有 clean 回收；helper 单行结果的 `.self-update-result-<hex>.tmp` 以单文件 identity-check 清理。helper 不继承父 stdio 管道，原生测试使用仅 `DSH_MANAGER_TEST=1` 生效的文件 barrier（有界），生产仅一次 parent wait/rename。classic Windows rename 前释放 helper 自身 old-entry 句柄；其他映像占用时失败，不加等待重试。
