@@ -568,3 +568,15 @@
 | MC-IN-USE：open→lock 间 guard generation 被替换，拒绝 stale launch | `versions.test.ts`：`a guard retired between open and lock refuses the stale launch` |
 | 已验证目录 handle 不重新解析、预检 claim 持至退役 | `snapshots.test.ts` / `addons.test.ts` 既有 ancestor-swap 回归新增 shared probe 必为 busy；`install.test.ts` runtime swap 回归保持通过 |
 | 删除预检通过后真实文件系统竞争导致后续失败，报告已移除项、不回滚 | `snapshots.test.ts`：`a post-preflight removal failure reports the already removed snapshot without rollback` |
+
+### Windows 退役顺序修复（CI 36879404161）
+
+- **Red：父会话 CI 36879404161，85c3b36**。ubuntu/macOS 通过，Windows **161 pass / 49 skip / 23 fail**。读取保存日志 `/var/tmp/ci-36879404161.log`：22 项在闲置对象删除、force 替换成功断言收到 status 1；另 1 项是测试在 snapshot 预检暂停时重命名第二目标，直接抛 EPERM。没有将这组产品失败当作环境豁免。
+- 根因核对：runtime/snapshot/addon 的移除都走 `install.remove`，force runtime/addon 都走 `install.activate`。二者在 Windows rename 时仍持目标内部 `.usage.lock` 的 open handle。Zig 0.15.2 默认 Windows min=win10 的 `posix.renameatW` 用非 POSIX 的 `FileRenameInformation` fallback；share-delete 并不允许重命名含打开子文件的目录。CI 中预检暂停期间的祖先/第二目标 rename EPERM 也印证此限制。当前主机不能原生 Windows 执行，因此最终修复是否有效仍必须由父会话下一轮 Windows CI 证明。
+- **采用父会话批准的最小修复**：共享 `retire` helper 在 Windows 先释放自己的 exclusive guard handle，再通过已验证 parent/tmp handles rename；如果别的 session 恰在间隙打开 guard，Windows rename 拒绝，输出一条点名对象的 `in use or access denied; object unchanged, retry after sessions exit` 并返回非零。不等待、不重试、不新增锁。POSIX 仍在 claim 下 rename，退出公开位置后才释放，Linux/macOS exchange 不变。缺 guard 的损坏对象仍可移除/修复。
+- `remove` 与 Windows `activate` 共用此顺序；三类删除调用方识别已报告错误，避免打印第二条泛化错误。所有路径仍相对保留的已验证目录 handles，无绝对路径回退。较早关于 Windows claim 保持到 rename/activation 完成的记录由本节更正。
+- 回归没有新增 skip：guard open→lock 场景在 POSIX 仍要求 force 成功后 stale launch 拒绝；Windows 要求已打开的子文件阻止 force rename、旧对象不变、恢复后原 launch 成功，退出后 force 才成功。snapshot post-preflight 场景保留 POSIX 移走第二目标断言；Windows 如果测试自己的 rename EPERM，则打开第二目标的 `snapshot.json`，使 manager 释放自己的 guard 后仍被 Windows 拒绝，第一项仍删除并明确报告，第二项留原处。两项均验证真实操作，而非平台 skip。
+- 本机定向 `TMPDIR=/var/tmp/dsh-64w PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH bun test ./test/in-use.test.ts ./test/versions.test.ts ./test/addons.test.ts ./test/snapshots.test.ts ./test/install.test.ts` → **75 pass / 0 fail / 1178 断言**（`/var/tmp/dsh-64w/targeted.log`），包括所有 POSIX ancestor-swap 回归。
+- 完整本机验证（**f2f6295**）：`zig build test --summary all` → **44/44**；`bun test ./test` → **215 pass / 18 skip / 0 fail / 2802 断言**，233 tests / 17 files，213.22s（`/var/tmp/dsh-64w/{units,full}.log`）。18 skip 原因不变：本机缺 zsh、Windows/PowerShell 5.1 专属场景、未配置真实 HTTPS proxy；真实应用与 office 测试本机实际执行通过。
+- `zig fmt --check src test/fake-native.zig`、Windows x64 `zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-64w/windows`、macOS arm64 `zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-64w/macos` 均 exit 0。首次 `git diff --check` 发现本证据文件 EOF 多一个空行，删除后复跑通过。
+- **尚未声称 Windows 原生 green**：本机只能 cross-build。Windows 开放后代 handle 阻止 rename、释放自身 guard 后闲置目录能退役、post-preflight 失败报告、未加锁 guard-open 场景的 Windows 分支，都待父会话原生 CI 证明。未 push、未运行 gh、未新建分支、未勾选任务；另两个 change 未触碰。
