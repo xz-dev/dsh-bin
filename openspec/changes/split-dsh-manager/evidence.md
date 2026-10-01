@@ -494,3 +494,53 @@
   - 真实应用测试由父会话在干净 worktree 跑过：RB-PLUGIN 1 pass / 24 断言（297e723），MC-ADDON 1 pass / 23 断言（a3a9369）。修复后 worker 又各复跑一次，都通过。
 - **CI 36865069757（ff824a1）三平台全绿**：ubuntu 204 pass、macOS 203 pass、windows 174 pass，均 0 fail。快照和 addon 的祖先替换回归在 Windows 也实际执行，不是 skip。软链接相关场景因 Windows 没有符号链接权限而 skip，在 ubuntu 和 macOS 上已实际通过。
 - 勾选 **6.2、6.3**。
+
+## 6.4
+
+### 既有路径 → 场景映射与缺口
+
+- MC-IN-USE：`launch.run` 已持运行包与快照 shared claim；`launch.test.ts` 的 `the running runtime holds the shared claim until it exits`、`storage.test.ts` 的 `RB-HOME: initial snapshot usage claim stays held until runtime exits` 已测基础。运行包卸载已有全量 claim 预检，force 激活已有 exclusive claim，但启动会等待/忽略错误，force 的诊断没对象 ID，Windows 激活提前解锁。
+- 缺口：快照删除与 addon 卸载根本未检查 claim；manager 启动未持 addon claim；批量缺失/固定/占用诊断遇到第一项即返回，没有列出全部失败目标。
+- RB-RESTART：`dsh-bun-build/runtime/app.ts` 重新持运行包/快照 claim，`compat/addons.ts` 重新持 addon claim；既有 `dsh-bun-build/test/runtime/snapshot-start.test.ts` 的 `RB-RESTART: an in-app restart keeps the launch, the snapshot and its claim` 和 `a running session holds the runtime's and the snapshot's claims until it exits` 验证消费同一载荷。6.4 新黑盒由另一 manager 进程改默认 B 后才触发 fake-native 内部重启，验证 A/S/addon 及 claims 不变；新普通启动才使用 B。
+- Supervisor 批准：Windows 文件句柄默认 share-delete，保留 exclusive claim 至删除/替换完成，删除错误注释；运行包缺 guard 视为损坏、启动明确拒绝并提示 force/uninstall，但仍可卸载/force 修复；addon 缺 guard 按 6.3 已批准的损坏 addon 规则降级（一次 stderr 提示），不拒绝整个应用。
+
+### Red（修改产品代码之前）
+
+- `TMPDIR=/var/tmp/dsh-64 bun test ./test/in-use.test.ts ./test/versions.test.ts ./test/addons.test.ts -t 'MC-IN-USE|RB-RESTART'` → **0 pass / 6 fail / 43 断言**，日志 `/var/tmp/dsh-64/red.log`。
+- 预期原因：使用中快照删除、addon 替换成功（应拒绝）；重启后的快照删除仍成功；批量卸载仅报第一个 missing，没有固定/占用项；busy 启动等待导致默认 5 秒测试超时；force runtime 仅报 `RuntimeInUse` 而没 ID，且下载已发生。
+
+### 最小 Green checkpoint
+
+- 同一 targeted 命令 → **6 pass / 0 fail / 110 断言**（`/var/tmp/dsh-64/green.log`）；`zig build test --summary all` → **44/44**。
+- 使用中 runtime/snapshot/addon 的删除、force 替换均明确拒绝；退出后同命令成功。批量预检汇总所有 missing、selection、in-use 项，预检失败整个集合不删除。持 exclusive claim 至退出公开位置，普通启动占用时 fail-fast，不等待。
+- Supervisor 补充批准：不提高 Windows 最低版本；删除统一为「相对已验证 parent handle rename 至同卷 data/tmp/.remove-* → release claim → delete」，避免 Windows delete-pending 阻止整树删除；force 替换持 claim 至新 generation active 再释放。最后删除失败仍报告对象已移除/新 generation 已激活，stderr 点名 tmp 残留并提示 6.6 clean，不重试。
+
+### 启动 guard 完整性核对（父会话要求）
+
+- 原生 `install.run`、`install.update`、`--force` 修复以及 `install.bootstrap` 均调用同一个 `install.perform`；staging 完成验证后、任何 `activate` 之前写入 `.dsh-install.json` 与 `.usage.lock`。故新装/更新/修复/首次自举不会发布一个无 guard 的健康运行包。`versions.test.ts` 对删除 guard 后 force 修复断言 guard 重建。
+- 非 force 的 already-installed 分支不会替损坏包偷偷补 guard；无 guard 已有包仍按损坏状态明确要求 `--force`，不放宽启动拒绝。force 能修复、uninstall 能移除。
+- 制品侧 `dsh-bun-build/scripts/assemble-bundle.mjs:requiredPaths/assembleBundle` 在 zip 之前写 guard，并把它列入 requiredPaths；真实制品 fixture `real-runtime.test.ts` 从此 zip 解包，后续 audit/copy 保留整个树，因此 guard 随树保留。
+- 托管数据根测试：`storage.test.ts` 的 portage/Scoop 预置运行包（包括只读两个 Scoop manager 版本）统一使用 `harness.addRuntime`；它在复制 fake-native 前写 `.usage.lock`。`first-run`、`launch`、`manager-control`、`completion`、`completion-shells`、`completion-relocate`、`snapshots`、`addons`、`in-use` 的手造运行包同样全部走此函数；`install`/`versions` 的 archive fixture 没有自行发布目录，走真实 `install.perform`。
+- 现有 Gentoo/Scoop 脚本仍是旧耦合发布的模板，6.4 没有声称它们的新托管集成已完成（7.4/7.5 未验收）；它们只解压完整制品或复制已有树，没有另造无 guard 的新格式 runtime 路径。新增托管入口的实现留给 7.4/7.5。未运行真实包管理器，也未触及用户安装。
+- 实际整套运行包含真实运行包、普通/自动安装、force 修复及手造/托管 fixture；未出现健康安装的 guard-missing 拒绝。
+
+### 强化回归与验证
+
+- 下载期间才启动新 session 的 runtime/addon 两场景，证明 activation 必须重新检查，不能只靠下载前 probe。临时去掉 activation claim：`TMPDIR=/var/tmp/dsh-64 bun test ./test/versions.test.ts ./test/addons.test.ts -t 'activation rechecks'` → **0 pass / 2 fail / 8 断言**，两项都因替换竟成功而失败（`recheck-mutation.log`）；代码已恢复。
+- 既有快照/addon 祖先替换 hook 的测试同时 probe shared lock，断言已通过预检的对象在实际退役前仍被 exclusive claim 保护。Linux/macOS/Windows 都执行，不新增 Windows skip。
+- post-preflight 注入第二目标消失：第一项确已移除、stdout 仍报告该项；第二项明确失败并说明先前移除不回滚。`bun test ./test/snapshots.test.ts -t 'post-preflight'` → **1 pass / 0 fail / 10 断言**（`partial.log`）。每项成功后 flush，避免后续 fatal 丢掉已成功清单。
+- 定向组合：`TMPDIR=/var/tmp/dsh-64 bun test ./test/in-use.test.ts ./test/versions.test.ts ./test/addons.test.ts ./test/snapshots.test.ts ./test/install.test.ts ./test/launch.test.ts ./test/storage.test.ts` → **106 pass / 0 fail / 1492 断言**（post-preflight 测试加入前）。
+- 整套：`TMPDIR=/var/tmp/dsh-64 PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH bun test ./test` → **213 pass / 18 skip / 0 fail / 2787 断言**（post-preflight 测试加入前，`full-final.log`）。18 skip 为本机 zsh 缺失、Windows/PowerShell 5.1 特有场景、未配置真实 HTTPS proxy；6.4 全部场景实际执行。真实应用/office 测试也在本机完整 suite 中执行，CI 因 work/app 缺失照既有规则 skip。
+- `TMPDIR=/var/tmp/dsh-64 zig build test --summary all` → **44/44**；`zig fmt --check src test/fake-native.zig`、`git diff --check` 均通过。
+- `TMPDIR=/var/tmp/dsh-64 zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-64/windows` 与 `-Dtarget=aarch64-macos --prefix /var/tmp/dsh-64/macos` 均编译通过。本机未声称 Windows/macOS 原生执行通过：交由父会话三平台 CI。
+
+### 后续边界
+
+- 6.6 clean 尚未实现；此次仅增加退役残留 `.remove-<id>-<random>` 及明确提示。清理失败不回滚已移除对象/已激活 generation，也不重试；6.6 需识别此类残留。运行包/快照/addon 公开位置仍按相对已验证目录 handle 操作，祖先替换回归保持通过。
+- 全量 exclusive preflight claims 一直持至逐项退出公开位置，故遵守 claim 的新 session 无法插入「预检 → 删除」间隙；不额外加事务、等待队列或后代追踪。未知外部程序不遵守 advisory claim 的任意文件系统破坏不在受管理会话保证内。
+- 未改 tasks.md checkboxes；未 push、未触发 CI、未创建分支；待独立复审及父会话 CI 才验收 6.4。
+
+### 最终工作树复跑（980403c）
+
+- `TMPDIR=/var/tmp/dsh-64 PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH bun test ./test` → **214 pass / 18 skip / 0 fail / 2793 断言**，232 tests / 17 files，237.38s（`full-release.log`）。上述 skip 原因不变；6.4 的九项新增场景、两个既有 ancestor-swap/claim probe 场景均实际通过。
+- 同时再次 `zig build test --summary all` **44/44**、`zig fmt --check src test/fake-native.zig`、两 target cross-build、`git diff --check` 全通过。
