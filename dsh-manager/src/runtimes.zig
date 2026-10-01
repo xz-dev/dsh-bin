@@ -21,6 +21,9 @@ pub fn list(ctx: *const Ctx) []select.Bundle {
     var out: std.ArrayList(select.Bundle) = .empty;
     var it = dir.iterate();
     while (it.next() catch storageProblem(path)) |e| {
+        // Finder/Explorer metadata is not a runtime or evidence of a damaged install.
+        if (std.mem.eql(u8, e.name, ".DS_Store") or std.mem.startsWith(u8, e.name, "._") or
+            std.ascii.eqlIgnoreCase(e.name, "Thumbs.db") or std.ascii.eqlIgnoreCase(e.name, "desktop.ini")) continue;
         if (e.kind != .directory or e.name[0] == '.') storageProblem(ctx.path(&.{ "bundles", e.name }));
         const name = ctx.a.dupe(u8, e.name) catch util.oom();
         const bytes = dir.readFileAlloc(ctx.a, util.join(ctx.a, &.{ name, "bundle.json" }), 1 << 20) catch null;

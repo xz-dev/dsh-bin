@@ -197,6 +197,17 @@ test.skipIf(!hasZig)("the manager embeds a byte-readable version marker", () => 
 	expect(readFileSync(build().manager).includes(`DSH_MANAGER_VERSION=${MANAGER_VERSION}\0`)).toBe(true);
 });
 
+test.skipIf(!hasZig)("FB-OFFLINE review: filesystem metadata leaves intact runtime launch/list/version usable offline", () => {
+    const i = install([R2]);
+    for (const name of [".DS_Store", `._${R2}`, "Thumbs.db", "desktop.ini"]) writeFileSync(join(i.data, "bundles", name), "filesystem metadata");
+    const env = { DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: "http://127.0.0.1:1" };
+    expect(run(i, ["probe"], { env }).status).toBe(0);
+    expect(launchOf(i).runtime).toBe(R2);
+    const list = run(i, ["manager", "list"], { env });
+    expect(list.status).toBe(0); expect(list.stdout).toContain(R2); expect(started(i)).toBe(false);
+    expect(run(i, ["--version"], { env }).status).toBe(0);
+});
+
 // ── Usage claim ──────────────────────────────────────────────────────────────────────────────────────
 
 async function waitStarted(i: Install) {
