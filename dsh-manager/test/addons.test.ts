@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { writeZip } from "../../dsh-bun-build/runtime/zip.ts";
 import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
-import { addRuntime, baseEnv, build, cleanup, hasZig, launchOf, newInstall, run, started, tempDir, tree, replaceAncestor, type Install } from "./harness.ts";
+import { addRuntime, baseEnv, build, cleanup, hasZig, holdSession, launchOf, newInstall, run, started, tempDir, tree, replaceAncestor, type Install } from "./harness.ts";
 
 beforeAll(() => { if (hasZig) build(); }, 300_000);
 afterAll(cleanup);
@@ -47,6 +47,21 @@ async function command(i: Install, s: ReturnType<typeof source>, args: string[])
 }
 const selection = (i: Install) => readFileSync(join(i.data, "state/selection.json"), "utf8");
 const install = (i: Install, s: ReturnType<typeof source>, v = "office") => command(i, s, ["--use", V, "manager", "install", "--addon", v]);
+
+test.skipIf(!hasZig)("MC-IN-USE: force addon replacement refuses live addon before download, keeps bytes; repairs after exit", async () => {
+	const i = newInstall(), s = source(i);
+	try {
+		expect((await install(i, s, `office:${A}`)).status).toBe(0);
+		const dir = join(i.data, "addons/office", A), original = tree(dir).map(p => { try { return [p, readFileSync(join(dir, p)).toString("hex")]; } catch { return [p, "dir"]; } });
+		const session = await holdSession(i, ["--use", V, "--addon", `office:${A}`]);
+		try {
+			const before = s.requests.length, r = await command(i, s, ["--use", V, "manager", "install", "--addon", `office:${A}`, "--force"]);
+			expect(r.status).toBe(1); expect(r.stderr).toContain(A); expect(r.stderr).toContain("in use"); expect(r.stdout).toBe(""); expect(s.requests.slice(before)).toEqual(["/runtime-index.json"]);
+			expect(tree(dir).map(p => { try { return [p, readFileSync(join(dir, p)).toString("hex")]; } catch { return [p, "dir"]; } })).toEqual(original);
+		} finally { expect(await session.finish()).toBe(0); }
+		expect((await command(i, s, ["--use", V, "manager", "install", "--addon", `office:${A}`, "--force"])).status).toBe(0);
+	} finally { s.stop(); }
+});
 
 test.skipIf(!hasZig)("MC-ADDON: install/select/list/uninstall are native; default uses newest in-slot; selected deletion refuses", async () => {
 	const i = newInstall(), s = source(i);

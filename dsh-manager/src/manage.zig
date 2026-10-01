@@ -152,9 +152,22 @@ pub fn uninstall(ctx: *Ctx, args: []const []const u8) u8 {
     const mutex = maintenance(ctx);
     defer mutex.release();
     const bundles = runtimes.list(ctx);
+    var root = ctx.ensureDir(&.{"bundles"});
+    defer root.close();
     var ids: std.ArrayList([]const u8) = .empty;
+    var failures: std.ArrayList(u8) = .empty;
     for (args) |arg| {
-        const id = require(bundles, arg);
+        const id = switch (select.matchVersion(bundles, arg)) {
+            .found => |v| v,
+            .none => {
+                failures.print(ctx.a, "{s} (not installed); ", .{arg}) catch util.oom();
+                continue;
+            },
+            .ambiguous => {
+                failures.print(ctx.a, "{s} (ambiguous); ", .{arg}) catch util.oom();
+                continue;
+            },
+        };
         var duplicate = false;
         for (ids.items) |v| if (std.mem.eql(u8, v, id)) {
             duplicate = true;
@@ -163,30 +176,27 @@ pub fn uninstall(ctx: *Ctx, args: []const []const u8) u8 {
         if (!duplicate) ids.append(ctx.a, id) catch util.oom();
     }
     const stored = selected(ctx);
-    if (stored) |s| if (!std.mem.eql(u8, s.use, "latest")) {
-        const pin = select.matchVersion(bundles, s.use);
-        if (pin == .ambiguous) util.fatal("selection {s} is ambiguous; run `dsh manager select --use latest` before uninstalling", .{s.use});
-        if (pin == .found) for (ids.items) |id| if (std.mem.eql(u8, id, pin.found))
-            util.fatal("dsh {s} is pinned by the selection; run `dsh manager select --use latest` or pin another version first; nothing was uninstalled", .{id});
-    };
-    // Existing guard only; full process/restart protection is task 6.4.
-    var claims: std.ArrayList(lock.Lock) = .empty;
-    defer for (claims.items) |claim| claim.release();
-    for (ids.items) |id| {
-        const claim = lock.tryAcquire(ctx.path(&.{ "bundles", id, runtimes.guard_name }), .exclusive, false) catch |err| switch (err) {
-            error.Missing => continue,
-            else => util.fatal("cannot uninstall dsh {s}: {s} (possibly in use); nothing was uninstalled", .{ id, @errorName(err) }),
+    const pin: ?[]const u8 = if (stored != null and !std.mem.eql(u8, stored.?.use, "latest")) blk: {
+        break :blk switch (select.matchVersion(bundles, stored.?.use)) {
+            .found => |v| v,
+            .none => null,
+            .ambiguous => util.fatal("selection {s} is ambiguous; run `dsh manager select --use latest` before uninstalling; nothing was uninstalled", .{stored.?.use}),
         };
-        claims.append(ctx.a, claim) catch util.oom();
+    } else null;
+    const claims = ctx.a.alloc(?lock.Lock, ids.items.len) catch util.oom();
+    @memset(claims, null);
+    defer for (claims) |c| if (c) |l| l.release();
+    for (ids.items, claims) |id, *c| {
+        if (pin != null and std.mem.eql(u8, id, pin.?)) failures.print(ctx.a, "{s} (pinned by selection); ", .{id}) catch util.oom();
+        c.* = lock.tryAcquireIn(root, util.join(ctx.a, &.{ id, runtimes.guard_name }), .exclusive, false) catch |err| {
+            if (err != error.Missing) failures.print(ctx.a, "{s} ({s}); ", .{ id, if (err == error.Busy) "in use" else @errorName(err) }) catch util.oom();
+            continue; // Missing guard can be removed, but cannot be launched.
+        };
     }
-    // Windows cannot delete our own open guard handle. Runtime deletion failures stay explicit.
-    if (@import("builtin").os.tag == .windows) {
-        for (claims.items) |claim| claim.release();
-        claims.clearRetainingCapacity();
-    }
-    for (ids.items) |id| {
-        std.fs.cwd().deleteTree(ctx.path(&.{ "bundles", id })) catch |err|
-            util.fatal("cannot remove runtime {s}: {s}; inspect remaining runtime files; snapshots and home were kept", .{ id, @errorName(err) });
+    if (failures.items.len != 0) util.fatal("cannot uninstall: {s}nothing was uninstalled; unpin selections or retry after sessions exit", .{failures.items});
+    for (ids.items, claims) |id, *c| {
+        @import("install.zig").remove(ctx, root, id, c) catch |err|
+            util.fatal("cannot remove runtime {s}: {s}; earlier reported removals remain removed; inspect remaining runtime files; snapshots and home were kept", .{ id, @errorName(err) });
         util.print("Uninstalled dsh {s}; snapshots, selection and application home kept.\n", .{id});
     }
     return 0;

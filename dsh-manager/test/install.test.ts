@@ -298,7 +298,8 @@ test.skipIf(!hasZig)("MC-EMPTY: maintenance and usage locks block install/replac
 			const before = readFileSync(join(i.data, "bundles", ID, `dsh-native${EXE}`));
 			const blocked = await install(i, s.origin, [ID, "--force"]);
 			expect(blocked.status).toBe(1);
-			expect(blocked.stderr).toContain("RuntimeInUse");
+			expect(blocked.stderr).toContain("in use");
+			expect(blocked.stderr).toContain(ID);
 			expect(readFileSync(join(i.data, "bundles", ID, `dsh-native${EXE}`)).equals(before)).toBe(true);
 			expect(started(i)).toBe(false);
 		} finally { usage.release(); }

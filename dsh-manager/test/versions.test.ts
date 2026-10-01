@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { writeZip } from "../../dsh-bun-build/runtime/zip.ts";
 import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
-import { baseEnv, build, bundleMeta, cleanup, EXE, hasZig, launchOf, newInstall, run, started, tempDir, tree, type Install } from "./harness.ts";
+import { baseEnv, build, bundleMeta, cleanup, EXE, hasZig, holdSession, launchOf, newInstall, run, started, tempDir, tree, type Install } from "./harness.ts";
 
 beforeAll(() => { if (hasZig) build(); }, 300_000);
 afterAll(cleanup);
@@ -40,6 +40,23 @@ const statePath = (i: Install, file: string) => join(i.data, "state", file);
 const selection = (i: Install) => readFileSync(statePath(i, "selection.json"), "utf8");
 const channel = (i: Install) => readFileSync(statePath(i, "channel"), "utf8").trim();
 const manager = (i: Install, s: ReturnType<typeof source>, args: string[]) => command(i, s, ["manager", ...args]);
+
+test.skipIf(!hasZig)("MC-IN-USE: force runtime replacement refuses a live session before download, keeps bytes; repairs after exit", async () => {
+	const i = newInstall(), s = source();
+	try {
+		expect((await manager(i, s, ["install", A])).status).toBe(0);
+		const marker = join(i.data, "bundles", A, "keep"); writeFileSync(marker, "old generation");
+		const original = readFileSync(join(i.data, "bundles", A, `dsh-native${EXE}`)), session = await holdSession(i, ["--use", A]);
+		try {
+			const before = s.requests.length, r = await manager(i, s, ["install", A, "--force"]);
+			expect(r.status).toBe(1); expect(r.stderr).toContain(A); expect(r.stderr).toContain("in use"); expect(r.stdout).toBe("");
+			expect(s.requests.slice(before)).toEqual(["/runtime-index.json"]); expect(readFileSync(marker, "utf8")).toBe("old generation"); expect(readFileSync(join(i.data, "bundles", A, `dsh-native${EXE}`))).toEqual(original);
+		} finally { expect(await session.finish()).toBe(0); }
+		expect((await manager(i, s, ["install", A, "--force"])).status).toBe(0); expect(existsSync(marker)).toBe(false);
+		rmSync(join(i.data, "bundles", A, ".usage.lock"));
+		expect((await manager(i, s, ["install", A, "--force"])).status).toBe(0); expect(existsSync(join(i.data, "bundles", A, ".usage.lock"))).toBe(true);
+	} finally { s.stop(); }
+});
 
 // MC-PIN / MC-NAMESPACE: install/select/update all use the native manager, not the runtime's update command.
 test.skipIf(!hasZig)("MC-PIN / MC-NAMESPACE: native update adds newest release, reports pin, and plain launch stays pinned", async () => {

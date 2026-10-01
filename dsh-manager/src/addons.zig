@@ -5,6 +5,7 @@ const index = @import("index.zig");
 const select = @import("select.zig");
 const state = @import("state.zig");
 const runtimes = @import("runtimes.zig");
+const lock = @import("lock.zig");
 const http = @import("http.zig");
 const Ctx = @import("context.zig").Ctx;
 const eq = std.mem.eql;
@@ -143,7 +144,10 @@ pub fn install(ctx: *Ctx, raw: []const u8, force: bool, opts: select.Options) u8
     ctx.ensureData();
     const mutex = state.maintenance(ctx) catch |err| util.fatal("cannot acquire maintenance lock: {s}; retry", .{@errorName(err)});
     defer mutex.release();
-    perform(ctx, t, query, force) catch |err| util.fatal("office addon install failed: {s}; selection and channel unchanged", .{@errorName(err)});
+    perform(ctx, t, query, force) catch |err| {
+        if (err == error.UsageReported) return 1;
+        util.fatal("office addon install failed: {s}; selection and channel unchanged", .{@errorName(err)});
+    };
     return 0;
 }
 fn perform(ctx: *Ctx, t: Table, query: ?[]const u8, force: bool) !void {
@@ -207,6 +211,7 @@ fn perform(ctx: *Ctx, t: Table, query: ?[]const u8, force: bool) !void {
         util.print("The office addon {s} is already installed.\n", .{c.version});
         return;
     }
+    if (exists) try installer.checkIdle(ctx, parent, c.version, "office addon");
     const staging = try installer.fetchTree(ctx, tmp, asset, c.tag);
     defer tmp.deleteTree(staging) catch {};
     const m = try readIn(ctx, tmp, staging, c.version);
@@ -288,9 +293,18 @@ pub fn uninstall(ctx: *Ctx, raw: []const u8) u8 {
     const stored = state.readSelection(ctx);
     if (stored == .invalid) util.fatal("invalid selection; reset with `dsh manager select --use latest` before uninstalling", .{});
     const pin = storedChoice(if (stored == .ok) stored.ok else null) catch |err| util.fatal("invalid addon selection: {s}", .{@errorName(err)});
-    for (list) |m| if (query == null or eq(u8, query.?, m.version)) {
-        if (pin) |p| if (eq(u8, p, m.version)) util.fatal("office addon {s} is named by the selection; run `dsh manager select --use latest --addon office:none` first; nothing uninstalled", .{m.version});
+    const claims = ctx.a.alloc(?lock.Lock, list.len) catch util.oom();
+    @memset(claims, null);
+    defer for (claims) |c| if (c) |l| l.release();
+    var failures: std.ArrayList(u8) = .empty;
+    for (list, claims) |m, *c| if (query == null or eq(u8, query.?, m.version)) {
+        if (pin) |p| if (eq(u8, p, m.version)) failures.print(ctx.a, "office:{s} (named by selection); ", .{m.version}) catch util.oom();
+        c.* = lock.tryAcquireIn(dir, util.join(ctx.a, &.{ m.version, runtimes.guard_name }), .exclusive, false) catch |err| {
+            if (err != error.Missing) failures.print(ctx.a, "office:{s} ({s}); ", .{ m.version, if (err == error.Busy) "in use" else @errorName(err) }) catch util.oom();
+            continue;
+        };
     };
+    if (failures.items.len != 0) util.fatal("cannot uninstall addons: {s}nothing uninstalled; reset selection or retry after sessions exit", .{failures.items});
     // Test-only stdin barrier matches the snapshot ancestor-swap regression.
     if (eq(u8, ctx.env.get("DSH_MANAGER_TEST") orelse "", "1") and eq(u8, ctx.env.get("DSH_MANAGER_TEST_PAUSE") orelse "", "addon-remove")) {
         util.warn("test pause: addon-remove", .{});
@@ -298,8 +312,8 @@ pub fn uninstall(ctx: *Ctx, raw: []const u8) u8 {
         var byte: [1]u8 = undefined;
         if ((std.fs.File.stdin().read(&byte) catch 0) == 0) util.fatal("test pause aborted", .{});
     }
-    for (list) |m| if (query == null or eq(u8, query.?, m.version)) {
-        dir.deleteTree(m.version) catch |err| util.fatal("cannot remove office addon {s}: {s}", .{ m.version, @errorName(err) });
+    for (list, claims) |m, *c| if (query == null or eq(u8, query.?, m.version)) {
+        @import("install.zig").remove(ctx, dir, m.version, c) catch |err| util.fatal("cannot remove office addon {s}: {s}; earlier reported removals remain removed", .{ m.version, @errorName(err) });
         util.print("Uninstalled the office addon {s}.\n", .{m.version});
     };
     return 0;

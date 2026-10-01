@@ -68,6 +68,7 @@ fn command(ctx: *Ctx, args: []const []const u8, updating: bool, opts: select.Opt
     };
     defer mutex.release();
     const installed = perform(ctx, query.?, channel orelse state.channel(ctx), force, false) catch |err| {
+        if (err == error.UsageReported) return 1;
         util.warn("runtime install failed: {s}; no selection was changed", .{@errorName(err)});
         return 1;
     };
@@ -147,6 +148,7 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
         if (automatic) util.warn("dsh {s} is already installed", .{e.id}) else util.print("dsh {s} is already installed.\n", .{e.id});
         return e.id;
     }
+    if (exists) try checkIdle(ctx, bundles, e.id, "dsh");
     const staging = try fetchTree(ctx, tmp, candidate.asset, e.tag);
     defer tmp.deleteTree(staging) catch {};
     var dir = try tmp.openDir(staging, .{ .no_follow = true });
@@ -261,6 +263,34 @@ fn validateIn(ctx: *const Ctx, dir: std.fs.Dir, e: index.Entry, host: []const u8
     return meta;
 }
 
+/// One usage check for replacements, before downloading and again at activation. Missing guards are repairable.
+fn idleClaim(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, label: []const u8) !?lock.Lock {
+    var dir = try parent.openDir(name, .{ .no_follow = true });
+    defer dir.close();
+    return lock.tryAcquireIn(dir, runtimes.guard_name, .exclusive, false) catch |err| {
+        if (err == error.Missing) return null;
+        util.warn("cannot replace {s} {s}: {s}; object unchanged, retry after sessions exit", .{ label, name, if (err == error.Busy) "in use" else @errorName(err) });
+        _ = ctx;
+        return error.UsageReported;
+    };
+}
+
+pub fn checkIdle(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, label: []const u8) !void {
+    if (try idleClaim(ctx, parent, name, label)) |c| c.release();
+}
+
+/// Retire under the usage claim, then release before deletion (Windows can keep an open file delete-pending).
+/// This same handle-relative sequence keeps both deletion and ancestor swaps independent of path re-resolution.
+pub fn remove(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, claim: *?lock.Lock) !void {
+    var tmp = ctx.ensureDir(&.{"tmp"});
+    defer tmp.close();
+    const retired = try std.fmt.allocPrint(ctx.a, ".remove-{s}-{x}", .{ name, std.crypto.random.int(u64) });
+    try std.fs.rename(parent, name, tmp, retired);
+    if (claim.*) |c| c.release();
+    claim.* = null;
+    tmp.deleteTree(retired) catch |err| util.warn("removed {s}; leftover tmp/{s} could not be deleted ({s}); run `dsh manager clean`", .{ name, retired, @errorName(err) });
+}
+
 // Retain validated parent handles through activation, replacement and cleanup. POSIX exchange
 // keeps force reinstall visible; Windows retains the existing retirement/rollback protocol.
 pub fn activate(ctx: *const Ctx, tmp: std.fs.Dir, staging: []const u8, parent: std.fs.Dir, dest: []const u8, backup: []const u8, exists: bool) !void {
@@ -269,10 +299,7 @@ pub fn activate(ctx: *const Ctx, tmp: std.fs.Dir, staging: []const u8, parent: s
     var current_open = true;
     defer if (current_open) current.close();
     if ((try current.stat()).kind != .directory) return error.RuntimeDirectoryConflict;
-    var claim: ?lock.Lock = lock.tryAcquireIn(current, runtimes.guard_name, .exclusive, false) catch |err| switch (err) {
-        error.Missing => null,
-        else => return error.RuntimeInUse,
-    };
+    var claim = try idleClaim(ctx, parent, dest, "runtime/addon");
     defer if (claim) |l| l.release();
     if (builtin.os.tag == .linux) {
         const src_z = try ctx.a.dupeZ(u8, staging);
@@ -287,10 +314,7 @@ pub fn activate(ctx: *const Ctx, tmp: std.fs.Dir, staging: []const u8, parent: s
         if (renameatx_np(tmp.fd, src_z, parent.fd, dst_z, 2) != 0) return error.AtomicReplacementFailed;
         return;
     }
-    if (claim) |l| {
-        l.release();
-        claim = null;
-    } // Windows rename refuses our own guard handle too.
+    // Close the directory (Windows blocks rename while it is open), not the share-delete usage guard.
     current.close();
     current_open = false;
     if (existsIn(tmp, backup)) try tmp.deleteTree(backup);
@@ -299,6 +323,8 @@ pub fn activate(ctx: *const Ctx, tmp: std.fs.Dir, staging: []const u8, parent: s
         std.fs.rename(tmp, backup, parent, dest) catch return error.RestoreFailed;
         return err;
     };
-    tmp.deleteTree(backup) catch {}; // Valid new generation is active; clean is task 6.6.
+    if (claim) |l| l.release();
+    claim = null; // New generation active; old guard may now finish delete-pending.
+    tmp.deleteTree(backup) catch |err| util.warn("replacement {s} is active; leftover tmp/{s} could not be deleted ({s}); run `dsh manager clean`", .{ dest, backup, @errorName(err) });
 }
 extern "c" fn renameatx_np(c_int, [*:0]const u8, c_int, [*:0]const u8, c_uint) c_int;

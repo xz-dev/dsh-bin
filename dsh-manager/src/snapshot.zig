@@ -376,8 +376,12 @@ fn command(ctx: *Ctx, args: []const []const u8) !u8 {
         return 0;
     }
     var targets: std.ArrayList(Meta) = .empty;
+    var failures: std.ArrayList(u8) = .empty;
     for (args[1..]) |q| {
-        const s = try lookup(ctx, all, q);
+        const s = lookup(ctx, all, q) catch |err| {
+            try failures.print(ctx.a, "{s} ({s}); ", .{ q, @errorName(err) });
+            continue;
+        };
         var duplicate = false;
         for (targets.items) |t| if (std.mem.eql(u8, s.id, t.id)) {
             duplicate = true;
@@ -388,12 +392,20 @@ fn command(ctx: *Ctx, args: []const []const u8) !u8 {
     const stored = state.readSelection(ctx);
     if (stored == .invalid) return error.InvalidSelection;
     const chosen = if (stored == .ok) @import("manage.zig").snapshotChoice(stored.ok) else null;
-    if (chosen) |q| {
-        const selected = try lookup(ctx, all, q);
-        for (targets.items) |s| if (std.mem.eql(u8, s.id, selected.id)) {
-            util.warn("snapshot {s} is named by the selection; run `dsh manager select --use latest` or select another snapshot first; nothing was removed", .{s.id});
-            return 1;
+    const chosen_id = if (chosen) |q| (try lookup(ctx, all, q)).id else null;
+    const claims = try ctx.a.alloc(?lock.Lock, targets.items.len);
+    @memset(claims, null);
+    defer for (claims) |c| if (c) |l| l.release();
+    for (targets.items, claims) |s, *c| {
+        if (chosen_id != null and std.mem.eql(u8, s.id, chosen_id.?)) try failures.print(ctx.a, "{s} (named by selection); ", .{s.id});
+        c.* = lock.tryAcquireIn(root, util.join(ctx.a, &.{ s.id, ".usage.lock" }), .exclusive, false) catch |err| {
+            try failures.print(ctx.a, "{s} ({s}); ", .{ s.id, if (err == error.Busy) "in use" else @errorName(err) });
+            continue;
         };
+    }
+    if (failures.items.len != 0) {
+        util.warn("cannot remove snapshots: {s}nothing was removed; reset selection or retry after sessions exit", .{failures.items});
+        return 1;
     }
     // Test-only stdin barrier permits deterministic ancestor replacement after validation.
     if (std.mem.eql(u8, ctx.env.get("DSH_MANAGER_TEST") orelse "", "1") and std.mem.eql(u8, ctx.env.get("DSH_MANAGER_TEST_PAUSE") orelse "", "snapshot-remove")) {
@@ -402,8 +414,11 @@ fn command(ctx: *Ctx, args: []const []const u8) !u8 {
         var byte: [1]u8 = undefined;
         if (try std.fs.File.stdin().read(&byte) == 0) return error.TestPauseAborted;
     }
-    for (targets.items) |s| {
-        try root.deleteTree(s.id);
+    for (targets.items, claims) |s, *c| {
+        @import("install.zig").remove(ctx, root, s.id, c) catch |err| {
+            util.warn("cannot remove snapshot {s}: {s}; earlier reported removals remain removed", .{ s.id, @errorName(err) });
+            return 1;
+        };
         util.print("Removed snapshot {s}.\n", .{s.id});
     }
     return 0;

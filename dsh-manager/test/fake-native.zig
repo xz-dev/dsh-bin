@@ -5,6 +5,8 @@
 //! - `<gen>.cwd` gets the working directory; with FAKE_STDIN set, `<gen>.stdin` gets up to 4 KiB of stdin;
 //! - FAKE_STDIN_HASH: stream all stdin and record its SHA-256 (binary/pipeline acceptance);
 //! - FAKE_HOLD: when set, write `<FAKE_OUT>/started` and then sleep 30 s;
+//! - FAKE_HOLD_STDIN: signal `<gen>.ready`, then wait for one stdin byte instead of sleeping;
+//! - FAKE_RESTART_WAIT: signal `<gen>.ready` and wait for stdin before the first restart;
 //! - FAKE_RESTART_WRITE / FAKE_RESTART_DATA: restart once like an in-app restart, after writing DATA to the
 //!   file WRITE: respawn this executable with the same arguments and environment (plus FAKE_GEN=2), then
 //!   exit with the replacement's status.
@@ -45,6 +47,11 @@ pub fn main() !void {
         try dir.writeFile(.{ .sub_path = try std.fmt.allocPrint(a, "{s}.stdin", .{gen}), .data = buf[0..n] });
     }
 
+    if (env.get("FAKE_RESTART_WAIT") != null and std.mem.eql(u8, gen, "1")) {
+        try dir.writeFile(.{ .sub_path = "1.ready", .data = "" });
+        var byte: [1]u8 = undefined;
+        _ = try std.fs.File.stdin().read(&byte);
+    }
     if (env.get("FAKE_RESTART_WRITE")) |path| if (std.mem.eql(u8, gen, "1")) {
         try std.fs.cwd().writeFile(.{ .sub_path = path, .data = env.get("FAKE_RESTART_DATA") orelse "" });
         try env.put("FAKE_GEN", "2");
@@ -79,6 +86,11 @@ pub fn main() !void {
         try std.fs.cwd().writeFile(.{ .sub_path = try std.fs.path.join(a, &.{ profile, "plugin" }), .data = text });
     }
 
+    if (env.get("FAKE_HOLD_STDIN") != null) {
+        try dir.writeFile(.{ .sub_path = try std.fmt.allocPrint(a, "{s}.ready", .{gen}), .data = "" });
+        var byte: [1]u8 = undefined;
+        _ = try std.fs.File.stdin().read(&byte);
+    }
     if (env.get("FAKE_HOLD") != null) {
         try dir.writeFile(.{ .sub_path = "started", .data = "" });
         std.Thread.sleep(30 * std.time.ns_per_s);

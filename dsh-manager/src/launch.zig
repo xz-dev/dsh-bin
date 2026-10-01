@@ -97,6 +97,15 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
     };
     const snap = explicit_snapshot orelse stored_snapshot orelse
         snapshot.prepare(ctx, resolved.version, runtimes.metaOf(bundles, resolved.version).?);
+    var resolved_addons = @import("addons.zig").resolve(ctx, resolved.version, opts.addons, selection);
+    if (resolved_addons.office) |office| {
+        const addon_claim: ?lock.Lock = lock.tryAcquire(util.join(ctx.a, &.{ office.dir, runtimes.guard_name }), .shared, false) catch |err| blk: {
+            util.warn("office addon {s} cannot be claimed ({s}); launching without it; run `dsh manager install --addon office:{s} --force` to repair, or retry if busy", .{ office.version, @errorName(err), office.version });
+            resolved_addons = .{};
+            break :blk null;
+        };
+        _ = addon_claim; // Held until exit/exec like the runtime and snapshot claims.
+    }
     const payload = std.json.Stringify.valueAlloc(ctx.a, .{
         .protocol = select.protocol,
         .runtime = resolved.version,
@@ -104,7 +113,7 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
         .dataRoot = ctx.data,
         .home = ctx.home(),
         .snapshot = snap,
-        .addons = @import("addons.zig").resolve(ctx, resolved.version, opts.addons, selection),
+        .addons = resolved_addons,
         .cache = ctx.path(&.{"cache"}),
         .tmp = ctx.path(&.{"tmp"}),
         .manager = options.version,
@@ -141,19 +150,10 @@ fn childEnv(ctx: *Ctx, p: Plan) void {
 /// Shared claim on the runtime's guard; a busy guard means it is being replaced or removed.
 fn claim(ctx: *Ctx, runtime: []const u8) void {
     const guard = ctx.path(&.{ "bundles", runtime, runtimes.guard_name });
-    var attempt: usize = 0;
-    while (attempt < 100) : (attempt += 1) {
-        _ = lock.tryAcquire(guard, .shared, false) catch |err| switch (err) {
-            error.Busy => {
-                std.Thread.sleep(100 * std.time.ns_per_ms);
-                continue;
-            },
-            // A runtime without its guard is not one the manager installed; run it unprotected.
-            else => return,
-        };
-        return; // held for the process (POSIX: inherited by the exec'd runtime)
-    }
-    util.fatal("dsh {s} is being replaced or removed; try again", .{runtime});
+    _ = lock.tryAcquire(guard, .shared, false) catch |err| switch (err) {
+        error.Busy => util.fatal("dsh {s} is being replaced or removed; retry when that operation finishes", .{runtime}),
+        else => util.fatal("cannot claim dsh {s}: {s}; run `dsh manager install {s} --force` to repair it, or `dsh manager uninstall {s}`", .{ runtime, @errorName(err), runtime, runtime }),
+    }; // Held for the process (POSIX: inherited by the exec'd runtime).
 }
 
 pub fn run(ctx: *Ctx, args: []const []const u8) noreturn {

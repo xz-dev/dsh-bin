@@ -1,7 +1,7 @@
 // Black-box harness for the manager: builds the real Zig binary once, and makes isolated installs
 // (manager file + its data root) with fake runtime bundles that record how they were started.
 // Scenario IDs from openspec/changes/split-dsh-manager/specs appear in the test names.
-import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -118,6 +118,23 @@ export type Run = SpawnSyncReturns<string>;
 export function run(i: Install, args: string[], opts: { env?: Record<string, string>; cwd?: string; input?: string; exe?: string } = {}): Run {
 	for (const g of ["1", "2"]) rmSync(join(i.out, `${g}.argv`), { force: true });
 	return spawnSync(opts.exe ?? i.exe, args, { encoding: "utf8", cwd: opts.cwd ?? i.home, input: opts.input, env: { ...baseEnv(i), ...opts.env }, timeout: 30_000 });
+}
+
+/** Controlled fake session: graceful stdin release also lets Windows' waiting manager exit. */
+export async function holdSession(i: Install, args: string[] = [], env: Record<string, string> = {}) {
+	for (const g of ["1", "2"]) rmSync(join(i.out, `${g}.ready`), { force: true });
+	const proc = spawn(i.exe, args, { cwd: i.home, env: { ...baseEnv(i), FAKE_HOLD_STDIN: "1", ...env }, stdio: "pipe" });
+	let stderr = ""; proc.stderr.on("data", b => { stderr += b.toString(); }); proc.stdout.resume();
+	const done = new Promise<number | null>((resolve, reject) => { proc.on("close", resolve); proc.on("error", reject); });
+	const timer = setTimeout(() => proc.kill("SIGKILL"), 20_000);
+	done.finally(() => clearTimeout(timer));
+	const wait = async (gen = "1") => {
+		const deadline = Date.now() + 5000;
+		while (!existsSync(join(i.out, `${gen}.ready`)) && proc.exitCode === null && Date.now() < deadline) await Bun.sleep(10);
+		if (!existsSync(join(i.out, `${gen}.ready`))) throw new Error(`fake session did not become ready: ${stderr}`);
+	};
+	try { await wait(); } catch (err) { proc.stdin.end(); await done; throw err; }
+	return { proc, wait, finish: async () => { if (proc.exitCode === null) proc.stdin.end("x"); return await done; } };
 }
 
 export const started = (i: Install) => existsSync(join(i.out, "1.argv"));
