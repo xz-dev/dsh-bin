@@ -46,7 +46,7 @@ beforeAll(() => {
 	path = join(root, "empty-path");
 	for (const dir of [home, cwd, path]) mkdirSync(dir);
 }, 600_000);
-afterAll(() => { if (root) rmSync(root, { recursive: true, force: true }); });
+afterAll(() => { if (root) rmSync(root, { recursive: true, force: true }); }, 60_000);
 
 const env = () => ({ PATH: path, HOME: home, USERPROFILE: home, DSH_HOME: home, NO_COLOR: "1", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) });
 const run = (exe: string, args: string[]) => spawnSync(exe, ["--use", id, ...args], { cwd, env: env(), encoding: "utf8", timeout: 30_000 });
