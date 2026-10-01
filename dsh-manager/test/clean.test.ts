@@ -41,6 +41,7 @@ function residues(i: Install) {
 test.skipIf(!hasZig)("MC-CLEAN: offline clean removes each residue kind but preserves runtime, snapshot, addon, config and credentials separately", () => {
 	const i = fixture(), gone = residues(i);
 	for (const p of ["cache/downloads/user.zip.part", "cache/downloads/" + digest + ".zip.extra", "cache/user-cache/keep", "tmp/user-file", "tmp/.install-nothex/keep", "tmp/.remove-user-nothex/keep", "snapshots/.staging-user/keep"]) put(i, p, "KEEP");
+	for (const p of ["tmp/.install-11", "tmp/.remove-foo", "snapshots/.staging-22"]) put(i, p, "unrecognised user file");
 	const roots = ["bundles", `snapshots/${A}@1`, "addons", "home", "state"], saved = roots.map(p => bytes(join(i.data, p))), user = bytes(i.home);
 	const result = run(i, ["manager", "clean"], { env: offline });
 	expect(result.status).toBe(0); expect(result.stderr).toBe(""); expect(started(i)).toBe(false);
@@ -48,6 +49,7 @@ test.skipIf(!hasZig)("MC-CLEAN: offline clean removes each residue kind but pres
 	for (let n = 0; n < roots.length; n++) expect(bytes(join(i.data, roots[n]))).toEqual(saved[n]);
 	expect(bytes(i.home)).toEqual(user); expect(readFileSync(join(i.data, "user-file"), "utf8")).toBe("unrecognised user bytes");
 	for (const p of ["cache/downloads/user.zip.part", "cache/user-cache/keep", "tmp/user-file", "tmp/.install-nothex/keep", "tmp/.remove-user-nothex/keep", "snapshots/.staging-user/keep"]) expect(readFileSync(join(i.data, p), "utf8")).toBe("KEEP");
+	for (const p of ["tmp/.install-11", "tmp/.remove-foo", "snapshots/.staging-22"]) expect(readFileSync(join(i.data, p), "utf8")).toBe("unrecognised user file");
 	const before = bytes(i.data); expect(run(i, ["manager", "clean"], { env: offline }).status).toBe(0); expect(bytes(i.data)).toEqual(before);
 });
 
@@ -91,6 +93,22 @@ test.skipIf(!hasZig)("MC-CLEAN: residue symlinks or junctions are unlinked, neve
 	const r = run(i, ["manager", "clean"]); expect(r.status).toBe(0); expect(existsSync(join(i.data, "tmp/.install-d"))).toBe(false); expect(existsSync(join(i.data, "snapshots/.staging-e"))).toBe(false); expect(readFileSync(join(external, "credential"), "utf8")).toBe("KEEP");
 	rmSync(join(i.data, "tmp"), { recursive: true }); symlinkSync(external, join(i.data, "tmp"), WIN ? "junction" : "dir");
 	const rejected = run(i, ["manager", "clean"]); expect(rejected.status).toBe(1); expect(readFileSync(join(external, "credential"), "utf8")).toBe("KEEP");
+});
+
+test.skipIf(!hasZig)("MC-CLEAN: explicit application homes inside residue or cache are protected, even through a home alias", () => {
+	for (const p of ["cache/bun", "tmp/.install-a", "cache", "tmp/.install-a/profiles"]) {
+		const i = fixture(); residues(i); const before = bytes(i.data);
+		const r = run(i, ["manager", "clean"], { env: { DSH_HOME: join(i.data, p) } });
+		expect(r.status).toBe(1); expect(r.stderr).toContain("DSH_HOME"); expect(r.stderr).toContain("nothing removed"); expect(bytes(i.data)).toEqual(before);
+	}
+	const i = fixture(); residues(i); const alias = join(i.home, "home-alias"); symlinkSync(join(i.data, "cache/bun"), alias, WIN ? "junction" : "dir");
+	const before = bytes(i.data), r = run(i, ["manager", "clean"], { env: { DSH_HOME: alias } }); expect(r.status).toBe(1); expect(r.stderr).toContain("DSH_HOME"); expect(bytes(i.data)).toEqual(before);
+});
+
+test.skipIf(!hasZig)("MC-CLEAN: no residue still refuses a live claim without creating state or cache", () => {
+	const i = newInstall(); addRuntime(i.data, A); const held = acquireClaim(join(i.data, "bundles", A, ".usage.lock"), "shared"); expect(held).not.toBe("busy");
+	try { const before = bytes(i.data), r = run(i, ["manager", "clean"]); expect(r.status).toBe(1); expect(r.stderr).toContain(A); expect(bytes(i.data)).toEqual(before); }
+	finally { if (held !== "busy") held.release(); }
 });
 
 test.skipIf(!hasZig)("MC-CLEAN: validated parent handles keep deletion inside the original root after an ancestor swap", async () => {

@@ -88,6 +88,7 @@ fn namedNonce(name: []const u8, prefix: []const u8) bool {
 fn removed(name: []const u8) bool {
     if (!std.mem.startsWith(u8, name, ".remove-")) return false;
     const dash = std.mem.lastIndexOfScalar(u8, name, '-') orelse return false;
+    if (dash <= 8) return false;
     const id = name[8..dash];
     if (!nonce(name[dash + 1 ..])) return false;
     if (select.snapshotVersion(id)) |v| {
@@ -112,9 +113,7 @@ fn publicValid(ctx: *const Ctx, parent: ?Store, id: []const u8, addon: bool) boo
     if ((dir.stat() catch return false).kind != .directory) return false;
     dir.access(".usage.lock", .{}) catch return false;
     if (addon) {
-        const bytes = dir.readFileAlloc(ctx.a, "addon.json", 1 << 20) catch return false;
-        const meta = std.json.parseFromSliceLeaky(@import("addons.zig").Meta, ctx.a, bytes, .{ .ignore_unknown_fields = true }) catch return false;
-        if (!eq(u8, meta.name, "office") or !eq(u8, meta.version, id)) return false;
+        const meta = @import("addons.zig").readIn(ctx, s.dir, id, id) catch return false;
         dir.access("node_modules", .{}) catch return false;
         for (meta.packages) |p| {
             if (!index.component(p) and !std.mem.startsWith(u8, p, "@")) return false;
@@ -137,11 +136,31 @@ fn publicValid(ctx: *const Ctx, parent: ?Store, id: []const u8, addon: bool) boo
     return stat.kind == .file and (@import("builtin").os.tag == .windows or stat.mode & 0o111 != 0);
 }
 
+fn treeEntry(kind: std.fs.File.Kind) bool {
+    return kind == .directory or kind == .sym_link;
+}
+fn overlap(a: std.mem.Allocator, x: []const u8, y: []const u8) bool {
+    const rel = std.fs.path.relative(a, x, y) catch return true;
+    return !std.fs.path.isAbsolute(rel) and !eq(u8, rel, "..") and !std.mem.startsWith(u8, rel, "../") and !std.mem.startsWith(u8, rel, "..\\");
+}
+fn protectHome(ctx: *const Ctx, items: []const Item) !void {
+    const home = std.fs.cwd().realpathAlloc(ctx.a, ctx.home()) catch ctx.home();
+    for (items) |item| {
+        const parent = try item.store.dir.realpathAlloc(ctx.a, ".");
+        const path = try std.fs.path.join(ctx.a, &.{ parent, item.name });
+        const resolved = if (item.kind == .sym_link) path else std.fs.cwd().realpathAlloc(ctx.a, path) catch path;
+        if (overlap(ctx.a, resolved, home) or overlap(ctx.a, home, resolved)) {
+            util.warn("cannot clean {s}/{s}: overlaps DSH_HOME {s}; nothing removed; choose a separate application home before retry", .{ item.store.path, item.name, ctx.home() });
+            return error.Reported;
+        }
+    }
+}
+
 fn collect(c: *Cleanup, root: Store) !void {
     const cache = try c.open(root, "cache");
     if (cache) |s| {
         var it = s.dir.iterate();
-        while (try it.next()) |entry| for (cache_names) |name| if (eq(u8, entry.name, name)) {
+        while (try it.next()) |entry| for (cache_names) |name| if (eq(u8, entry.name, name) and treeEntry(entry.kind)) {
             try c.add(s, entry);
             break;
         };
@@ -157,6 +176,7 @@ fn collect(c: *Cleanup, root: Store) !void {
     if (try c.open(root, "tmp")) |tmp| {
         var it = tmp.dir.iterate();
         while (try it.next()) |entry| {
+            if (!treeEntry(entry.kind)) continue;
             if (namedNonce(entry.name, ".install-") or removed(entry.name)) {
                 try c.add(tmp, entry);
             } else if (std.mem.startsWith(u8, entry.name, ".previous-")) {
@@ -174,14 +194,14 @@ fn collect(c: *Cleanup, root: Store) !void {
     }
     if (snapshots) |s| {
         var it = s.dir.iterate();
-        while (try it.next()) |entry| if (namedNonce(entry.name, ".staging-")) try c.add(s, entry);
+        while (try it.next()) |entry| if (namedNonce(entry.name, ".staging-") and treeEntry(entry.kind)) try c.add(s, entry);
     }
-    if (c.items.items.len == 0) return;
-    // Maintenance first, then store lock, matches install -> snapshot ordering. No waiting.
-    root.dir.makeDir("state") catch |err| if (err != error.PathAlreadyExists) return err;
-    const state = (try c.open(root, "state")).?;
-    try c.hold(state, "manager.lock", true);
-    if (snapshots) |s| try c.hold(s, ".lock", true);
+    try protectHome(c.ctx, c.items.items);
+    const work = c.items.items.len != 0;
+    // With no residue, still check existing mutexes/claims, but create nothing.
+    if (work) root.dir.makeDir("state") catch |err| if (err != error.PathAlreadyExists) return err;
+    if (try c.open(root, "state")) |state| try c.hold(state, "manager.lock", work);
+    if (snapshots) |s| try c.hold(s, ".lock", work);
     try c.live(bundles);
     try c.live(snapshots);
     try c.live(office);

@@ -98,7 +98,7 @@ fn platform(ctx: *const Ctx) ![]const u8 {
     var parts = std.mem.splitScalar(u8, host, '-');
     return std.fmt.allocPrint(ctx.a, "{s}-{s}", .{ parts.next().?, parts.next().? });
 }
-fn readIn(ctx: *const Ctx, parent: std.fs.Dir, path: []const u8, version: []const u8) !Meta {
+pub fn readIn(ctx: *const Ctx, parent: std.fs.Dir, path: []const u8, version: []const u8) !Meta {
     var d = try parent.openDir(path, .{ .iterate = true, .no_follow = true });
     defer d.close();
     if ((try d.stat()).kind != .directory) return error.AddonDirectoryConflict;
