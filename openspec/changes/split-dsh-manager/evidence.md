@@ -794,3 +794,19 @@
   - `safety` 两项：均拒绝（exit 1）；原入口仍旧版本，另一安装未替换、credential 仍 `KEEP`；被改动 staging 未激活。
   - `hardlink-candidate`：拒绝（exit 1，`ManagerCandidateHardlinked`），外部权限 **0700 → 0700**，未与已安装入口共享 inode。
 - **残余风险/门禁**：macOS/Windows 本机仅 cross-build，原生 CI 和独立复审仍由父会话执行。既有同用户最终 identity-check→rename/unlink 窗口、同用户可改候选以及不承诺 power-loss durability 的接受边界不变；本次没有加重试/等待/锁。ZIP 摘要取自解压流，并在同一打开归档句柄上前后完整核验；不为同用户在两次核验之间恶意原地改写又还原归档增加文件隔离机制。
+
+### 7.2 父会话验收
+
+- 实现：37e3f8b..10b40eb。只限 POSIX：先完整重验候选，再在同一目录内用一次原子 rename 替换入口（换的是入口解析后的真实文件，符号链接本身保留）。Windows 仍然只做准备，留给 7.3。
+- 独立复审（run 33b31f9b）结论 BLOCK，三项 P1：
+  - 可信哈希取自 staging 文件，而不是已验证的归档；
+  - 下载索引期间祖先目录被替换，会导致升级到另一份安装；
+  - 候选若是硬链接，修改 owner/mode 时会改到外部文件的权限。
+
+  修复：f4fe5b4（可信哈希改从已验证 ZIP 的解压流中计算）、10ecb0e（网络请求之前就固定安装目录和入口的句柄，并与正在运行的可执行文件核对身份）、118b6c9（`nlink != 1` 时拒绝）、5ef4b45、2d85bcb。
+- 聚焦复审（run 51bff48b）结论 **OK with notes**，无 P0/P1/P2：原三份 probe 的 18 条关闭断言全部通过；另外验证了多级符号链接、启动硬链接、bind mount，以及连续 `--force` 都正常。
+- 父会话在 9db8a22 上跑完整验证：Zig 45/45，Bun 248 pass / 18 skip / 0 fail。
+- CI 36936407438 第一次运行时，Windows 上有 1 项 MC-CLEAN 失败：fixture 里的 `snapshot new` 在 7 秒时被杀掉（status null）。这项测试与本次改动无关，它之前在 Windows 上一直通过；同次运行中 Linux 和 macOS 全绿。按 flake 处理，只重跑了失败的 job：**attempt 2 三平台全绿**（windows 209 pass，该项通过）。偶发风险已记录：Windows 上 fixture 启动偶尔会被 30 秒超时之前的机制杀掉，后续若再出现就单独排查。
+- 不变量：「文件系统安全不变量」已写入 design.md（9db8a22），之后的实现和复审都按它执行。
+- 在 POSIX 上，MC-SELF-ONLY 的完整替换证明到此完成：实际替换之后，受保护的状态逐项按哈希比较，结果不变。
+- 勾选 **7.2**。
