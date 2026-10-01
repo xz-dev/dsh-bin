@@ -324,3 +324,21 @@
 - 本地 `bun test ./test/first-run.test.ts` **10 pass / 0 fail**。**CI 36822121395 三平台全绿**：ubuntu-24.04 与 macos-15 上真实 PTY 的 10 个 FB 场景全部实际通过（顺序 × 未安装/已安装/损坏、等待期间安装、拒绝后在另一个 shell 再问、注册失败、检测不到时的菜单、`o` 与 EOF、终端输入不丢、状态无效时拒绝及非交互保持 stdin）。
 - **Windows 的 10 个场景全部 skip**（windows-2022 上没有真实控制台/ConPTY 测试框架），Windows 的父进程 shell 检测和询问流程尚无运行证据。任务 5.1 没有点名 Windows，按此勾选；Windows 的真实控制台验收归入 8.2，作为明确的残余风险。
 - 勾选 **5.1**。
+
+## 5.2 FB-EMPTY（实施中）
+
+- 本 worker 仅接通普通空安装的自动下载；复用 3.x 原生 installer，不添加下载确认，不改变固定/显式选择或损坏安装的拒绝规则。
+- 首轮 red：`cd dsh-manager && TMPDIR=/var/tmp/dsh-52 timeout 300 bun test ./test/install.test.ts -t 'FB-EMPTY: ordinary|FB-EMPTY: automatic|FB-EMPTY: explicit'`：**1 pass / 2 fail**。普通空启动仍返回旧的 `no release-channel dsh runtime is installed`，退出 1 而不是 fake-runtime 的 37；坏哈希场景没有进入下载，因此未出现 HashMismatch。显式/固定缺失及损坏安装原有拒绝场景通过，不冒充新增 red。日志 `/var/tmp/dsh-52/red.log`。
+- **green 与提交**：7639b61 `feat(manager): install compatible runtime on ordinary empty launch`。`TMPDIR=/var/tmp/dsh-52 timeout 300 bun test ./test/install.test.ts -t 'FB-EMPTY:|FB-EMPTY / FB-ORDER'` **7 pass / 0 fail**（含原有 host-libc 场景；新增六项）。空安装从运行包索引选择最新兼容 release，忽略同索引内 manager 身份、live、旧 release、协议/target 不兼容候选；仅请求 runtime-index 和所选 archive。原 argv（含 headless 参数，另测无参数不加 profile）、cwd、stdin、退出码 37 都保留，stdout 无管理输出；坏哈希不激活、不启动应用；显式/固定缺失与损坏运行包不联网。PTY 场景在补全询问阶段零请求，拒绝后才请求 index/archive，并以原 argv 启动、传播退出码 23，没有下载确认。
+- **共享安装实现**：新增薄 `install.bootstrap` 复用维护锁、`perform` 的下载/校验/解包/激活；自动调用只向 stderr 报告，显式 install stdout 行为不变。锁内重查已安装目录，所以初始化过的空数据根并发启动两次都成功、仅一组 index/archive 请求。`state.channel` 已存在，直接沿用，不新增渠道记账；live+latest fixture 回装后渠道与选择字节不变，不冒充 6.5 卸载全部运行包的完整验收。
+- **测试行为更新**：原 5.1 空 fixture 从“答完立即报缺 runtime”改成“答完才请求受控失败源”；storage-only 的空安装 fixture 使用同时开启测试 gate 的无效 URL，仍验证初次状态/自定位但禁止访问生产源。未弱化固定/损坏对象拒绝断言。
+- **mutation**：暂时禁用 launch 的 bootstrap 条件，`-t 'FB-EMPTY: ordinary'` **0 pass / 1 fail**（预期退出 37，实际 1）；随后恢复源码。日志 `/var/tmp/dsh-52/mutation.log`。
+- **边界发现，留给 5.4**：未初始化的数据根的两次同时首次启动可能在 installer 锁之前触发已有的所有权初始化竞争，第二个报 `data root conflict`。未改 context.zig。5.2 的并发测试明确初始化数据根、只验安装互斥；不能宣称完整 FB-CONCURRENT 已完成。
+
+### 5.1 独立复审（5.2 同轮授权修复）
+
+- reviewer（2228d76f）报告两项 P1：自动补全注册把管理消息写入应用 stdout；两个 PTY 的 stale completion state 互相覆盖，造成某 shell 下次再次询问。父会话授权本 worker 修复，各自单独提交，不改显式 completion 命令的 stdout 行为。
+- **stdout red/green**：真实 PTY 只连接 stdin/stderr，shell 把 dsh stdout 重定向到隔离文件。确认注册后 stdout 必须精确为 fake runtime 的 `application stdout\n`，目标/action/current-session hint 必须在 stderr。`TMPDIR=/var/tmp/dsh-52 timeout 180 bun test ./test/first-run.test.ts -t 'writes hints only'` 首次 **0 pass / 1 fail**（hint 不在 stderr，而在重定向 stdout）；1f09338 `fix(manager): keep first-run completion output off stdout` 后 **1 pass / 0 fail**。复用 reporting flag，不复制注册逻辑；显式 install/uninstall/script 仍输出 stdout，原 shell suite 继续通过。
+- **lost-update red/green**：并发真实 Bash/Fish PTY 同时到达提示（证明未跨提示持锁）；Bash 先拒绝，Fish 后拒绝。两项状态都必须保留，随后 Bash 不再询问。`-t 'concurrent Bash'` 首次 **0 pass / 1 fail**（Fish 的 stale 写入后 bash 键消失）；fbc9ba4 `fix(manager): merge first-run consent under a short state lock` 后与 stdout test 合跑 **2 pass / 0 fail**。答完才获取 `state/completion.lock`，重读并只合并本次涉及的 shell/origin/undetected 键，原子保存后释放；同键以最新回答为准，无效重读状态仍失败。
+- **最终全量**：`TMPDIR=/var/tmp/dsh-52 PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH timeout 300 zig build test --summary all` **44/44**；`timeout 1800 bun test ./test` **171 pass / 18 skip / 0 fail**，189 项、13 文件。新增六项 bootstrap + 两项 review 场景实际通过；18 skip 为缺 Zsh、Windows PowerShell 5.1 和未配置的真实代理，不计通过。`zig fmt --check src/completion.zig src/first_run.zig src/launch.zig src/install.zig test/fake-native.zig`、`git diff --check` 通过。x86_64-windows-gnu、aarch64-macos 交叉构建成功；它们不是运行证据。最终日志 `/var/tmp/dsh-52/final-*.log`。
+- **任务状态**：5.2 暂不勾选，父会话下一步触发真实三平台 CI 后决定。5.1 原勾选由父会话处理；本 worker 不擅自更新。Windows 控制台/ConPTY 询问仍未实测，已有明确 skip；新非交互 bootstrap 场景在 Windows CI 应真实执行。未 push、未触发 workflow、未修改两个并行 change、未操作真实用户配置/安装。
