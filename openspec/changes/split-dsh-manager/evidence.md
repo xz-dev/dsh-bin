@@ -128,3 +128,48 @@
 - `timeout 300 zig build -Dtarget=<target> --prefix /tmp/dsh-section2-<target>`：x86_64-windows-gnu、aarch64-macos、aarch64-linux 全部成功；`git diff --check` 成功。本轮 Windows/macOS 实际执行待父会话 CI，不把交叉编译当运行通过。
 - 勾选 **2.1–2.4**，仅按本轮授权的 manager 存储/最小快照场景完成。初始所有权建立的并发/异常中断恢复归 5.4/6.6；完整 snapshot store/显式 --snapshot 选择归 6.2；实际包门禁归 7.4/7.5；完整真实插件搬迁归 8.1。未新增安装、更新、补全、网络策略或旧数据迁移代码；未触碰 add-config-snapshots-and-paths，未 push。
 - 2026-10-01 第四次 CI（4d6c623，第 2 节完成后）：https://github.com/xz-dev/dsh-bin/actions/runs/36790090304。ubuntu-24.04、macos-15、windows-2022 全部通过。父会话在本机独立复验：Zig 43/43；dsh-manager Bun 83 pass / 0 skip；dsh-bun-build 94 pass。
+
+## 3.1 FB-EMPTY（索引部分）、RB-LEGACY（sol）
+
+- 本轮范围严格为 3.1–3.4：显式原生安装，不接普通启动自动下载、update、在线 list、uninstall、addon 或完整发布 CI；全部新增代码由 sol 编写。复用第 2 节 context/snapshot 和既有 zip/http，不另写解包器或下载器。
+- **red**：`cd dsh-manager && timeout 300 bun test ./test/install.test.ts`，首次两个公开进程场景 **0 pass / 2 fail**；真实管理器返回 `dsh manager install is not available in this build yet`，而不是访问 runtime 索引。新增 writer 测试首次 **1 pass / 1 fail**：旧 writer 导入已停放的 runtime/update。为了分清装配错误与格式行为，临时仅把旧 writer 的 import 指向 reference 再跑 `cd dsh-bun-build && timeout 120 bun test ./test/unit/index.test.ts`：仍 **1 pass / 1 fail**，错误变为 `index release[0]: invalid entry`，旧格式要求 version/launcherProtocol，不能处理 local-build 的 id/launchProtocol；恢复新实现后 **2 pass / 0 fail**、21 次断言。
+- **green**：独立 `runtime-index.json` schema 1 reader/writer；writer 从 local-build manifest 生成 kind/tag/id/channel/upstream/run/attempt/launchProtocol/builderCommit/addons.office/assets/seq。release/live 各自追加 seq，相同 tag 内容不变时幂等，改资产、构建次序或 builder commit 均拒绝；旧索引不转换。office 数组保留但本轮不追加 addon；旧 local-e2e/publish-index/聚合消费者的切换仍归 **8.3**。
+- 黑盒源同时提供 runtime-index 与 manager-index，记录请求仅有 `/runtime-index.json` 与精确 runtime tag/host asset；更高版本的 manager、不兼容协议、错误 target、旧 launcherProtocol 条目均不触发资产请求或安装。release/live 均可显式安装；latest 按 `commitTime -> run -> attempt`，不会按 manager 版本、数组位置或无关 seq 决定。标签、唯一前缀和歧义错误直接复用 select.zig，歧义不下载。
+- 主机识别直接复用 Zig `std.zig.system.resolveTargetQuery` 的运行时 ABI/CPU 检测，不读取 bundle、也不采用 manager 的编译 ABI。x64 根据可用 AVX/AVX2/BMI/BMI2/FMA/SSE4.2 选 modern，否则 baseline；arm64 无 CPU 后缀。纯 target 测试覆盖 Linux glibc/musl、两种 x64 CPU、macOS/Windows 与不支持主机；`timeout 90 zig test src/target.zig -target x86_64-linux-musl` **1/1 pass**。
+- **反事实强度检查**：把 host 的 ABI 临时改为 builtin.abi 后，`timeout 400 bun test ./test/install.test.ts -t 'static musl'` **0 pass / 1 fail**（应安装成功，实际没有 glibc host asset）；恢复运行时检测后通过。该场景实际在本机 glibc 用户空间执行静态 musl-ABI manager，没有预置 bundle，证明检测与 manager 链接目标独立；非 Linux 有明确 ELF 执行条件 skip。
+
+## 3.2 DL-CORRUPT、FB-RETRY（下载已贯通，HTTPS_PROXY 缺口未关闭）
+
+- `install.zig` 直接调用既有 `http.fetchSmall` 和 `http.download`，整文件大小/SHA-256 验证通过才解包。缓存名取索引 digest，`.part` 保留在 data/cache/downloads；维护锁保证单写者，rerun 重用 Range。没有 curl/unzip/Node/Bun 产品子进程。
+- 安装层源先给 **可正常解包但与索引 SHA-256 不符的 ZIP**，安装报 HashMismatch，bundles 下无候选、无候选 snapshot，原固定选择/运行包不变；源纠正后 rerun 完成。断连源每次仅发 37 字节后真实断 socket，五次失败保留 partial；恢复源后第一资产请求带 Range，完成安装且原选择不变。没有把 partial 当作已安装目录。
+- 这些失败/重试测试在 route 缺失的受控基线复核中先红（见 3.3 的 19 fail），恢复后绿。**定向 mutation**：临时使既有 http.verifyFile 跳过 digest，`timeout 180 bun test ./test/install.test.ts -t 'bad hash'` **0 pass / 1 fail**（应失败，实际退出 0 并接受可解包候选）；恢复后通过。http.zig 最终与本轮前逐字节相同，没有扩大其实现。
+- 原 http 黑盒场景在最终全量测试仍实际通过：Range 错位/total 不一致/416、Retry-After、idle timeout、坏 hash、真实 HTTPS 下载 pinned Zig 0.15.2 LICENSE。本轮不把 HTTP fixture 当作 HTTPS 证明。
+- **明确开放缺口，3.2 不勾选**：HTTPS_PROXY/ALL_PROXY 的 secure TLS-over-CONNECT 未实现。Zig 0.15.2 标准 Client 将 CONNECT 后连接保持为 proxy protocol，缺少可小改安全升级到 origin TLS 的现成接口；本轮没有拼写自定义 TLS/HTTP 栈，继续 fail-closed。新增安装层测试以含凭据的本地 proxy + HTTPS fixture origin 验证 UnsupportedProxy、proxy 零请求、凭据不泄露、无安装。它是拒绝测试，不冒充 CONNECT 成功测试。严格 DNS/TCP/TLS 总 deadline 也仍是原 http 的已记录边界。
+
+## 3.3 DL-ESCAPE、DL-CORRUPT（sol）
+
+- 下载验证后，调用原 zip.zig 解到 `<data>/tmp/.install-<random>` 私有空树；tmp、bundles、cache 的祖先沿用 context 的 no-follow 检查。失败仅丢弃本次 staging；原 ZIP 大小/hash、CRC 和执行位规则直接复用，没有重新加固 zip。
+- 激活前验证 bundle.json 的 kind/schemaVersion/id/target/launchProtocol/entry/requiredPaths，并核对 channel、上游 commit/version/commitTime、run/attempt、builderCommit；entry 必须为目标 `dsh-native(.exe)` 普通文件，POSIX 必须有执行位。缺 required path、unsafe required path、legacy launcherProtocol 或 bundles/ 外层均拒绝。安装元数据和 usage guard 在 staging 中完成，关闭文件与目录 handle 后才 rename。
+- **red/green 与实际发现**：补充的 19 个安装层场景在临时恢复“install 不可用”的反事实基线 `timeout 300 bun test ./test/install.test.ts` 下 **0 pass / 19 fail**，每个错误为缺安装/校验/激活路由而不是 fixture 编译失败；恢复后通过。后续两项身份反例 `timeout 180 bun test ./test/install.test.ts -t mismatch` 为 **1 pass / 2 fail**：错误 upstream commit 与 builderCommit 被安装（应退出 1，实际 0），补上索引身份核对后通过。`-t unrecognized` **0 pass / 1 fail**：--force 原先接受并删除同 ID 的用户目录；现在 RuntimeDirectoryConflict、用户文件不变且不下载。
+- 外部 sentinel 故障：绝对路径、`../../../escape`、指向外部 sentinel 的 Unix symlink；前两者返回 UnsafeEntryName，链接返回 UnsupportedEntry，外部文件/原 usable entry/selection 都不变。另有 wrong id/target/protocol/entry、上游或 builder mismatch、missing required path、required traversal、missing native entry、旧 bundles 外层；候选都不激活，也不执行其入口。
+- 测试 crash point 仅在 `DSH_MANAGER_TEST=1` 且 `DSH_MANAGER_TEST_CRASH` 匹配时立即 exit 86，不执行 defer，模拟突然死亡。before-activation 无候选；after-activation 只出现完整验证后的候选，原固定 usable 版本仍可启动。rerun 完成/补齐初始 snapshot；同 ID force 的 before/after 两点也保持完整入口与既有 plugin state。正常 force 候选校验失败时，原 entry 与安装元数据逐字节保留。
+- 新版本用同卷 rename 发布。POSIX 同 ID force 用 Linux renameat2(RENAME_EXCHANGE)/macOS renamex_np(RENAME_SWAP)，不先删除目录；交换后旧树在本次 tmp 中回收。**Windows 明确边界**：非空目录不能直接覆盖，采用已校验旧树退到 data/tmp/.previous-<id>、新树 rename、普通失败回滚；突然死在这两个内部 rename 之间时，下一次显式 install 在维护锁下恢复旧树。before/after 公共 activation 点已经覆盖，但 Windows 的内部双 rename 窗口不是连续原子交换，本机未冒称其真实运行证据；实际 Windows/macOS 仍由父会话 CI 验证。使用锁 busy 不替换，未知/损坏同名用户目录拒绝采用。
+- 中断 staging 不自动全盘清理；完整 clean/残留 sweep 属 **6.6**。没有在本轮实现 readonly sealing、完整跨重启对象管理或使用竞争的全面收敛（**6.4/8.1**），不扩大任务完成含义。
+
+## 3.4 MC-EMPTY、MC-BROKEN（sol）
+
+- 原生 `manager install <version|tag|prefix|latest> [--channel release|live] [--force]`，维护互斥文件为 `state/manager.lock`。竞争立即明确报错可重试，索引之前已锁住。离线 `manager list` 保留；`--available` 明确尚不可用，不访问源。install 从不写 selection/channel；本轮 --channel 只用于候选过滤，成功后记录渠道的完整规则留 **6.1**。
+- 每个安装写 `.dsh-install.json`（schema/kind/id/tag/host target/索引 asset/seq，无持久绝对路径）和 usage guard；快照直接复用第 2 节 prepare，已存在的最高编号和内容不重置。--force 修复 missing entry，不执行坏入口、不执行 pnpm；先前固定选择、snapshot.json、plugin state、用户凭据探针均保留。maintenance 和 runtime shared claim 的独立外部探针会阻止写操作/替换。
+- CI 假归档来自真实 recording Zig executable 和现有 ZIP writer；manager-only 起点，隔离 HOME/cwd/PATH，HTTP index+asset fixture 安装，再断源离线启动原参数。源码测试不把 Bun.serve 当产品依赖；被测 manager 不调用宿主 JS。
+- **真实归档 red**：`timeout 900 bun test ./test/real-runtime.test.ts -t MC-EMPTY` 首次 **0 pass / 1 fail**，新 install 报 UnsafeRequiredPath：把 ID 规则错用于 required path 的 `.usage.lock`。改为安全相对路径规则后 **1 pass / 0 fail**、15 次断言。没有删除 required-path 检查来迎合 fixture。
+- **真实归档 green**：既有 local-build 真正构建 app/pnpm/embedded native，执行新 index.mjs CLI 写 runtime-index；只有 manager 的 fresh tools 目录从 Bun.serve 下载该真实 ZIP，准备 `id@1`，PATH 无 Node/Bun，运行真实 `--version` 和 `--help`。删除 native 后启动明确失败；manager --force 重装，native 前后字节一致、snapshot metadata 不变，真实应用再次启动，HOME/cwd 文件树无散写。复用同一测试进程构建的 archive，不引入跨进程易失效缓存。
+- 缺少 `dsh-bun-build/work/app` 时此新场景和已有三项 real-runtime 场景都以完整原因命名 SKIP（CI 不含输入，真实 archive 未验证），不会把假归档当真制品通过；work/app 存在但其他输入缺失仍失败。
+
+### 第 3 节最终验证、提交与任务状态
+
+- 绿色中间提交 **8a9d82e**（feat(manager): install compatible runtimes from independent index）：Zig **44/44**；manager Bun **85 pass / 0 fail**、842 次断言；builder/runtime Bun **96 pass / 0 fail**、362 次断言；四目标交叉编译通过。
+- 最终功能/验收提交 **d435f11**（fix(manager): verify install identities and preserve repair state），未 push。
+- `cd dsh-manager && timeout 300 zig build test --summary all && timeout 1500 bun test ./test`：Zig **44/44**；Bun **113 pass / 0 fail / 0 skip**、**1050** 次断言、8 文件。install.test.ts 独立复验 **29 pass / 0 fail**、220 次断言；真实 archive **4** 场景本机全部实际执行。
+- `cd dsh-bun-build && timeout 900 bun test ./test/unit ./test/runtime`：**96 pass / 0 fail**、**362** 次断言、24 文件。两个 Bun suite 合计 **209 pass / 0 fail**、**1412** 次断言；相比本轮前增加 manager **30** 场景、builder **2** 场景和 target **1** 个 Zig 单元场景。
+- `timeout 300 zig build -Dtarget=<target> --prefix /tmp/dsh-section3-final-<target>`：**x86_64-windows-gnu、aarch64-macos、aarch64-linux、x86_64-linux-musl 全通过**。`timeout 60 zig fmt --check` 和 `git diff --check` 通过。仅为交叉编译；新 Windows/macOS 安装行为未在本机实际运行，父会话继续真实 CI。
+- 勾选 **3.1、3.3、3.4**（限定本次授权场景）；**3.2 留空**，TLS-over-CONNECT gap 明列。普通自举/补全（第 4/5 节）、完整管理（第 6 节）、发布 pipeline（8.3）均未实现。无 package/self-update/addon/用户安装操作，无远程 push；未触碰 `openspec/changes/add-config-snapshots-and-paths/`。
