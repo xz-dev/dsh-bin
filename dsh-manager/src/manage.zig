@@ -198,6 +198,7 @@ pub fn uninstall(ctx: *Ctx, args: []const []const u8) u8 {
         @import("install.zig").remove(ctx, root, id, c) catch |err|
             util.fatal("cannot remove runtime {s}: {s}; earlier reported removals remain removed; inspect remaining runtime files; snapshots and home were kept", .{ id, @errorName(err) });
         util.print("Uninstalled dsh {s}; snapshots, selection and application home kept.\n", .{id});
+        util.flush(); // Keep completed removals visible if a later item fails.
     }
     return 0;
 }

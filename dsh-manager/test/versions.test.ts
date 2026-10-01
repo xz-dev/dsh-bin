@@ -12,7 +12,7 @@ afterAll(cleanup);
 const A = "1.0.0-b1.1.gdeadbeef", B = "1.0.0-b2.1.gdeadbeef", L = "live-cafebad-b3.1.gdeadbeef";
 const target = hostTargetId();
 type Entry = ReturnType<typeof bundleMeta> & { tag: string; seq: number; assets: Record<string, { name: string; size: number; sha256: string }> };
-function source() {
+function source(beforeDownload?: () => Promise<void>) {
 	const requests: string[] = [], entries: Entry[] = [], assets = new Map<string, Buffer>();
 	for (const [id, channel, time, n] of [[A, "release", "2026-09-01T00:00:00.000Z", 1], [B, "release", "2026-09-01T00:00:00.000Z", 2], [L, "live", "2026-09-02T00:00:00.000Z", 3]] as const) {
 		const meta = bundleMeta(id, { channel, commitTime: time, run: n, patch: { target } });
@@ -22,9 +22,10 @@ function source() {
 		entries.push({ ...meta, tag, seq: n, assets: { [target]: { name: "runtime.zip", size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") } } });
 		assets.set(`/download/${tag}/runtime.zip`, bytes);
 	}
-	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
 		const path = new URL(req.url).pathname; requests.push(path);
 		if (path === "/runtime-index.json") return Response.json({ schema: 1, channels: { release: [...entries.filter(e => e.channel === "release"), { kind: "dsh-manager", version: "99.0.0" }], live: entries.filter(e => e.channel === "live") }, addons: { office: [] } });
+		if (assets.has(path)) await beforeDownload?.();
 		return assets.has(path) ? new Response(assets.get(path)) : new Response(null, { status: 404 });
 	} });
 	return { requests, entries, assets, origin: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
@@ -40,6 +41,19 @@ const statePath = (i: Install, file: string) => join(i.data, "state", file);
 const selection = (i: Install) => readFileSync(statePath(i, "selection.json"), "utf8");
 const channel = (i: Install) => readFileSync(statePath(i, "channel"), "utf8").trim();
 const manager = (i: Install, s: ReturnType<typeof source>, args: string[]) => command(i, s, ["manager", ...args]);
+
+test.skipIf(!hasZig)("MC-IN-USE: force runtime activation rechecks a session that starts during download", async () => {
+	const i = newInstall(); let armed = false, session: Awaited<ReturnType<typeof holdSession>> | undefined;
+	const s = source(async () => { if (armed) { armed = false; session = await holdSession(i, ["--use", A]); } });
+	try {
+		expect((await manager(i, s, ["install", A])).status).toBe(0);
+		const marker = join(i.data, "bundles", A, "keep"); writeFileSync(marker, "old generation");
+		rmSync(join(i.data, "cache/downloads"), { recursive: true }); armed = true;
+		const r = await manager(i, s, ["install", A, "--force"]);
+		expect(session).toBeDefined(); expect(r.status).toBe(1); expect(r.stderr.trim().split("\n")).toHaveLength(1); expect(r.stderr).toContain(A); expect(r.stderr).toContain("in use");
+		expect(readFileSync(marker, "utf8")).toBe("old generation"); expect(tree(join(i.data, "tmp"))).toEqual([]);
+	} finally { if (session) expect(await session.finish()).toBe(0); s.stop(); }
+});
 
 test.skipIf(!hasZig)("MC-IN-USE: force runtime replacement refuses a live session before download, keeps bytes; repairs after exit", async () => {
 	const i = newInstall(), s = source();

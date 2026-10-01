@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { acquireClaim } from "./claim-probe.ts";
 import { addRuntime, baseEnv, build, cleanup, hasZig, launchOf, newInstall, run, started, tree, replaceAncestor, WIN, type Install } from "./harness.ts";
@@ -99,12 +99,33 @@ test.skipIf(!hasZig)("MC-SNAPSHOT review: replacing the snapshots ancestor never
 		const deadline = Date.now() + 5000;
 		while (!stderr.includes("test pause: snapshot-remove") && p.exitCode === null && Date.now() < deadline) await Bun.sleep(10);
 		expect(stderr).toContain("test pause: snapshot-remove");
+		const claim = acquireClaim(join(root(i), id, ".usage.lock"), "shared");
+		try { expect(claim).toBe("busy"); } finally { if (claim !== "busy") claim.release(); }
 		const original = replaceAncestor(root(i), external);
 		p.stdin.end("continue"); const code = await done;
 		expect(existsSync(sentinel)).toBe(true); expect(readFileSync(sentinel, "utf8")).toBe("KEEP");
 		expect(code).toBe(0); expect(existsSync(join(original, id))).toBe(false); expect(started(i)).toBe(false);
 	} finally { clearTimeout(watchdog); if (p.exitCode === null) { p.kill("SIGKILL"); await done; } }
 }, 30_000);
+
+test.skipIf(!hasZig)("MC-IN-USE: a post-preflight removal failure reports the already removed snapshot without rollback", async () => {
+	const i = install();
+	for (let n = 0; n < 2; n++) expect(command(i, ["new", "--use", A, "--empty"]).status).toBe(0);
+	const first = `${A}@1`, second = `${A}@2`, saved = join(i.out, "second-preserved");
+	const p = spawn(i.exe, ["manager", "snapshot", "remove", first, second], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_PAUSE: "snapshot-remove" }, stdio: "pipe" });
+	let stderr = "", stdout = ""; p.stderr.on("data", b => { stderr += b.toString(); }); p.stdout.on("data", b => { stdout += b.toString(); });
+	const done = new Promise<number | null>((resolve, reject) => { p.on("close", resolve); p.on("error", reject); });
+	const timer = setTimeout(() => p.kill("SIGKILL"), 15_000);
+	try {
+		const deadline = Date.now() + 5000;
+		while (!stderr.includes("test pause: snapshot-remove") && p.exitCode === null && Date.now() < deadline) await Bun.sleep(10);
+		expect(stderr).toContain("test pause: snapshot-remove");
+		renameSync(dir(i, second), saved); p.stdin.end("x");
+		expect(await done).toBe(1); expect(stdout).toContain(`Removed snapshot ${first}`); expect(stdout).not.toContain(`Removed snapshot ${second}`);
+		expect(stderr).toContain(second); expect(stderr).toContain("earlier reported removals remain removed");
+		expect(existsSync(dir(i, first))).toBe(false); expect(existsSync(join(saved, "snapshot.json"))).toBe(true);
+	} finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await done; } }
+});
 
 test.skipIf(!hasZig)("MC-SNAPSHOT: concurrent starts reuse prepared snapshot without taking the busy store lock", async () => {
 	const i = install(); expect(command(i, ["new", "--use", A, "--empty"]).status).toBe(0);

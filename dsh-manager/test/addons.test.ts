@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { writeZip } from "../../dsh-bun-build/runtime/zip.ts";
 import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
+import { acquireClaim } from "./claim-probe.ts";
 import { addRuntime, baseEnv, build, cleanup, hasZig, holdSession, launchOf, newInstall, run, started, tempDir, tree, replaceAncestor, type Install } from "./harness.ts";
 
 beforeAll(() => { if (hasZig) build(); }, 300_000);
@@ -14,7 +15,7 @@ const V = "1.0.0-b1.1.gdeadbeef", W = "2.0.0-b2.1.gdeadbeef";
 const A = "0.1.1-b1.1.gdeadbeef", B = "0.1.1-b2.1.gdeadbeef", C = "0.2.0-b3.1.gdeadbeef";
 const slot = { commit: "a".repeat(40), kitVersion: "0.1.1" }, other = { commit: "b".repeat(40), kitVersion: "0.2.0" };
 const platform = process.platform === "linux" ? "linux" : `${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`;
-function source(i: Install, beforeDownload?: () => void) {
+function source(i: Install, beforeDownload?: () => void | Promise<void>) {
 	const requests: string[] = [], assets = new Map<string, Buffer>();
 	const entries = [A, B, C].map((version, n) => {
 		const tag = `addon-office-v${version}`, s = n === 2 ? other : slot;
@@ -30,10 +31,10 @@ function source(i: Install, beforeDownload?: () => void) {
 	const table = { slot, pinned: A, known: [entries[0]] };
 	addRuntime(i.data, V, { patch: { target: hostTargetId(), addons: { office: table } } });
 	addRuntime(i.data, W, { run: 2, patch: { target: hostTargetId(), addons: { office: { slot: other, pinned: C, known: [] } } } });
-	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
 		const p = new URL(req.url).pathname; requests.push(p);
 		if (p === "/runtime-index.json") return Response.json({ schema: 1, channels: { release: [{ kind: "dsh-manager", version: "99" }], live: [] }, addons: { office: entries } });
-		if (assets.has(p)) beforeDownload?.();
+		if (assets.has(p)) await beforeDownload?.();
 		return assets.has(p) ? new Response(assets.get(p)) : new Response(null, { status: 404 });
 	} });
 	return { entries, assets, requests, origin: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
@@ -47,6 +48,18 @@ async function command(i: Install, s: ReturnType<typeof source>, args: string[])
 }
 const selection = (i: Install) => readFileSync(join(i.data, "state/selection.json"), "utf8");
 const install = (i: Install, s: ReturnType<typeof source>, v = "office") => command(i, s, ["--use", V, "manager", "install", "--addon", v]);
+
+test.skipIf(!hasZig)("MC-IN-USE: force addon activation rechecks a session that starts during download", async () => {
+	const i = newInstall(); let armed = false, session: Awaited<ReturnType<typeof holdSession>> | undefined;
+	const s = source(i, async () => { if (armed) { armed = false; session = await holdSession(i, ["--use", V, "--addon", `office:${A}`]); } });
+	try {
+		expect((await install(i, s, `office:${A}`)).status).toBe(0);
+		const marker = join(i.data, "addons/office", A, "node_modules/keep"); writeFileSync(marker, "old generation");
+		rmSync(join(i.data, "cache/downloads"), { recursive: true }); armed = true;
+		const r = await command(i, s, ["--use", V, "manager", "install", "--addon", `office:${A}`, "--force"]);
+		expect(session).toBeDefined(); expect(r.status).toBe(1); expect(r.stderr.trim().split("\n")).toHaveLength(1); expect(r.stderr).toContain(A); expect(r.stderr).toContain("in use"); expect(readFileSync(marker, "utf8")).toBe("old generation"); expect(tree(join(i.data, "tmp"))).toEqual([]);
+	} finally { if (session) expect(await session.finish()).toBe(0); s.stop(); }
+});
 
 test.skipIf(!hasZig)("MC-IN-USE: force addon replacement refuses live addon before download, keeps bytes; repairs after exit", async () => {
 	const i = newInstall(), s = source(i);
@@ -150,6 +163,8 @@ test.skipIf(!hasZig)("MC-ADDON review: uninstall through a replaced ancestor pre
 			const deadline = Date.now() + 5000;
 			while (!stderr.includes("test pause: addon-remove") && p.exitCode === null && Date.now() < deadline) await Bun.sleep(10);
 			expect(stderr).toContain("test pause: addon-remove");
+			const claim = acquireClaim(join(addons, "office", A, ".usage.lock"), "shared");
+			try { expect(claim).toBe("busy"); } finally { if (claim !== "busy") claim.release(); }
 			const original = replaceAncestor(addons, external);
 			p.stdin.end("continue"); const code = await done;
 			expect(existsSync(sentinel)).toBe(true); expect(readFileSync(sentinel, "utf8")).toBe("KEEP");

@@ -420,6 +420,7 @@ fn command(ctx: *Ctx, args: []const []const u8) !u8 {
             return 1;
         };
         util.print("Removed snapshot {s}.\n", .{s.id});
+        util.flush(); // A later failure must not hide earlier successful removals.
     }
     return 0;
 }

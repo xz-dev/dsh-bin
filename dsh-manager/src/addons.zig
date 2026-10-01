@@ -211,9 +211,9 @@ fn perform(ctx: *Ctx, t: Table, query: ?[]const u8, force: bool) !void {
         util.print("The office addon {s} is already installed.\n", .{c.version});
         return;
     }
-    if (exists) try installer.checkIdle(ctx, parent, c.version, "office addon");
+    if (exists) try installer.checkIdle(parent, c.version, "office addon");
     const staging = try installer.fetchTree(ctx, tmp, asset, c.tag);
-    defer tmp.deleteTree(staging) catch {};
+    defer tmp.deleteTree(staging) catch |err| util.warn("leftover tmp/{s} could not be deleted ({s}); run `dsh manager clean`", .{ staging, @errorName(err) });
     const m = try readIn(ctx, tmp, staging, c.version);
     var d = try tmp.openDir(staging, .{ .iterate = true, .no_follow = true });
     var d_open = true;
@@ -315,6 +315,7 @@ pub fn uninstall(ctx: *Ctx, raw: []const u8) u8 {
     for (list, claims) |m, *c| if (query == null or eq(u8, query.?, m.version)) {
         @import("install.zig").remove(ctx, dir, m.version, c) catch |err| util.fatal("cannot remove office addon {s}: {s}; earlier reported removals remain removed", .{ m.version, @errorName(err) });
         util.print("Uninstalled the office addon {s}.\n", .{m.version});
+        util.flush(); // Keep completed removals visible if a later item fails.
     };
     return 0;
 }

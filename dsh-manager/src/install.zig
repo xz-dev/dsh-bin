@@ -148,9 +148,9 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
         if (automatic) util.warn("dsh {s} is already installed", .{e.id}) else util.print("dsh {s} is already installed.\n", .{e.id});
         return e.id;
     }
-    if (exists) try checkIdle(ctx, bundles, e.id, "dsh");
+    if (exists) try checkIdle(bundles, e.id, "dsh");
     const staging = try fetchTree(ctx, tmp, candidate.asset, e.tag);
-    defer tmp.deleteTree(staging) catch {};
+    defer tmp.deleteTree(staging) catch |err| util.warn("leftover tmp/{s} could not be deleted ({s}); run `dsh manager clean`", .{ staging, @errorName(err) });
     var dir = try tmp.openDir(staging, .{ .no_follow = true });
     var dir_open = true;
     defer if (dir_open) dir.close();
@@ -264,19 +264,18 @@ fn validateIn(ctx: *const Ctx, dir: std.fs.Dir, e: index.Entry, host: []const u8
 }
 
 /// One usage check for replacements, before downloading and again at activation. Missing guards are repairable.
-fn idleClaim(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, label: []const u8) !?lock.Lock {
+fn idleClaim(parent: std.fs.Dir, name: []const u8, label: []const u8) !?lock.Lock {
     var dir = try parent.openDir(name, .{ .no_follow = true });
     defer dir.close();
     return lock.tryAcquireIn(dir, runtimes.guard_name, .exclusive, false) catch |err| {
         if (err == error.Missing) return null;
         util.warn("cannot replace {s} {s}: {s}; object unchanged, retry after sessions exit", .{ label, name, if (err == error.Busy) "in use" else @errorName(err) });
-        _ = ctx;
         return error.UsageReported;
     };
 }
 
-pub fn checkIdle(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, label: []const u8) !void {
-    if (try idleClaim(ctx, parent, name, label)) |c| c.release();
+pub fn checkIdle(parent: std.fs.Dir, name: []const u8, label: []const u8) !void {
+    if (try idleClaim(parent, name, label)) |c| c.release();
 }
 
 /// Retire under the usage claim, then release before deletion (Windows can keep an open file delete-pending).
@@ -299,7 +298,7 @@ pub fn activate(ctx: *const Ctx, tmp: std.fs.Dir, staging: []const u8, parent: s
     var current_open = true;
     defer if (current_open) current.close();
     if ((try current.stat()).kind != .directory) return error.RuntimeDirectoryConflict;
-    var claim = try idleClaim(ctx, parent, dest, "runtime/addon");
+    var claim = try idleClaim(parent, dest, "runtime/addon");
     defer if (claim) |l| l.release();
     if (builtin.os.tag == .linux) {
         const src_z = try ctx.a.dupeZ(u8, staging);
