@@ -38,7 +38,7 @@ function fixture() {
 	const dir = tmp();
 	const app = join(dir, "app");
 	put(join(app, "package.json"), JSON.stringify({ name: "@deepseek-ai/dsh" }));
-	put(join(app, "lib/bin.js"), "export {}");
+	put(join(app, "lib/bin.js"), readFileSync(join(import.meta.dir, "../fixtures/fixed-cli.js"), "utf8"));
 	const pty = join(app, "node_modules/node-pty");
 	put(join(pty, "prebuilds/linux-x64/pty.node"), elf(0x3e));
 	put(join(pty, "prebuilds/linux-arm64/pty.node"), elf(0xb7));
@@ -105,6 +105,18 @@ describe("assemble (6.1)", () => {
 		index: idx,
 	});
 
+	test("RB-COMPLETION: bundle exports versioned fixed CLI data without loading the application", () => {
+		const f = fixture();
+		const r = assembleBundle(spec(f, "linux-x64-modern"));
+		expect(r.meta.requiredPaths).toContain("completion.json");
+		const cli = JSON.parse(readFileSync(join(r.out, "completion.json"), "utf8"));
+		expect(cli.schemaVersion).toBe(1);
+		expect(cli.commands.map((c: { name: string }) => c.name)).toEqual(["", "plugin"]);
+		expect(cli.commands[0].options).toContainEqual({ names: ["--profile"], takesValue: true });
+		expect(cli.commands[0].options).toContainEqual({ names: ["-V", "--version"], takesValue: false });
+		expect(cli.commands[1].options).toEqual([{ names: ["--profile"], takesValue: true }]);
+	});
+
 	test("RB-CONTENTS: the archive root is one runtime (no manager, no bundles/ tree); bundle.json v1 and required paths", () => {
 		const f = fixture();
 		const idx = join(f.dir, "index.json");
@@ -112,7 +124,7 @@ describe("assemble (6.1)", () => {
 		const r = assembleBundle(spec(f, "linux-x64-modern", idx));
 		const id = "0.1.7-rc.2-b1.1.gabcdef12";
 		expect(r.bundle).toBe(r.out);
-		expect(readdirSync(r.out).sort()).toEqual([".usage.lock", "app", "bin", "bundle.json", "dsh-native", "pnpm"]);
+		expect(readdirSync(r.out).sort()).toEqual([".usage.lock", "app", "bin", "bundle.json", "completion.json", "dsh-native", "pnpm"]);
 		expect(r.meta.requiredPaths).toEqual(requiredPaths(target("linux-x64-modern")));
 		for (const p of r.meta.requiredPaths) expect(existsSync(join(r.out, p))).toBe(true);
 		const meta = JSON.parse(readFileSync(join(r.bundle, "bundle.json"), "utf8"));

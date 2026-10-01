@@ -27,7 +27,7 @@ test("RL-RUNTIME-BUILD / RB-CONTENTS: runtime-only checkout builds one v1 archiv
 		const put = (path: string, text: string) => { mkdirSync(join(path, ".."), { recursive: true }); writeFileSync(path, text); };
 		const app = join(dir, "work/app");
 		put(join(app, "package.json"), '{"name":"runtime-build-fixture","type":"module"}');
-		put(join(app, "lib/bin.js"), "export async function runCli() {}\n");
+		put(join(app, "lib/bin.js"), `${readFileSync(join(ROOT, "test/fixtures/fixed-cli.js"), "utf8")}\nexport async function runCli() {}\n`);
 		mkdirSync(join(app, "node_modules"), { recursive: true });
 		for (const rule of RULES) for (const file of rule.files) put(join(app, file), rule.marker === "stripTypeScriptTypes" ? 'import { stripTypeScriptTypes } from "node:module";\n' : 'import { isSea } from "node:sea";\n');
 		for (const [file, sites] of Object.entries(PROFILE_SITES)) {
@@ -56,6 +56,7 @@ test("RL-RUNTIME-BUILD / RB-CONTENTS: runtime-only checkout builds one v1 archiv
 		const built = JSON.parse(result.stdout.trim().split("\n").at(-1)!);
 		const entries = readZipEntries(readFileSync(built.zip)).map((e) => e.name);
 		expect(entries).toContain("bundle.json");
+		expect(entries).toContain("completion.json");
 		expect(entries).toContain(t.executable);
 		expect(entries.filter((p) => /^(bundles\/|dsh(?:\.exe)?$|dsh-manager\/)/.test(p))).toEqual([]);
 		const manifests = entries.filter((p) => p === "bundle.json");

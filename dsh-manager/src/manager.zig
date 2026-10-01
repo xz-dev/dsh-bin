@@ -6,6 +6,7 @@ const select = @import("select.zig");
 const runtimes = @import("runtimes.zig");
 const state = @import("state.zig");
 const install = @import("install.zig");
+const completion = @import("completion.zig");
 const Ctx = @import("context.zig").Ctx;
 
 pub const help_text =
@@ -34,8 +35,8 @@ pub const help_text =
 ;
 
 pub fn run(ctx: *Ctx, opts: select.Options, args: []const []const u8) u8 {
-    _ = opts;
     const cmd = if (args.len > 0) args[0] else "--help";
+    if (std.mem.eql(u8, cmd, "__complete")) return completion.query(ctx, opts, args[1..]);
     if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h") or std.mem.eql(u8, cmd, "help")) {
         util.print("{s}", .{help_text});
         return 0;
@@ -44,6 +45,7 @@ pub fn run(ctx: *Ctx, opts: select.Options, args: []const []const u8) u8 {
         util.print("dsh manager {s} (launch protocol {d})\n", .{ options.version, select.protocol });
         return 0;
     }
+    if (std.mem.eql(u8, cmd, "completion")) return completion.run(ctx, args[1..]);
     if (std.mem.eql(u8, cmd, "install")) return install.run(ctx, args[1..]);
     if (std.mem.eql(u8, cmd, "list")) {
         if (args.len != 1) {
@@ -60,7 +62,7 @@ pub fn run(ctx: *Ctx, opts: select.Options, args: []const []const u8) u8 {
             util.print("External DSH_HOME is outside the portability guarantee; only manager data moves with the installation.\n", .{});
         return 0;
     }
-    const known = [_][]const u8{ "update", "uninstall", "select", "snapshot", "clean", "self-update", "completion" };
+    const known = [_][]const u8{ "update", "uninstall", "select", "snapshot", "clean", "self-update" };
     for (known) |k| if (std.mem.eql(u8, cmd, k)) {
         util.warn("`dsh manager {s}` is not available in this build yet", .{cmd});
         return 1;

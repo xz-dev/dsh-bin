@@ -53,6 +53,25 @@ afterAll(() => { if (root) rmSync(root, { recursive: true, force: true }); });
 const env = () => ({ PATH: path, HOME: home, USERPROFILE: home, DSH_HOME: home, NO_COLOR: "1", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) });
 const run = (exe: string, args: string[]) => spawnSync(exe, ["--use", id, ...args], { cwd, env: env(), encoding: "utf8", timeout: 30_000 });
 
+test.skipIf(!available)(`RB-COMPLETION: real archive CLI description matches actual fixed --help, without profile/plugin probing${available ? "" : ` — SKIP: ${skipReason}`}`, () => {
+	const cli = JSON.parse(readFileSync(join(bundle, "completion.json"), "utf8"));
+	const metadata = JSON.parse(readFileSync(join(bundle, "bundle.json"), "utf8"));
+	expect(metadata.requiredPaths).toContain("completion.json");
+	expect(cli.schemaVersion).toBe(1);
+	const help = run(managers[0]!, ["--help"]);
+	expect(help.status).toBe(0);
+	const helpOptions = [...help.stdout.matchAll(/^  (-\S[^\n]*)/gm)].flatMap((m) => m[1].split(/\s{2,}/)[0]!.match(/--?[A-Za-z][\w-]*/g) ?? []).sort();
+	const rootOptions = cli.commands.find((c: { name: string }) => c.name === "").options;
+	expect(rootOptions.flatMap((o: { names: string[] }) => o.names).sort()).toEqual(helpOptions);
+	for (const option of rootOptions) {
+		const line = help.stdout.split("\n").find((s: string) => option.names.some((n: string) => s.trimStart().startsWith(n)))!;
+		expect(/[<[]/.test(line.split(/\s{2,}/).filter(Boolean)[0]!)).toBe(option.takesValue);
+	}
+	for (const command of cli.commands.filter((c: { name: string }) => c.name)) {
+		expect(help.stdout).toContain(`dsh ${command.name} `);
+	}
+}, 60_000);
+
 test.skipIf(!available)(`RB-HOME: real app reads shared cordis.patch.yml from external home, not snapshot/../../profiles${available ? "" : ` — SKIP: ${skipReason}`}`, () => {
 	const first = run(managers[0]!, ["--version"]);
 	expect(first.status).toBe(0);

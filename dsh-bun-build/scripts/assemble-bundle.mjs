@@ -16,6 +16,7 @@ import { binaryArch } from "./binary-arch.mjs";
 import { writeShims } from "./shims.mjs";
 import { target as targetById } from "./targets.mjs";
 import { warmTranspilerCache } from "./warm-transpiler-cache.mjs";
+import { fixedCli } from "./completion.mjs";
 
 /** Launch protocol between the manager and this runtime (`DSH_MANAGER_LAUNCH`, runtime/launch.ts). */
 export const LAUNCH_PROTOCOL = 1;
@@ -98,7 +99,7 @@ export function foreignBinaries(dir, t) {
 /** Files every installed runtime of target `t` must have, relative to the runtime root (checked by the manager). */
 export function requiredPaths(t) {
 	const shims = t.os === "windows" ? ["bin/node.cmd", "bin/pnpm.cmd"] : ["bin/node", "bin/pnpm"];
-	return [t.executable, "bundle.json", ".usage.lock", "app/package.json", "app/lib/bin.js", "pnpm/dist/pnpm.mjs", ...shims];
+	return [t.executable, "bundle.json", "completion.json", ".usage.lock", "app/package.json", "app/lib/bin.js", "pnpm/dist/pnpm.mjs", ...shims];
 }
 
 export function assembleBundle(spec) {
@@ -111,6 +112,7 @@ export function assembleBundle(spec) {
 	cpSync(spec.native, join(bundle, t.executable));
 	chmodSync(join(bundle, t.executable), 0o755);
 	cpSync(spec.app, join(bundle, "app"), { recursive: true, dereference: true });
+	writeFileSync(join(bundle, "completion.json"), `${JSON.stringify(fixedCli(join(bundle, "app")), null, 2)}\n`);
 	if (existsSync(join(bundle, "app/node_modules/@deepseek-ai/libreoffice-kit"))) throw new Error("app tree still contains the office kit; run split-addon first");
 	cpSync(join(spec.pnpm, "dist"), join(bundle, "pnpm", "dist"), { recursive: true, dereference: true });
 	if (t.os !== "windows") rmSync(join(bundle, PNPM_VENDOR), { recursive: true, force: true });
