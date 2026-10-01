@@ -159,3 +159,23 @@ test.skipIf(!hasZig)("MC-CLEAN review: unordered public runtime keeps its health
 		expect(bytes(backup)).toEqual(before); expect(r.stderr).toContain(`dsh manager install ${A} --force`);
 	}
 });
+
+
+test.skipIf(!hasZig)("MC-CLEAN review: public paths dependent on backup links never discard that backup", () => {
+	for (const part of [...(WIN ? [] : [`dsh-native${EXE}`]), "app", "app/nested"]) {
+		const i = fixture(), runtime = join(i.data, "bundles", A), backup = join(i.data, "tmp", `.previous-${A}`);
+		const meta = JSON.parse(readFileSync(join(runtime, "bundle.json"), "utf8"));
+		if (part.startsWith("app")) {
+			mkdirSync(join(runtime, "app/nested"), { recursive: true }); writeFileSync(join(runtime, "app/nested/keep"), "KEEP");
+			meta.requiredPaths.push(part === "app" ? "app" : "app/nested/keep"); writeFileSync(join(runtime, "bundle.json"), JSON.stringify(meta));
+		}
+		cpSync(runtime, backup, { recursive: true });
+		const linked = part.startsWith("app") ? "app" : part;
+		rmSync(join(runtime, linked), { recursive: true }); symlinkSync(join(backup, linked), join(runtime, linked), WIN ? "junction" : part.startsWith("app") ? "dir" : "file");
+		const before = bytes(backup); expect(run(i, ["--use", A]).status).toBe(0);
+		const r = run(i, ["manager", "clean"]);
+		expect(r.status).toBe(0); expect(existsSync(backup)).toBe(true); expect(bytes(backup)).toEqual(before);
+		expect(existsSync(join(runtime, part))).toBe(true); expect(run(i, ["--use", A]).status).toBe(0);
+		expect(r.stderr).toContain("public generation missing or invalid");
+	}
+});

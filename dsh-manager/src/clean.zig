@@ -105,26 +105,58 @@ fn download(name: []const u8) bool {
     return true;
 }
 
+/// A public generation must not obtain a required file/directory through a recovery-backup link.
+/// Walk every component without following links, including ancestors of nested required paths.
+fn independentPath(root: std.fs.Dir, path: []const u8) bool {
+    var parent = root;
+    var owned: ?std.fs.Dir = null;
+    defer if (owned) |*d| d.close();
+    var parts = std.mem.tokenizeScalar(u8, path, '/');
+    var part = parts.next() orelse return false;
+    while (true) {
+        var it = parent.iterate();
+        const kind = while (it.next() catch return false) |entry| {
+            if (eq(u8, entry.name, part)) break entry.kind;
+        } else return false;
+        if (kind != .file and kind != .directory) return false;
+        const next = parts.next() orelse return true;
+        if (kind != .directory) return false;
+        var child = parent.openDir(part, .{ .iterate = true, .no_follow = true }) catch return false;
+        if ((child.stat() catch {
+            child.close();
+            return false;
+        }).kind != .directory) {
+            child.close();
+            return false;
+        }
+        if (owned) |*d| d.close();
+        owned = child;
+        parent = child;
+        part = next;
+    }
+}
+
 /// Conservatively require a complete public generation before discarding a recovery backup.
 fn publicValid(ctx: *const Ctx, parent: ?Store, id: []const u8, addon: bool) bool {
     const s = parent orelse return false;
     var dir = s.dir.openDir(id, .{ .iterate = true, .no_follow = true }) catch return false;
     defer dir.close();
     if ((dir.stat() catch return false).kind != .directory) return false;
-    dir.access(".usage.lock", .{}) catch return false;
+    if (!independentPath(dir, ".usage.lock")) return false;
     if (addon) {
+        if (!independentPath(dir, "addon.json") or !independentPath(dir, "node_modules")) return false;
         const meta = @import("addons.zig").readIn(ctx, s.dir, id, id) catch return false;
-        dir.access("node_modules", .{}) catch return false;
         for (meta.packages) |p| {
             if (!index.component(p) and !std.mem.startsWith(u8, p, "@")) return false;
             if (std.mem.indexOf(u8, p, "..") != null or std.mem.indexOfScalar(u8, p, '\\') != null) return false;
             // addon packages use package@version labels; the installed directory omits that version suffix.
             const end = std.mem.lastIndexOfScalar(u8, p, '@') orelse p.len;
             const package = if (end == 0) p else p[0..end];
-            dir.access(util.join(ctx.a, &.{ "node_modules", package }), .{}) catch return false;
+            if (!independentPath(dir, util.join(ctx.a, &.{ "node_modules", package }))) return false;
         }
         return true;
     }
+    if (!independentPath(dir, "bundle.json")) return false;
     const bytes = dir.readFileAlloc(ctx.a, "bundle.json", 1 << 20) catch return false;
     const meta = select.parseMeta(ctx.a, bytes) orelse return false;
     if (!meta.ordered() or meta.protocol != select.protocol or meta.entry == null) return false;
@@ -133,8 +165,9 @@ fn publicValid(ctx: *const Ctx, parent: ?Store, id: []const u8, addon: bool) boo
     if (!eq(u8, m.id, id) or m.requiredPaths.len == 0) return false;
     for (m.requiredPaths) |p| {
         if (std.fs.path.isAbsolute(p) or std.mem.indexOf(u8, p, "..") != null or std.mem.indexOfAny(u8, p, "\\:\x00") != null) return false;
-        dir.access(p, .{}) catch return false;
+        if (!independentPath(dir, p)) return false;
     }
+    if (!independentPath(dir, meta.entry.?)) return false;
     const stat = dir.statFile(meta.entry.?) catch return false;
     return stat.kind == .file and (@import("builtin").os.tag == .windows or stat.mode & 0o111 != 0);
 }
