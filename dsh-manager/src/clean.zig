@@ -187,6 +187,26 @@ fn homeOverlap(ctx: *const Ctx, candidate: []const u8) !bool {
         if (overlap(ctx.a, candidate, home) or overlap(ctx.a, home, candidate)) return true;
         var parts = try std.fs.path.componentIterator(home);
         home = while (parts.next()) |part| {
+            // Windows readLink reports NOT_A_REPARSE_POINT as Unexpected, not NotLink.
+            // Inspect the final component through a no-follow handle before calling it.
+            if (@import("builtin").os.tag == .windows) {
+                const win = std.os.windows;
+                const path_w = try win.sliceToPrefixedFileW(null, part.path);
+                const file = std.fs.File{ .handle = win.OpenFile(path_w.span(), .{
+                    .access_mask = win.FILE_READ_ATTRIBUTES,
+                    .creation = win.FILE_OPEN,
+                    .filter = .any,
+                    .follow_symlinks = false,
+                }) catch |err| switch (err) {
+                    error.FileNotFound => return false,
+                    else => return err,
+                } };
+                const stat = file.stat();
+                file.close();
+                const kind = (try stat).kind;
+                if (kind == .file or kind == .directory) continue;
+                if (kind != .sym_link) return error.UnsupportedReparsePointType;
+            }
             var buf: [std.fs.max_path_bytes]u8 = undefined;
             const target = std.fs.cwd().readLink(part.path, &buf) catch |err| switch (err) {
                 error.NotLink => continue,
