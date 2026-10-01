@@ -20,7 +20,7 @@ pub const help_text =
     \\  list [--available] [--json]                               installed runtimes (--available: also the index)
     \\  select [--use <version|latest>] [--snapshot <id>] [--addon office:<version>]
     \\                                                            choose what a plain `dsh` starts
-    \\  snapshot new [--target <id> | --empty] [--name <alias>] | remove <id>... | list [--json]
+    \\  snapshot new [--use <version>] [--target <id> | --empty] [--name <alias>] | remove <id>... | list [--json]
     \\                                                            plugin-runtime snapshots
     \\  clean                                                     remove interrupted downloads and leftovers (offline)
     \\  self-update                                               update this manager only
@@ -54,6 +54,7 @@ pub fn run(ctx: *Ctx, opts: select.Options, args: []const []const u8) u8 {
     if (std.mem.eql(u8, cmd, "select")) return manage.selection(ctx, args[1..]);
     if (std.mem.eql(u8, cmd, "uninstall")) return manage.uninstall(ctx, args[1..]);
     if (std.mem.eql(u8, cmd, "list")) return manage.list(ctx, args[1..]);
+    if (std.mem.eql(u8, cmd, "snapshot")) return @import("snapshot.zig").run(ctx, args[1..]);
     if (std.mem.eql(u8, cmd, "info")) {
         util.print("Install mode: {s}\nData root: {s}\nApp home: {s}\n", .{ @tagName(ctx.mode), ctx.data, ctx.home() });
         if (ctx.mode != .portable) util.print("Managed user data is an exception to the portable executable-adjacent layout.\n", .{});
@@ -62,7 +63,7 @@ pub fn run(ctx: *Ctx, opts: select.Options, args: []const []const u8) u8 {
             util.print("External DSH_HOME is outside the portability guarantee; only manager data moves with the installation.\n", .{});
         return 0;
     }
-    const known = [_][]const u8{ "snapshot", "clean", "self-update" };
+    const known = [_][]const u8{ "clean", "self-update" };
     for (known) |k| if (std.mem.eql(u8, cmd, k)) {
         util.warn("`dsh manager {s}` is not available in this build yet", .{cmd});
         return 1;

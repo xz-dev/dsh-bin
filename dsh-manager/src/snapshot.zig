@@ -1,115 +1,366 @@
-// Native persistent selection port; complete snapshot creation/copying/removal stays in task 6.2.
+//! Plugin snapshot storage: atomic publication, persistent monotonic counters and independent copies.
 const std = @import("std");
 const util = @import("util.zig");
 const select = @import("select.zig");
+const state = @import("state.zig");
+const runtimes = @import("runtimes.zig");
 const lock = @import("lock.zig");
 const Ctx = @import("context.zig").Ctx;
 
 pub const Snapshot = struct { id: []const u8, dir: []const u8 };
+const Order = struct { upstream: struct { commitTime: []const u8 }, run: u64, attempt: u64 };
+const Meta = struct {
+    id: []const u8,
+    version: []const u8,
+    n: u64,
+    alias: ?[]const u8 = null,
+    createdAt: []const u8 = "",
+    source: []const u8 = "empty",
+    reason: []const u8 = "start",
+    order: ?Order = null,
+};
 
-/// Resolve an existing numeric ID or metadata name without creating or copying anything.
-pub fn existing(ctx: *const Ctx, query: []const u8) !Snapshot {
-    const version = select.snapshotVersion(query) orelse return error.InvalidSnapshotId;
-    for (version) |c| if (!(std.ascii.isAlphanumeric(c) or c == '.' or c == '+' or c == '_' or c == '-')) return error.InvalidSnapshotId;
-    const name = query[version.len + 1 ..];
-    var root = try std.fs.cwd().openDir(ctx.path(&.{"snapshots"}), .{ .iterate = true, .no_follow = true });
+fn safeVersion(version: []const u8) bool {
+    if (version.len == 0 or std.mem.eql(u8, version, ".") or std.mem.eql(u8, version, "..")) return false;
+    for (version) |c| if (!(std.ascii.isAlphanumeric(c) or c == '.' or c == '+' or c == '_' or c == '-')) return false;
+    return true;
+}
+
+fn list(ctx: *const Ctx) ![]Meta {
+    var root = std.fs.cwd().openDir(ctx.path(&.{"snapshots"}), .{ .iterate = true, .no_follow = true }) catch |err| switch (err) {
+        error.FileNotFound => return &.{},
+        else => return err,
+    };
     defer root.close();
+    var result: std.ArrayList(Meta) = .empty;
     var it = root.iterate();
-    var found: ?Snapshot = null;
-    const Meta = struct { id: []const u8, version: []const u8, n: u64, alias: ?[]const u8 = null };
-    var snapshots: std.ArrayList(Meta) = .empty;
-    var versions: std.ArrayList(select.Bundle) = .empty;
     while (try it.next()) |entry| {
+        if (entry.name[0] == '.') continue;
         const v = select.snapshotVersion(entry.name) orelse continue;
-        const n = std.fmt.parseInt(u64, entry.name[v.len + 1 ..], 10) catch continue;
-        if (n == 0 or entry.kind != .directory) continue;
+        if (!safeVersion(v)) return error.InvalidSnapshot;
+        const n = std.fmt.parseInt(u64, entry.name[v.len + 1 ..], 10) catch return error.InvalidSnapshot;
+        if (n == 0 or entry.kind != .directory) return error.InvalidSnapshot;
         var dir = try root.openDir(entry.name, .{ .no_follow = true });
         defer dir.close();
         const bytes = try dir.readFileAlloc(ctx.a, "snapshot.json", 1 << 20);
         const meta = try std.json.parseFromSliceLeaky(Meta, ctx.a, bytes, .{ .ignore_unknown_fields = true });
         if (!std.mem.eql(u8, meta.id, entry.name) or !std.mem.eql(u8, meta.version, v) or meta.n != n) return error.InvalidSnapshot;
         try dir.access(".usage.lock", .{});
-        try snapshots.append(ctx.a, meta);
+        try result.append(ctx.a, meta);
+    }
+    std.mem.sort(Meta, result.items, {}, struct {
+        fn less(_: void, a: Meta, b: Meta) bool {
+            if (a.order != null and b.order != null) {
+                const cmp = orderCompare(a.order.?, b.order.?);
+                if (cmp != .eq) return cmp == .lt;
+            }
+            const cmp = std.mem.order(u8, a.version, b.version);
+            return if (cmp != .eq) cmp == .lt else a.n < b.n;
+        }
+    }.less);
+    return result.toOwnedSlice(ctx.a);
+}
+
+fn lookup(ctx: *const Ctx, all: []const Meta, query: []const u8) !Meta {
+    const version = select.snapshotVersion(query) orelse return error.InvalidSnapshotId;
+    if (!safeVersion(version)) return error.InvalidSnapshotId;
+    const key = query[version.len + 1 ..];
+    var versions: std.ArrayList(select.Bundle) = .empty;
+    for (all) |s| {
         var known = false;
-        for (versions.items) |b| if (std.mem.eql(u8, b.version, v)) {
+        for (versions.items) |v| if (std.mem.eql(u8, v.version, s.version)) {
             known = true;
             break;
         };
-        if (!known) try versions.append(ctx.a, .{ .version = meta.version, .meta = null });
+        if (!known) try versions.append(ctx.a, .{ .version = s.version, .meta = null });
     }
     const matched = switch (select.matchVersion(versions.items, version)) {
         .found => |v| v,
         .none => return error.SnapshotNotFound,
         .ambiguous => return error.AmbiguousSnapshot,
     };
-    const number = std.fmt.parseInt(u64, name, 10) catch null;
-    for (snapshots.items) |meta| {
-        if (!std.mem.eql(u8, matched, meta.version)) continue;
-        if (if (number) |n| meta.n != n else meta.alias == null or !std.mem.eql(u8, name, meta.alias.?)) continue;
+    const number = std.fmt.parseInt(u64, key, 10) catch null;
+    var found: ?Meta = null;
+    for (all) |s| {
+        if (!std.mem.eql(u8, s.version, matched)) continue;
+        if (if (number) |n| s.n != n else s.alias == null or !std.mem.eql(u8, key, s.alias.?)) continue;
         if (found != null) return error.AmbiguousSnapshot;
-        found = .{ .id = meta.id, .dir = ctx.path(&.{ "snapshots", meta.id }) };
+        found = s;
     }
     return found orelse error.SnapshotNotFound;
 }
 
-pub fn prepare(ctx: *const Ctx, version: []const u8, meta: select.Meta) Snapshot {
-    for (version) |c| if (!(std.ascii.isAlphanumeric(c) or c == '.' or c == '+' or c == '_' or c == '-'))
-        util.fatal("invalid runtime id for snapshot: {s}", .{version});
-    var root = ctx.ensureDir(&.{"snapshots"});
-    defer root.close();
-    const mutex_path = ctx.path(&.{ "snapshots", ".lock" });
-    const mutex = lock.acquire(mutex_path, .exclusive, true, null) catch |err|
-        util.fatal("cannot lock snapshots at {s}: {s}", .{ mutex_path, @errorName(err) });
-    defer mutex.release();
-    const prefix = std.fmt.allocPrint(ctx.a, "{s}@", .{version}) catch util.oom();
-    var it = root.iterate();
-    var newest: ?[]const u8 = null;
-    var last: u64 = 0;
-    while (it.next() catch |err| util.fatal("cannot read snapshots at {s}: {s}", .{ ctx.data, @errorName(err) })) |entry| {
-        if (!std.mem.startsWith(u8, entry.name, prefix)) continue;
-        const n = std.fmt.parseInt(u64, entry.name[prefix.len..], 10) catch continue;
-        if (n == 0) continue;
-        const path = ctx.path(&.{ "snapshots", entry.name });
-        if (entry.kind != .directory) util.fatal("invalid snapshot at {s}", .{path});
-        var dir = root.openDir(entry.name, .{ .no_follow = true }) catch util.fatal("invalid snapshot at {s}", .{path});
-        defer dir.close();
-        const obj = (util.readJsonObject(ctx.a, util.join(ctx.a, &.{ path, "snapshot.json" })) catch null) orelse util.fatal("invalid snapshot metadata at {s}", .{path});
-        const id = obj.get("id") orelse util.fatal("invalid snapshot metadata at {s}", .{path});
-        const v = obj.get("version") orelse util.fatal("invalid snapshot metadata at {s}", .{path});
-        const number = obj.get("n") orelse util.fatal("invalid snapshot metadata at {s}", .{path});
-        if (id != .string or v != .string or number != .integer or !std.mem.eql(u8, id.string, entry.name) or !std.mem.eql(u8, v.string, version) or number.integer != n)
-            util.fatal("invalid snapshot metadata at {s}", .{path});
-        dir.access(".usage.lock", .{}) catch util.fatal("snapshot usage guard is missing at {s}", .{path});
-        if (n > last) {
-            last = n;
-            newest = ctx.a.dupe(u8, entry.name) catch util.oom();
-        }
-    }
-    if (newest) |id| return .{ .id = id, .dir = ctx.path(&.{ "snapshots", id }) };
+pub fn existing(ctx: *const Ctx, query: []const u8) !Snapshot {
+    const s = try lookup(ctx, try list(ctx), query);
+    return .{ .id = s.id, .dir = ctx.path(&.{ "snapshots", s.id }) };
+}
 
-    const id = std.fmt.allocPrint(ctx.a, "{s}@1", .{version}) catch util.oom();
-    const staging = std.fmt.allocPrint(ctx.a, ".staging-{x}", .{std.crypto.random.int(u64)}) catch util.oom();
-    root.makeDir(staging) catch |err| util.fatal("cannot prepare snapshot at {s}: {s}", .{ ctx.data, @errorName(err) });
+fn newest(all: []const Meta, version: []const u8) ?Meta {
+    var best: ?Meta = null;
+    for (all) |s| if (std.mem.eql(u8, s.version, version) and (best == null or s.n > best.?.n)) {
+        best = s;
+    };
+    return best;
+}
+
+fn orderCompare(a: Order, b: Order) std.math.Order {
+    const t = std.mem.order(u8, a.upstream.commitTime, b.upstream.commitTime);
+    if (t != .eq) return t;
+    if (a.run != b.run) return std.math.order(a.run, b.run);
+    return std.math.order(a.attempt, b.attempt);
+}
+
+fn previous(all: []const Meta, version: []const u8, order: Order) ?Meta {
+    var best: ?Meta = null;
+    for (all) |s| {
+        if (s.order == null or std.mem.eql(u8, s.version, version) or orderCompare(s.order.?, order) != .lt) continue;
+        if (best == null or orderCompare(s.order.?, best.?.order.?) == .gt or
+            (orderCompare(s.order.?, best.?.order.?) == .eq and std.mem.order(u8, s.version, best.?.version) == .gt)) best = s;
+    }
+    return if (best) |s| newest(all, s.version) else null;
+}
+
+fn storeLock(ctx: *const Ctx) !lock.Lock {
+    var root = ctx.ensureDir(&.{"snapshots"});
+    root.close();
+    return lock.tryAcquire(ctx.path(&.{ "snapshots", ".lock" }), .exclusive, true);
+}
+
+pub fn prepare(ctx: *const Ctx, version: []const u8, meta: select.Meta) Snapshot {
+    return ensure(ctx, version, meta, "start") catch |err|
+        util.fatal("cannot prepare snapshot for {s}: {s}; inspect `dsh manager snapshot list` and retry", .{ version, @errorName(err) });
+}
+
+pub fn ensure(ctx: *const Ctx, version: []const u8, meta: select.Meta, reason: []const u8) !Snapshot {
+    const mutex = try storeLock(ctx);
+    defer mutex.release();
+    const all = try list(ctx);
+    if (newest(all, version)) |s| return .{ .id = s.id, .dir = ctx.path(&.{ "snapshots", s.id }) };
+    const order = Order{ .upstream = .{ .commitTime = meta.commit_time.? }, .run = meta.run.?, .attempt = meta.attempt.? };
+    return create(ctx, all, version, order, reason, null, previous(all, version, order));
+}
+
+fn create(ctx: *const Ctx, all: []const Meta, version: []const u8, order: Order, reason: []const u8, alias: ?[]const u8, source: ?Meta) !Snapshot {
+    if (!safeVersion(version)) return error.InvalidRuntimeId;
+    if (alias) |name| {
+        if (name.len == 0 or std.mem.indexOfNone(u8, name, "0123456789") == null) return error.InvalidSnapshotName;
+        for (name) |c| if (!(std.ascii.isAlphanumeric(c) or c == '.' or c == '_' or c == '-')) return error.InvalidSnapshotName;
+        for (all) |s| if (std.mem.eql(u8, version, s.version) and s.alias != null and std.mem.eql(u8, name, s.alias.?)) return error.SnapshotNameTaken;
+    }
+    var root = try std.fs.cwd().openDir(ctx.path(&.{"snapshots"}), .{ .no_follow = true });
+    defer root.close();
+    const counter_bytes = root.readFileAlloc(ctx.a, ".counters.json", 1 << 20) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    var counters: std.json.ObjectMap = .init(ctx.a);
+    if (counter_bytes) |bytes| {
+        const value = std.json.parseFromSliceLeaky(std.json.Value, ctx.a, bytes, .{}) catch return error.InvalidSnapshotCounters;
+        if (value != .object) return error.InvalidSnapshotCounters;
+        counters = value.object;
+        var it = counters.iterator();
+        while (it.next()) |entry| if (!safeVersion(entry.key_ptr.*) or entry.value_ptr.* != .integer or entry.value_ptr.integer < 0) return error.InvalidSnapshotCounters;
+    }
+    var last: u64 = if (counters.get(version)) |v| @intCast(v.integer) else 0;
+    for (all) |s| if (std.mem.eql(u8, s.version, version)) {
+        last = @max(last, s.n);
+    };
+    if (last >= std.math.maxInt(i64)) return error.SnapshotCounterOverflow;
+    const n = last + 1;
+    try counters.put(version, .{ .integer = @intCast(n) });
+    var buffer: [4096]u8 = undefined;
+    var counter_file = try root.atomicFile(".counters.json", .{ .write_buffer = &buffer });
+    defer counter_file.deinit();
+    try counter_file.file_writer.interface.writeAll(try std.json.Stringify.valueAlloc(ctx.a, std.json.Value{ .object = counters }, .{}));
+    try counter_file.finish(); // Reserve first: failures and interruptions never recycle an ID.
+    crashPoint(ctx, "snapshot-reserved");
+    const id = try std.fmt.allocPrint(ctx.a, "{s}@{d}", .{ version, n });
+    const staging = try std.fmt.allocPrint(ctx.a, ".staging-{x}", .{std.crypto.random.int(u64)});
+    try root.makeDir(staging);
     defer root.deleteTree(staging) catch {};
-    var dir = root.openDir(staging, .{}) catch util.fatal("cannot open snapshot staging at {s}", .{ctx.data});
-    dir.makeDir("profiles") catch util.fatal("cannot prepare snapshot profiles at {s}", .{ctx.data});
-    dir.writeFile(.{ .sub_path = ".usage.lock", .data = "" }) catch util.fatal("cannot prepare snapshot guard at {s}", .{ctx.data});
-    const bytes = std.json.Stringify.valueAlloc(ctx.a, .{
+    var dir = try root.openDir(staging, .{});
+    var open = true;
+    defer if (open) dir.close();
+    try dir.makeDir("profiles");
+    if (source) |s| {
+        const src_path = ctx.path(&.{ "snapshots", s.id, "profiles" });
+        var src = try std.fs.cwd().openDir(src_path, .{ .iterate = true, .no_follow = true });
+        defer src.close();
+        var dest = try dir.openDir("profiles", .{});
+        defer dest.close();
+        try copyProfiles(ctx, src, dest, src_path, "");
+    }
+    crashPoint(ctx, "snapshot-copied");
+    try dir.writeFile(.{ .sub_path = ".usage.lock", .data = "" });
+    const bytes = try std.json.Stringify.valueAlloc(ctx.a, Meta{
         .id = id,
         .version = version,
-        .n = @as(u32, 1),
+        .n = n,
+        .alias = alias,
         .createdAt = timestamp(ctx.a),
-        .source = "empty",
-        .reason = "start",
-        .order = .{ .upstream = .{ .commitTime = meta.commit_time }, .run = meta.run, .attempt = meta.attempt },
-    }, .{}) catch util.oom();
-    const file = dir.createFile("snapshot.json", .{}) catch util.fatal("cannot prepare snapshot metadata at {s}", .{ctx.data});
-    file.writeAll(bytes) catch util.fatal("cannot write snapshot metadata at {s}", .{ctx.data});
-    file.sync() catch util.fatal("cannot sync snapshot metadata at {s}", .{ctx.data});
+        .source = if (source) |s| s.id else "empty",
+        .reason = reason,
+        .order = order,
+    }, .{});
+    const file = try dir.createFile("snapshot.json", .{});
+    var file_open = true;
+    defer if (file_open) file.close();
+    try file.writeAll(bytes);
+    try file.sync();
     file.close();
-    dir.close(); // Close Windows handles before atomic same-directory publication.
-    root.rename(staging, id) catch |err| util.fatal("cannot publish snapshot {s}: {s}", .{ id, @errorName(err) });
+    file_open = false;
+    dir.close();
+    open = false; // Windows publication needs closed staging handles.
+    try root.rename(staging, id);
     return .{ .id = id, .dir = ctx.path(&.{ "snapshots", id }) };
+}
+
+/// Copy files, not hardlinks. Relative pnpm links may remain only within the copied profiles tree.
+fn copyProfiles(ctx: *const Ctx, src: std.fs.Dir, dest: std.fs.Dir, base: []const u8, rel: []const u8) !void {
+    var it = src.iterate();
+    while (try it.next()) |entry| {
+        const child = try std.fs.path.join(ctx.a, &.{ rel, entry.name });
+        switch (entry.kind) {
+            .file => try src.copyFile(entry.name, dest, entry.name, .{}),
+            .directory => {
+                try dest.makeDir(entry.name);
+                var source_dir = try src.openDir(entry.name, .{ .iterate = true, .no_follow = true });
+                defer source_dir.close();
+                var dest_dir = try dest.openDir(entry.name, .{});
+                defer dest_dir.close();
+                try copyProfiles(ctx, source_dir, dest_dir, base, child);
+            },
+            .sym_link => {
+                var buffer: [4096]u8 = undefined;
+                const target = try src.readLink(entry.name, &buffer);
+                const resolved = try std.fs.path.resolve(ctx.a, &.{ base, rel, target });
+                const inside = try std.fs.path.relative(ctx.a, base, resolved);
+                if (std.fs.path.isAbsolute(target) or std.mem.indexOfAny(u8, target, "\\:") != null or std.fs.path.isAbsolute(inside) or std.mem.eql(u8, inside, "..") or std.mem.startsWith(u8, inside, "../") or std.mem.startsWith(u8, inside, "..\\")) {
+                    util.warn("cannot copy snapshot link {s}: target {s} escapes profiles; nothing was published", .{ child, target });
+                    return error.UnsafeSnapshotLink;
+                }
+                const stat = src.statFile(entry.name) catch return error.InvalidSnapshotLink;
+                try dest.symLink(target, entry.name, .{ .is_directory = stat.kind == .directory });
+            },
+            else => return error.UnsupportedSnapshotFile,
+        }
+    }
+}
+
+fn crashPoint(ctx: *const Ctx, point: []const u8) void {
+    if (std.mem.eql(u8, ctx.env.get("DSH_MANAGER_TEST") orelse "", "1") and std.mem.eql(u8, ctx.env.get("DSH_MANAGER_TEST_CRASH") orelse "", point)) std.process.exit(86);
+}
+
+pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
+    return command(ctx, args) catch |err| {
+        util.warn("snapshot operation failed: {s}; inspect `dsh manager snapshot list` (retry if another operation is busy)", .{@errorName(err)});
+        return 1;
+    };
+}
+
+fn command(ctx: *Ctx, args: []const []const u8) !u8 {
+    if (args.len == 0) return error.SnapshotUsage;
+    if (std.mem.eql(u8, args[0], "list")) {
+        if (args.len > 2 or (args.len == 2 and !std.mem.eql(u8, args[1], "--json"))) return error.SnapshotUsage;
+        const all = try list(ctx);
+        const bundles = runtimes.list(ctx);
+        const stored = state.readSelection(ctx);
+        const chosen = if (stored == .ok) @import("manage.zig").snapshotChoice(stored.ok) else null;
+        const Row = struct { id: []const u8, alias: ?[]const u8, version: []const u8, createdAt: []const u8, source: []const u8, reason: []const u8, newest: bool, selected: bool, inUse: bool, bundleInstalled: bool };
+        const rows = try ctx.a.alloc(Row, all.len);
+        for (all, rows) |s, *r| r.* = .{ .id = s.id, .alias = s.alias, .version = s.version, .createdAt = s.createdAt, .source = s.source, .reason = s.reason, .newest = newest(all, s.version).?.n == s.n, .selected = chosen != null and std.mem.eql(u8, chosen.?, s.id), .inUse = lock.inUse(ctx.path(&.{ "snapshots", s.id, ".usage.lock" })), .bundleInstalled = select.matchVersion(bundles, s.version) == .found };
+        if (args.len == 2) util.print("{s}\n", .{try std.json.Stringify.valueAlloc(ctx.a, .{ .snapshots = rows }, .{})}) else {
+            if (rows.len == 0) util.print("No snapshots yet (one is created when a runtime is installed or started).\n", .{});
+            for (rows) |r| util.print("{s} ({s})  {s}  from {s}  {s}{s}{s}{s}{s}\n", .{ r.id, r.alias orelse "unnamed", r.createdAt, r.source, r.reason, if (r.newest) " [newest]" else "", if (r.selected) " [selected]" else "", if (r.inUse) " [in use]" else "", if (!r.bundleInstalled) " [bundle not installed]" else "" });
+        }
+        return 0;
+    }
+    if (!std.mem.eql(u8, args[0], "new") and !std.mem.eql(u8, args[0], "remove")) return error.SnapshotUsage;
+    // Validate CLI before creating storage or taking mutation locks.
+    var use: ?[]const u8 = null;
+    var alias: ?[]const u8 = null;
+    var target: ?[]const u8 = null;
+    var empty = false;
+    if (std.mem.eql(u8, args[0], "new")) {
+        var i: usize = 1;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (std.mem.eql(u8, arg, "--empty") and !empty) {
+                empty = true;
+                continue;
+            }
+            var matched = false;
+            inline for (.{ "--use", "--name", "--target" }) |flag| {
+                if (std.mem.eql(u8, arg, flag) or std.mem.startsWith(u8, arg, flag ++ "=")) {
+                    const slot = if (std.mem.eql(u8, flag, "--use")) &use else if (std.mem.eql(u8, flag, "--name")) &alias else &target;
+                    if (slot.* != null) return error.SnapshotUsage;
+                    if (std.mem.eql(u8, arg, flag)) {
+                        i += 1;
+                        if (i == args.len) return error.SnapshotUsage;
+                        slot.* = args[i];
+                    } else slot.* = arg[flag.len + 1 ..];
+                    if (slot.*.?.len == 0) return error.SnapshotUsage;
+                    matched = true;
+                }
+            }
+            if (!matched) return error.SnapshotUsage;
+        }
+        if (empty and target != null) return error.SnapshotUsage;
+    } else {
+        if (args.len < 2) return error.SnapshotUsage;
+        for (args[1..]) |arg| if (std.mem.startsWith(u8, arg, "-")) return error.SnapshotUsage;
+    }
+    ctx.ensureData();
+    const maintenance = try state.maintenance(ctx);
+    defer maintenance.release();
+    const mutex = try storeLock(ctx);
+    defer mutex.release();
+    const all = try list(ctx);
+    if (std.mem.eql(u8, args[0], "new")) {
+        const bundles = runtimes.list(ctx);
+        const stored = state.readSelection(ctx);
+        if (stored == .invalid and use == null) return error.InvalidSelection;
+        const result = select.resolve(.{ .opts = .{ .use = use }, .bundles = bundles, .channel = state.channel(ctx), .selection_use = if (stored == .ok) stored.ok.use else null });
+        if (result == .err) {
+            util.warn("cannot resolve runtime for snapshot; give an installed --use version (see `dsh manager list`)", .{});
+            return 1;
+        }
+        const version = result.ok.version;
+        const meta = runtimes.metaOf(bundles, version) orelse return error.InvalidRuntime;
+        if (!meta.ordered()) return error.InvalidRuntime;
+        const source = if (empty) null else if (target) |q| try lookup(ctx, all, q) else newest(all, version) orelse {
+            util.warn("dsh {s} has no snapshot to copy; use `dsh manager snapshot new --use {s} --empty` or --target <id>", .{ version, version });
+            return 1;
+        };
+        const s = try create(ctx, all, version, .{ .upstream = .{ .commitTime = meta.commit_time.? }, .run = meta.run.?, .attempt = meta.attempt.? }, "user", alias, source);
+        util.print("Created plugin snapshot {s} ({s}).\n", .{ s.id, if (source) |v| v.id else "empty" });
+        return 0;
+    }
+    var targets: std.ArrayList(Meta) = .empty;
+    for (args[1..]) |q| {
+        const s = try lookup(ctx, all, q);
+        var duplicate = false;
+        for (targets.items) |t| if (std.mem.eql(u8, s.id, t.id)) {
+            duplicate = true;
+            break;
+        };
+        if (!duplicate) try targets.append(ctx.a, s);
+    }
+    const stored = state.readSelection(ctx);
+    if (stored == .invalid) return error.InvalidSelection;
+    const chosen = if (stored == .ok) @import("manage.zig").snapshotChoice(stored.ok) else null;
+    if (chosen) |q| {
+        const selected = try lookup(ctx, all, q);
+        for (targets.items) |s| if (std.mem.eql(u8, s.id, selected.id)) {
+            util.warn("snapshot {s} is named by the selection; run `dsh manager select --use latest` or select another snapshot first; nothing was removed", .{s.id});
+            return 1;
+        };
+    }
+    for (targets.items) |s| {
+        try std.fs.cwd().deleteTree(ctx.path(&.{ "snapshots", s.id }));
+        util.print("Removed snapshot {s}.\n", .{s.id});
+    }
+    return 0;
 }
 
 fn timestamp(a: std.mem.Allocator) []const u8 {
