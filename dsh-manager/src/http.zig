@@ -1,14 +1,12 @@
 //! Verified, resumable downloads using std HTTP and TLS, no runtime subprocesses.
-//! Timeouts bound idle socket reads/writes after a connection is acquired, including redirects.
-//! They are not request deadlines: trickling data can extend a transfer, and DNS/TCP/TLS setup
-//! has no deadline guaranteed by this module (a stalled TLS handshake may wait indefinitely).
-//! TODO(3.2): verified TLS-over-CONNECT. Zig 0.15.2's proxy tunnel is not origin TLS;
-//! HTTPS proxy routes fail closed rather than sending origin requests in plaintext.
+//! Timeouts bound idle socket reads/writes, including CONNECT, its TLS handshake and redirects.
+//! They are not request deadlines: trickling data can extend a transfer; DNS/TCP setup and
+//! std's direct TLS handshake have no deadline guaranteed by this module.
 const std = @import("std");
 const builtin = @import("builtin");
 const util = @import("util.zig");
 
-pub const Error = error{ BadUrl, HttpStatus, DownloadFailed, PartialTooLarge, TooLarge, HashMismatch, Network, FileSystem, UnsupportedProxy };
+pub const Error = error{ BadUrl, HttpStatus, DownloadFailed, PartialTooLarge, TooLarge, HashMismatch, Network, FileSystem, UnsupportedProxy, ProxyAuthenticationRequired, ProxyRefused, TlsVerificationFailed };
 const MAX_ATTEMPTS = 5;
 const MAX_REDIRECTS = 5;
 const MAX_RETRY_AFTER_MS: u64 = 60_000;
@@ -152,6 +150,40 @@ fn proxyVariable(env: *const std.process.EnvMap) ?[]const u8 {
     return null;
 }
 
+fn noProxy(env: *const std.process.EnvMap, host: []const u8, port: u16) bool {
+    const list = env.get("no_proxy") orelse env.get("NO_PROXY") orelse return false;
+    var entries = std.mem.splitScalar(u8, list, ',');
+    while (entries.next()) |entry| {
+        var name = std.mem.trim(u8, entry, " \t");
+        if (std.mem.eql(u8, name, "*")) return true;
+        // Optional port restricts the match; a port-less entry matches every port.
+        const colon = std.mem.lastIndexOfScalar(u8, name, ':');
+        if (colon) |at| {
+            if (std.mem.indexOfScalar(u8, name[0..at], ':') == null or (at > 0 and name[at - 1] == ']')) {
+                if ((decimal(name[at + 1 ..]) orelse continue) != port) continue;
+                name = name[0..at];
+            }
+        }
+        name = std.mem.trim(u8, name, "[]");
+        name = std.mem.trimStart(u8, name, ".");
+        if (name.len == 0 or host.len < name.len) continue;
+        if (!std.ascii.eqlIgnoreCase(host[host.len - name.len ..], name)) continue;
+        if (host.len == name.len or host[host.len - name.len - 1] == '.') return true;
+    }
+    return false;
+}
+
+fn loadRoots(c: *std.http.Client, env: *const std.process.EnvMap) Error!void {
+    if (!c.next_https_rescan_certs) return;
+    c.ca_bundle.rescan(c.allocator) catch |e| return networkError(e);
+    if (testMode(env)) {
+        if (env.get("DSH_MANAGER_TEST_CA_FILE")) |path| {
+            c.ca_bundle.addCertsFromFilePath(c.allocator, std.fs.cwd(), path) catch |e| return networkError(e);
+        }
+    }
+    c.next_https_rescan_certs = false;
+}
+
 fn client(a: std.mem.Allocator, proxy_arena: std.mem.Allocator) Error!std.http.Client {
     var c: std.http.Client = .{ .allocator = a };
     errdefer c.deinit();
@@ -210,6 +242,82 @@ fn setSocketTimeout(conn: *std.http.Client.Connection, ms: u64) Error!void {
     }
 }
 
+// Zig 0.15.2 hides Connection.Tls and cannot wrap a pre-established stream. Match
+// its two fields and allocation layout so std Request/Connection own TLS I/O and
+// destruction after CONNECT. This version-pinned workaround must track std on upgrades.
+const Tunnel = struct {
+    client: std.crypto.tls.Client,
+    connection: std.http.Client.Connection,
+};
+comptime {
+    if (builtin.zig_version.order(.{ .major = 0, .minor = 15, .patch = 2 }) != .eq)
+        @compileError("review TLS-over-CONNECT Connection.Tls layout for this Zig version");
+}
+
+fn connectTunnel(c: *std.http.Client, proxy: *const std.http.Client.Proxy, host: []const u8, port: u16, idle_ms: u64) Error!*std.http.Client.Connection {
+    const stream = std.net.tcpConnectToHost(c.allocator, proxy.host, proxy.port) catch |e| return networkError(e);
+    errdefer stream.close();
+    const read_len = c.tls_buffer_size + c.read_buffer_size;
+    const alloc_len = @sizeOf(Tunnel) + host.len + read_len + c.tls_buffer_size + c.write_buffer_size + c.tls_buffer_size;
+    const base = c.allocator.alignedAlloc(u8, .of(Tunnel), alloc_len) catch util.oom();
+    errdefer c.allocator.free(base);
+    const host_buf = base[@sizeOf(Tunnel)..][0..host.len];
+    @memcpy(host_buf, host);
+    const tls_read = host_buf.ptr[host_buf.len..][0..read_len];
+    const socket_write = tls_read.ptr[tls_read.len..][0..c.tls_buffer_size];
+    const tls_write = socket_write.ptr[socket_write.len..][0..c.write_buffer_size];
+    const socket_read = tls_write.ptr[tls_write.len..][0..c.tls_buffer_size];
+    const tunnel: *Tunnel = @ptrCast(base);
+    const conn = &tunnel.connection;
+    conn.* = .{
+        .client = c,
+        .stream_writer = stream.writer(socket_write),
+        .stream_reader = stream.reader(socket_read),
+        .pool_node = .{},
+        .port = port,
+        .host_len = @intCast(host.len),
+        .proxied = false, // Origin GET must not carry proxy credentials or an absolute URI.
+        .closing = true,
+        .protocol = .plain,
+    };
+    try setSocketTimeout(conn, idle_ms); // Before CONNECT and TLS, including Windows sync I/O.
+    const proxy_headers: []const std.http.Header = if (proxy.authorization) |auth| &.{.{ .name = "proxy-authorization", .value = auth }} else &.{};
+    var req = c.request(.CONNECT, .{ .scheme = "http", .host = .{ .raw = host }, .port = port }, .{
+        .connection = conn,
+        .redirect_behavior = .unhandled,
+        .extra_headers = proxy_headers,
+        .headers = .{ .accept_encoding = .omit },
+    }) catch |e| return networkError(e);
+    // The connection is not in std's pool until TLS succeeds. Never drain a CONNECT body.
+    defer {
+        req.connection = null;
+        req.deinit();
+    }
+    req.accept_encoding = @splat(true);
+    req.sendBodiless() catch |e| return networkError(e);
+    const response = req.receiveHead(&.{}) catch |e| return networkError(e);
+    const status: u16 = @intFromEnum(response.head.status);
+    if (status < 200 or status >= 300) {
+        std.debug.print("HTTP proxy CONNECT rejected (HTTP {d}){s}\n", .{ status, if (status == 407) "; check proxy credentials" else "" });
+        return if (status == 407) Error.ProxyAuthenticationRequired else Error.ProxyRefused;
+    }
+    tunnel.client = std.crypto.tls.Client.init(conn.stream_reader.interface(), &conn.stream_writer.interface, .{
+        .host = .{ .explicit = host },
+        .ca = .{ .bundle = c.ca_bundle },
+        .read_buffer = tls_read,
+        .write_buffer = tls_write,
+        .allow_truncation_attacks = true, // Same as std HTTPS; size/hash also guard downloads.
+    }) catch |e| {
+        if (e == error.ReadFailed or e == error.WriteFailed) return Error.Network;
+        std.debug.print("HTTPS origin TLS verification/handshake failed: {s}\n", .{@errorName(e)});
+        return Error.TlsVerificationFailed;
+    };
+    conn.protocol = .tls;
+    conn.closing = true;
+    c.connection_pool.addUsed(conn);
+    return conn;
+}
+
 const ContentRange = struct { start: u64, end: u64, total: u64 };
 fn contentRange(v: []const u8) ?ContentRange {
     if (!std.mem.startsWith(u8, v, "bytes ")) return null;
@@ -234,17 +342,37 @@ fn getHead(c: *std.http.Client, env: *const std.process.EnvMap, req: *std.http.C
     while (true) {
         const protocol = std.http.Client.Protocol.fromUri(uri) orelse return Error.BadUrl;
         var host_buffer: [std.Uri.host_name_max]u8 = undefined;
-        _ = uri.getHost(&host_buffer) catch return Error.BadUrl;
-        if (protocol == .tls and (c.https_proxy != null or proxyVariable(env) != null)) {
-            std.debug.print("{s}: HTTPS proxy unsupported by Zig 0.15.2 (no verified origin TLS after CONNECT); unset this variable to connect directly\n", .{proxyVariable(env) orelse "HTTPS_PROXY/https_proxy/ALL_PROXY/all_proxy"});
-            return Error.UnsupportedProxy;
+        const host = uri.getHost(&host_buffer) catch return Error.BadUrl;
+        const port = uri.port orelse @as(u16, if (protocol == .tls) 443 else 80);
+        const bypass = noProxy(env, host, port);
+        var connection: ?*std.http.Client.Connection = null;
+        if (protocol == .tls) {
+            const variable = if (bypass) null else proxyVariable(env);
+            if (variable != null and (c.https_proxy == null or c.https_proxy.?.protocol != .plain)) {
+                std.debug.print("{s}: https:// proxy transport (TLS to proxy) or proxy scheme unsupported; use an http:// CONNECT proxy\n", .{variable.?});
+                return Error.UnsupportedProxy;
+            }
+            try loadRoots(c, env);
+            if (variable != null) connection = try connectTunnel(c, c.https_proxy.?, host, port, idle_ms);
+        }
+        const saved_http_proxy = c.http_proxy;
+        const saved_https_proxy = c.https_proxy;
+        c.https_proxy = null; // Never call std's unsafe HTTPS proxy fallback.
+        if (bypass) c.http_proxy = null;
+        defer {
+            c.http_proxy = saved_http_proxy;
+            c.https_proxy = saved_https_proxy;
         }
         req.* = c.request(.GET, uri, .{
+            .connection = connection,
             .extra_headers = headers, // Only Range / cache-control, never credentials.
             .redirect_behavior = .unhandled,
             .keep_alive = false,
             .headers = .{ .accept_encoding = .{ .override = "identity" } },
-        }) catch |e| return networkError(e);
+        }) catch |e| {
+            if (connection) |conn| c.connection_pool.release(conn);
+            return networkError(e);
+        };
         // Also covers failures before receiveHead changes the connection's closing flag.
         req.connection.?.closing = true;
         errdefer req.deinit();

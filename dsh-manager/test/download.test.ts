@@ -7,6 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
+import { connectProxy, TEST_CA_FILE, TEST_TLS } from "./proxy-fixture.ts";
 
 const DIR = resolve(import.meta.dir, "..");
 let driver: string;
@@ -425,7 +426,136 @@ describe("http.zig (black-box, real sockets)", () => {
 		} finally { await new Promise<void>((resolveP) => raw.close(() => resolveP())); }
 	});
 
-	test("HTTP proxy works; HTTPS proxy routes fail closed before CONNECT or origin bytes", async () => {
+	test("DL-CORRUPT / FB-RETRY: verified HTTPS download uses authenticated CONNECT, never plaintext", async () => {
+		const originRequests: Request[] = [];
+		const origin = Bun.serve({ hostname: "127.0.0.1", port: 0, tls: TEST_TLS, fetch(req) { originRequests.push(req); return okBody(req); } });
+		const proxy = await connectProxy({ status: 201 }); // Any successful CONNECT, not only 200.
+		try {
+			const path = dest("connect-verified");
+			const res = await runDriver(["download", `https://127.0.0.1:${origin.port}/asset`, path, String(SIZE), SHA], { HTTPS_PROXY: proxy.url.replace("://", "://private:secret@"), DSH_MANAGER_TEST_CA_FILE: TEST_CA_FILE });
+			success(res, path);
+			expect(sha(readFileSync(path))).toBe(SHA);
+			expect(proxy.requests).toHaveLength(1);
+			expect(proxy.requests[0]!.line).toBe(`CONNECT 127.0.0.1:${origin.port} HTTP/1.1`);
+			expect(proxy.requests[0]!.authorization).toBe(`Basic ${Buffer.from("private:secret").toString("base64")}`);
+			expect([...proxy.requests[0]!.firstBytes.subarray(0, 2)]).toEqual([0x16, 0x03]);
+			expect(originRequests).toHaveLength(1);
+			expect(originRequests[0]!.headers.get("proxy-authorization")).toBeNull();
+		} finally { origin.stop(true); await proxy.stop(); }
+	});
+
+	test("DL-CORRUPT: untrusted CA, wrong hostname and ungated test CA fail before any body", async () => {
+		let originRequests = 0;
+		const origin = Bun.serve({ hostname: "127.0.0.1", port: 0, tls: TEST_TLS, fetch() { originRequests++; return new Response(BODY); } });
+		const proxy = await connectProxy({ upstreamHost: "127.0.0.1" });
+		try {
+			for (const fault of ["untrusted", "hostname", "production CA gate"]) {
+				const path = dest("connect-rejected-" + fault);
+				writeFileSync(path, "current usable version");
+				const extra = { HTTPS_PROXY: proxy.url, ...(fault !== "untrusted" ? { DSH_MANAGER_TEST_CA_FILE: TEST_CA_FILE } : {}), ...(fault === "production CA gate" ? { DSH_MANAGER_TEST: "0" } : {}) };
+				const host = fault === "hostname" ? "wrong.invalid" : "127.0.0.1";
+				const res = await runDriver(["download", `https://${host}:${origin.port}/asset`, path, String(SIZE), SHA], extra);
+				failure(res, "TlsVerificationFailed", path);
+				if (fault === "hostname") expect(res.stderr).toContain("CertificateHostMismatch");
+				expect(existsSync(path + ".part")).toBe(false);
+			}
+			expect(originRequests).toBe(0);
+			expect(proxy.requests).toHaveLength(3); // Certificate errors never retry or fall back direct.
+			expect(proxy.requests.every((r) => r.firstBytes[0] === 0x16 && r.firstBytes[1] === 0x03)).toBe(true);
+		} finally { origin.stop(true); await proxy.stop(); }
+	});
+
+	test.each([403, 407])("FB-RETRY: CONNECT %i is clear and nonretryable for both APIs", async (status) => {
+		const proxy = await connectProxy({ status });
+		try {
+			for (const mode of ["fetch", "download"]) {
+				const path = dest("proxy-refused-" + status);
+				writeFileSync(path, "current usable version");
+				const args = mode === "fetch" ? [mode, "https://fixture.invalid/secret?token=hidden", "100"] : [mode, "https://fixture.invalid/secret?token=hidden", path, String(SIZE), SHA];
+				const res = await runDriver(args, { HTTPS_PROXY: proxy.url.replace("://", "://private:secret@") });
+				failure(res, status === 407 ? "ProxyAuthenticationRequired" : "ProxyRefused", path);
+				expect(res.stderr).toContain(`HTTP ${status}`);
+				expect(res.stderr).not.toContain("secret");
+				expect(res.stderr).not.toContain("token=hidden");
+				expect(existsSync(path + ".part")).toBe(false);
+			}
+			expect(proxy.requests).toHaveLength(2); // One CONNECT per API; no retries.
+			expect(proxy.requests.every((r) => r.firstBytes.length === 0)).toBe(true);
+		} finally { await proxy.stop(); }
+	});
+
+	test("FB-RETRY: HTTPS_PROXY/https_proxy/ALL_PROXY/all_proxy send TLS through CONNECT", async () => {
+		const origin = Bun.serve({ hostname: "127.0.0.1", port: 0, tls: TEST_TLS, fetch() { return new Response(BODY); } });
+		const proxy = await connectProxy();
+		try {
+			for (const name of ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]) {
+				success(await runDriver(["fetch", `https://127.0.0.1:${origin.port}/index`, String(SIZE)], { [name]: proxy.url, DSH_MANAGER_TEST_CA_FILE: TEST_CA_FILE }));
+			}
+			expect(proxy.requests).toHaveLength(4);
+			expect(proxy.requests.every((r) => r.line === `CONNECT 127.0.0.1:${origin.port} HTTP/1.1` && r.firstBytes[0] === 0x16 && r.firstBytes[1] === 0x03)).toBe(true);
+		} finally { origin.stop(true); await proxy.stop(); }
+	});
+
+	test("FB-RETRY: NO_PROXY/no_proxy bypass CONNECT, wildcard/comma/suffix/port-less/localhost", async () => {
+		const origin = Bun.serve({ hostname: "127.0.0.1", port: 0, tls: TEST_TLS, fetch() { return new Response(BODY); } });
+		const proxy = await connectProxy();
+		try {
+			for (const [host, key, value] of [
+				["127.0.0.1", "NO_PROXY", "example.invalid, .0.0.1"],
+				["127.0.0.1", "no_proxy", "127.0.0.1"],
+				["127.0.0.1", "NO_PROXY", `127.0.0.1:${origin.port}`],
+				["127.0.0.1", "no_proxy", "*"],
+				["localhost", "NO_PROXY", "localhost"],
+			]) {
+				success(await runDriver(["fetch", `https://${host}:${origin.port}/index`, String(SIZE)], { HTTPS_PROXY: proxy.url, DSH_MANAGER_TEST_CA_FILE: TEST_CA_FILE, [key!]: value! }));
+			}
+			expect(proxy.requests).toHaveLength(0);
+			// Partial label and wrong port must NOT bypass.
+			for (const value of ["27.0.0.1", `127.0.0.1:${origin.port === 65535 ? 1 : origin.port! + 1}`]) success(await runDriver(["fetch", `https://127.0.0.1:${origin.port}/index`, String(SIZE)], { HTTPS_PROXY: proxy.url, DSH_MANAGER_TEST_CA_FILE: TEST_CA_FILE, NO_PROXY: value }));
+			expect(proxy.requests).toHaveLength(2);
+		} finally { origin.stop(true); await proxy.stop(); }
+	}, 15_000);
+
+	test("FB-RETRY: HTTPS redirects re-evaluate proxy -> NO_PROXY -> proxy with Range preserved", async () => {
+		const received: { path: string; range: string | null; proxyAuth: string | null }[] = [];
+		const proxied = Bun.serve({ hostname: "127.0.0.1", port: 0, tls: TEST_TLS, fetch(req) {
+			const path = new URL(req.url).pathname;
+			received.push({ path, range: req.headers.get("range"), proxyAuth: req.headers.get("proxy-authorization") });
+			return path === "/start" ? new Response(null, { status: 302, headers: { location: `https://127.0.0.1:${direct.port}/middle` } }) : okBody(req);
+		} });
+		const direct = Bun.serve({ hostname: "127.0.0.1", port: 0, tls: TEST_TLS, fetch(req) {
+			received.push({ path: new URL(req.url).pathname, range: req.headers.get("range"), proxyAuth: req.headers.get("proxy-authorization") });
+			return new Response(null, { status: 307, headers: { location: `https://127.0.0.1:${proxied.port}/final` } });
+		} });
+		const proxy = await connectProxy();
+		try {
+			const path = dest("connect-redirect");
+			writeFileSync(path + ".part", BODY.subarray(0, 100));
+			success(await runDriver(["download", `https://127.0.0.1:${proxied.port}/start`, path, String(SIZE), SHA], { HTTPS_PROXY: proxy.url.replace("://", "://private:secret@"), NO_PROXY: `127.0.0.1:${direct.port}`, DSH_MANAGER_TEST_CA_FILE: TEST_CA_FILE }), path);
+			expect(received).toEqual(["/start", "/middle", "/final"].map((path) => ({ path, range: "bytes=100-", proxyAuth: null })));
+			expect(proxy.requests.map((r) => r.line)).toEqual(Array(2).fill(`CONNECT 127.0.0.1:${proxied.port} HTTP/1.1`));
+			expect(proxy.requests.every((r) => r.authorization === `Basic ${Buffer.from("private:secret").toString("base64")}` && r.firstBytes[0] === 0x16 && r.firstBytes[1] === 0x03)).toBe(true);
+		} finally { proxied.stop(true); direct.stop(true); await proxy.stop(); }
+	});
+
+	test("FB-RETRY: proxy stall after CONNECT bounds TLS handshake by socket idle timeout", async () => {
+		const proxy = await connectProxy({ stall: true });
+		try {
+			for (const mode of ["fetch", "download"]) {
+				const before = proxy.requests.length, path = dest("proxy-stall");
+				writeFileSync(path, "current usable version");
+				const args = mode === "fetch" ? [mode, "https://fixture.invalid/index", "100"] : [mode, "https://fixture.invalid/asset", path, String(SIZE), SHA];
+				const started = Date.now();
+				failure(await runDriver(args, { HTTPS_PROXY: proxy.url, DSH_MANAGER_TEST_INACTIVITY_MS: "100" }), "Network", path);
+				expect(Date.now() - started).toBeLessThan(3000);
+				expect(proxy.requests.length - before).toBe(5);
+				expect(existsSync(path + ".part")).toBe(false);
+			}
+			expect(proxy.requests.every((r) => r.firstBytes[0] === 0x16 && r.firstBytes[1] === 0x03)).toBe(true);
+		} finally { await proxy.stop(); }
+	}, 10_000);
+
+	test("HTTP proxy works; https:// proxy transport fails closed without origin or proxy bytes", async () => {
 		for (const name of ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]) {
 			requests.length = 0;
 			handler = () => new Response("proxied index");
@@ -436,10 +566,10 @@ describe("http.zig (black-box, real sockets)", () => {
 		}
 		for (const name of ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]) {
 			requests.length = 0;
-			const res = await runDriver(["fetch", "https://does-not-exist.invalid/secret?token=hidden", "100"], { [name]: `http://user:password@127.0.0.1:${server.port}` });
+			const res = await runDriver(["fetch", "https://does-not-exist.invalid/secret?token=hidden", "100"], { [name]: `https://user:password@127.0.0.1:${server.port}` });
 			failure(res, "UnsupportedProxy");
 			expect(res.stderr.toLowerCase()).toContain(name.toLowerCase());
-			expect(res.stderr).toContain("unset");
+			expect(res.stderr).toContain("https:// proxy");
 			expect(res.stderr).not.toContain("password");
 			expect(res.stderr).not.toContain("token=hidden");
 			expect(requests).toHaveLength(0);
@@ -448,7 +578,7 @@ describe("http.zig (black-box, real sockets)", () => {
 
 	test("HTTPS redirect checks proxy policy again before contacting redirected origin", async () => {
 		handler = () => new Response(null, { status: 302, headers: { location: "https://does-not-exist.invalid/index" } });
-		const res = await fetchSmall(SIZE, { HTTPS_PROXY: BASE });
+		const res = await fetchSmall(SIZE, { HTTPS_PROXY: BASE.replace("http:", "https:") });
 		failure(res, "UnsupportedProxy");
 		expect(requests).toHaveLength(1);
 	});
@@ -470,6 +600,13 @@ describe("http.zig (black-box, real sockets)", () => {
 			failure(await runDriver(args), "BadUrl");
 		}
 	}, 55_000);
+
+	test.skipIf(!process.env.DSH_MANAGER_REAL_PROXY)(`real HTTPS CONNECT: pinned Zig LICENSE${process.env.DSH_MANAGER_REAL_PROXY ? "" : " — SKIP: DSH_MANAGER_REAL_PROXY not set; real proxy not tested"}`, async () => {
+		const path = dest("zig-license-real-proxy");
+		const hash = "5c537d6853e005298a285d508cff9ac7192cea23576c840d485b2b586a7ff177";
+		success(await runDriver(["download", "https://raw.githubusercontent.com/ziglang/zig/0.15.2/LICENSE", path, "1080", hash], { DSH_MANAGER_TEST: "", HTTPS_PROXY: process.env.DSH_MANAGER_REAL_PROXY! }, 60_000), path, Buffer.from(readFileSync(path)));
+		expect(sha(readFileSync(path))).toBe(hash);
+	}, 65_000);
 
 	test.skipIf(process.env.DSH_MANAGER_OFFLINE === "1")("real HTTPS: pinned Zig 0.15.2 LICENSE, verified size and SHA-256", async () => {
 		const path = dest("zig-license");

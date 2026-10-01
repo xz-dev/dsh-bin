@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { writeZip, type ZipInput } from "../../dsh-bun-build/runtime/zip.ts";
 import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
 import { acquireClaim } from "./claim-probe.ts";
+import { connectProxy, TEST_CA_FILE, TEST_TLS } from "./proxy-fixture.ts";
 import { addRuntime, argvOf, baseEnv, build, bundleMeta, cleanup, EXE, hasZig, launchOf, MANAGER_DIR, newInstall, run, started, tempDir, tree, type Install } from "./harness.ts";
 
 const TARGET = hostTargetId();
@@ -31,9 +32,9 @@ function entry(id: string, bytes: Uint8Array, patch: Record<string, unknown> = {
 	const meta = bundleMeta(id, { channel: id.startsWith("live-") ? "live" : "release" });
 	return { kind: "dsh-runtime", tag: `${meta.channel === "release" ? "runtime-v" : "runtime-"}${id}`, id, channel: meta.channel, upstream: meta.upstream, run: meta.run, attempt: meta.attempt, launchProtocol: 1, builderCommit: meta.builderCommit, addons: { office: { slot: null, pinned: null } }, assets: { [TARGET]: { name: `runtime-${TARGET}.zip`, size: bytes.length, sha256: sha(bytes) } }, seq: 1, ...patch };
 }
-function source(entries: ReturnType<typeof entry>[], assets: Map<string, Uint8Array>, handler?: (req: Request, bytes: Uint8Array) => Response) {
+function source(entries: ReturnType<typeof entry>[], assets: Map<string, Uint8Array>, handler?: (req: Request, bytes: Uint8Array) => Response, tls = false) {
 	const requests: { path: string; range: string | null }[] = [];
-	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, ...(tls ? { tls: TEST_TLS } : {}), fetch(req) {
 		const path = new URL(req.url).pathname;
 		requests.push({ path, range: req.headers.get("range") });
 		if (path === "/runtime-index.json") return Response.json({ schema: 1, channels: { release: entries.filter((e) => e.channel === "release"), live: entries.filter((e) => e.channel === "live") }, addons: { office: [] } });
@@ -41,7 +42,7 @@ function source(entries: ReturnType<typeof entry>[], assets: Map<string, Uint8Ar
 		const bytes = assets.get(path);
 		return bytes ? (handler ? handler(req, bytes) : ranged(req, bytes)) : new Response(null, { status: 404 });
 	} });
-	return { requests, origin: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
+	return { requests, origin: `${tls ? "https" : "http"}://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
 }
 const assetPath = (e: ReturnType<typeof entry>) => `/download/${e.tag}/${e.assets[TARGET].name}`;
 function ranged(req: Request, body: Uint8Array) {
@@ -360,19 +361,40 @@ test.skipIf(!hasZig).each(["missing entry", "old outer tree"])("DL-CORRUPT / RB-
 	} finally { await s.stop(); }
 });
 
-test.skipIf(!hasZig)("DL-CORRUPT: HTTPS_PROXY remains fail-closed at install discovery (3.2 open gap)", async () => {
-	const i = newInstall();
-	const requests: string[] = [];
-	const proxy = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) { requests.push(req.url); return new Response(null, { status: 200 }); } });
+test.skipIf(!hasZig)("DL-CORRUPT / FB-RETRY: manager-only install verifies HTTPS index/archive through authenticated CONNECT then starts offline", async () => {
+	const i = newInstall(), a = archive(), e = entry(ID, a.bytes);
+	const s = source([e], new Map([[assetPath(e), a.bytes]]), undefined, true);
+	const proxy = await connectProxy();
 	try {
-		const result = await install(i, "https://fixture.invalid", [ID], { HTTPS_PROXY: `http://private:secret@127.0.0.1:${proxy.port}` });
+		const result = await install(i, s.origin, [ID], { HTTPS_PROXY: proxy.url.replace("://", "://private:secret@"), DSH_MANAGER_TEST_CA_FILE: TEST_CA_FILE });
+		expect(result.status).toBe(0);
+		expect(result.stderr).toBe("");
+		expect(installed(i)).toBe(true);
+		expect(started(i)).toBe(false);
+		expect(s.requests.map((r) => r.path)).toEqual(["/runtime-index.json", assetPath(e)]);
+		expect(proxy.requests.map((r) => r.line)).toEqual(Array(2).fill(`CONNECT ${new URL(s.origin).host} HTTP/1.1`));
+		expect(proxy.requests.every((r) => r.authorization === `Basic ${Buffer.from("private:secret").toString("base64")}` && r.firstBytes[0] === 0x16 && r.firstBytes[1] === 0x03)).toBe(true);
+		expect(readFileSync(join(i.data, "bundles", ID, `dsh-native${EXE}`)).equals(readFileSync(build().fake))).toBe(true);
+		expect(existsSync(join(i.data, "snapshots", `${ID}@1`, "snapshot.json"))).toBe(true);
+		expect(tree(i.home)).toEqual([]);
+	} finally { s.stop(); await proxy.stop(); }
+	expect(run(i, ["--use", ID, "probe"]).status).toBe(0);
+	expect(launchOf(i).runtime).toBe(ID);
+});
+
+test.skipIf(!hasZig)("DL-CORRUPT: https:// proxy transport stays fail-closed at install discovery", async () => {
+	const i = newInstall();
+	const proxy = await connectProxy();
+	try {
+		const result = await install(i, "https://fixture.invalid", [ID], { HTTPS_PROXY: proxy.url.replace("http:", "https:").replace("://", "://private:secret@") });
 		expect(result.status).toBe(1);
 		expect(result.stderr).toContain("UnsupportedProxy");
+		expect(result.stderr).toContain("https:// proxy");
 		expect(result.stderr).not.toContain("private");
 		expect(result.stderr).not.toContain("secret");
-		expect(requests).toEqual([]);
+		expect(proxy.requests).toEqual([]);
 		expect(installed(i)).toBe(false);
-	} finally { await proxy.stop(true); }
+	} finally { await proxy.stop(); }
 });
 
 test.skipIf(!hasZig || process.platform !== "linux")(`FB-EMPTY: static musl-ABI manager detects actual host libc without installed bundle${process.platform === "linux" ? "" : " — SKIP: executing Linux ELF requires Linux host"}`, async () => {
