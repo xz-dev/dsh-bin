@@ -88,9 +88,9 @@ test.skipIf(!hasZig)("--opt=value forms, repeated --addon, and arguments after t
 });
 
 test.skipIf(!hasZig)("--use overrides the version implied by --snapshot; tags and unique prefixes name versions", () => {
-    const i = install();
-    addSnapshot(i, R2, 2);
-    expect(run(i, ["--use", "0.2.0-rc.1", "--snapshot", `${R2}@2`]).status).toBe(0);
+	const i = install();
+	addSnapshot(i, R2, 2);
+	expect(run(i, ["--use", "0.2.0-rc.1", "--snapshot", `${R2}@2`]).status).toBe(0);
 	expect(launchOf(i)).toMatchObject({ runtime: R1, source: "use" });
 	run(i, ["--use", `runtime-v${R2}`]);
 	expect(launchOf(i).runtime).toBe(R2);
@@ -198,14 +198,14 @@ test.skipIf(!hasZig)("the manager embeds a byte-readable version marker", () => 
 });
 
 test.skipIf(!hasZig)("FB-OFFLINE review: filesystem metadata leaves intact runtime launch/list/version usable offline", () => {
-    const i = install([R2]);
-    for (const name of [".DS_Store", `._${R2}`, "Thumbs.db", "desktop.ini"]) writeFileSync(join(i.data, "bundles", name), "filesystem metadata");
-    const env = { DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: "http://127.0.0.1:1" };
-    expect(run(i, ["probe"], { env }).status).toBe(0);
-    expect(launchOf(i).runtime).toBe(R2);
-    const list = run(i, ["manager", "list"], { env });
-    expect(list.status).toBe(0); expect(list.stdout).toContain(R2); expect(started(i)).toBe(false);
-    expect(run(i, ["--version"], { env }).status).toBe(0);
+	const i = install([R2]);
+	for (const name of [".DS_Store", `._${R2}`, "Thumbs.db", "desktop.ini"]) writeFileSync(join(i.data, "bundles", name), "filesystem metadata");
+	const env = { DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: "http://127.0.0.1:1" };
+	expect(run(i, ["probe"], { env }).status).toBe(0);
+	expect(launchOf(i).runtime).toBe(R2);
+	const list = run(i, ["manager", "list"], { env });
+	expect(list.status).toBe(0); expect(list.stdout).toContain(R2); expect(started(i)).toBe(false);
+	expect(run(i, ["--version"], { env }).status).toBe(0);
 });
 
 // ── Usage claim ──────────────────────────────────────────────────────────────────────────────────────
