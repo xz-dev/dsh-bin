@@ -135,6 +135,7 @@ fn claim(ctx: *Ctx, runtime: []const u8) void {
 
 pub fn run(ctx: *Ctx, args: []const []const u8) noreturn {
     ctx.ensureData();
+    @import("first_run.zig").run(ctx);
     const p = plan(ctx, args);
     claim(ctx, p.runtime);
     _ = lock.tryAcquire(util.join(ctx.a, &.{ p.snapshot.dir, ".usage.lock" }), .shared, false) catch |err|
