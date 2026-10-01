@@ -632,3 +632,23 @@
 - 日志统一 `/var/tmp/dsh-66-logs/`。18 skips 为既有 zsh 缺失、Windows/PowerShell 5.1 专属及真实 HTTPS proxy 未配置；未将跨编译计为 Windows/macOS 行为通过。
 - **残余风险／待验收**：Windows 原生 junction unlink、锁与目录删除仍须三平台 CI 实测；本工作未 push/未运行 CI。独立复审和父会话验证仍待执行，6.6 checkbox 保持未勾。并发手动改用户 home/目录别名不做自动恢复；若预检后删除失败，明确列出之前已删除项，不回滚、不隐藏部分成功。普通应用任意独立后代不在 manager 使用保护范围内（沿用 D3/D5）。
 - 最后补 explicit home 正好经过 residue symlink/junction 的 lexical 路径检查（只读目标与用户 home 不相交也不能移除这个 home 入口）：`bun test ./test/clean.test.ts` → **8 pass / 0 fail / 148 断言**（`home-link-green.log`）；fmt、两项 cross-build、diff check 再次通过。此前全套 224/18/0 后此项为最终追加 targeted 验证，未再重复全套；父会话 CI 会覆盖最终 HEAD。
+
+### 6.6 独立复审
+
+- 复审 run `606615ca` 判定 **BLOCK**：mutex 链接可创建外部文件；缺排序字段的公开 runtime 被当作可用而删除健康备份；公开入口／required path 依赖备份链接时 clean 破坏运行包；多级 DSH_HOME 别名经过残留时访问入口被删除。以下修复只封这四个边界，checkbox 不动。
+- **P1-1 red**：`TMPDIR=/var/tmp/dsh-fix66/tmp bun test ./test/clean.test.ts -t 'linked or non-file mutexes'` → **0 pass / 1 fail / 1 断言**（`/var/tmp/dsh-fix66/logs/p1-1-red.log`）；clean 跟随 dangling mutex symlink，错误成功。
+- **P1-1 green**：同命令 → **1 pass / 0 fail / 16 断言**（`p1-1-green.log`）。共享 `lock.tryAcquireIn` 的 POSIX openat 加 `O_NOFOLLOW|O_NONBLOCK` 并 fstat 要求普通文件；Windows 用 std `OpenFile(... follow_symlinks=false)` 打开 reparse point 本身并拒绝非普通文件。create 仍只 open-if，不 truncate。clean 和普通 manager 命令共用，无链接检查后的 create race；特殊文件也 fail-fast。Windows/macOS cross-build 各 exit 0，原生行为待 CI。
+- **P1-2 red**：`bun test ./test/clean.test.ts -t 'unordered public runtime'` → **0 pass / 1 fail / 6 断言**（`p1-2-red.log`），`latest` 启动拒绝但 clean 删除健康备份；green → **1 pass / 0 fail / 24 断言**（`p1-2-green.log`），run/channel/upstream.commitTime 三种缺失都保留备份与恢复提示。`publicValid` 直接复用 select.Meta.ordered()，不另建元数据有效性谓词。
+- **P1-3 red**：`bun test ./test/clean.test.ts -t 'public paths dependent'` → **0 pass / 1 fail / 5 断言**（`p1-3-red.log`），入口链接指向健康 backup 时 clean 错误删除目标。green：`bun test ./test/clean.test.ts` → **11 pass / 0 fail / 215 断言**（`p1-3-green.log`），入口、required 目录及 required 的祖先目录链接均保留 backup，清理前后仍可启动。新增一处 `independentPath` 按目录句柄逐组件 no-follow 检查；runtime 的 guard、元数据、entry、requiredPaths 与 addon 的元数据／node_modules／packages 都共用，链接／reparse point／特殊文件保守不回收备份，无依赖图或恢复状态机。
+- **P1-4 red**：`bun test ./test/clean.test.ts -t 'multihop application homes'` → **0 pass / 1 fail / 4 断言**（`p1-4-red.log`），home-alias 经残留链接跳到外部时 clean 错误成功。green：`bun test ./test/clean.test.ts` → **12 pass / 0 fail / 236 断言**（`p1-4-green.log`）；暂存根链接与缓存内链接的多跳 home 均整次拒绝、零删除、凭据仍可从原 home 入口访问；外部 home 祖先 symlink/junction 仍允许 clean。规则用 27 行 bounded 逐组件 readlink walk（最多 40 跳），比较每个中间路径与实际清理候选；循环／无法安全解析则一条 DSH_HOME 提示、非零退出，不采用一刀切拒绝所有 symlinked HOME。Windows cross-build exit 0；junction 解析原生行为仍待 CI。
+- P1-4 平台核对补充：Zig Windows `readLink` 对普通组件返回 `Unexpected`，不像 POSIX 的 `NotLink`。Windows 在 walk 中先用 std OpenFile 的 no-follow handle + stat 判类型，仅 symlink/junction 才 readLink；普通文件／目录继续，未知 reparse point 明确拒绝。最终 walk 48 行（仍 <60），不接受普通 symlinked home 的假拒绝。追加同 12 项 green **236 断言**（`p1-4-final-green.log`），Windows cross-build exit 0。
+- P1-4 同类边界再验证：链接目标含 `.install-ac/../profiles` 时不能先 lexical normalize `..`，OS 必须先经过 `.install-ac` 链接。补原 multihop 测试的一例：red **0 pass / 1 fail / 20 断言**（`p1-4-dotdot-red.log`）；walk 改为保留目标 `..`、逐组件访问后判重叠，green clean 文件 **12 pass / 0 fail / 244 断言**（`p1-4-dotdot-green.log`）。仍为同一 home 保护，无额外状态机。
+
+#### 复审修复最终验证
+
+- 所有命令使用 `TMPDIR=/var/tmp/dsh-fix66/tmp`；全套 PATH 含 `/var/tmp/dsh-section4.4-validation/pwsh`，日志目录 `/var/tmp/dsh-fix66/logs/`。
+- **最终代码全套**（`02f9ef0`，含 P1-4 `..` 补充）：`zig build test --summary all` → **44/44**（`units-final.log`）；`bun test ./test` → **228 pass / 18 skip / 0 fail / 3058 断言**、246 tests / 18 files、232.57s（`full-final.log`）。之前一次全套亦 228/18/0，但最终计数以上述为准。真实 RB-HOME、RB-PLUGIN、MC-ADDON 场景均执行通过。
+- 四份 reviewer probe 改为当前 repo harness import 后复跑，全 exit 0（`probe-{lock-link,probe,dependent-public,nested-home}-final.log`）：两种 mutex 链接均 status 1、外部文件未创建且残留未删；三种排序字段缺失都保留 backup；入口／required 链接依赖 backup 时清理前后启动都 0，backup 保留；两种多跳 home 均 status 1，原 home 可读、外部凭据 `KEEP`。
+- `zig fmt --check src/*.zig test/fake-native.zig`、Windows x64 cross-build、macOS arm64 cross-build、`git diff --check` 均 exit 0（`windows-final.log`、`macos-final.log`）。不把 cross-build 记为 Windows 原生验证。
+- 18 skips 为既有 zsh 未安装、Windows/PowerShell 5.1 专属、非 Windows 的 powershell 命令、未配置 `DSH_MANAGER_REAL_PROXY`。新增 clean 4 项 review 回归全执行；Windows 用无需 symlink privilege 的 junction 验证 mutex 与 required/home 链接，文件入口 symlink 子例仅 POSIX 执行。
+- **残余风险／待验收**：共享 Windows no-follow OpenFile + reparse point stat、Windows home junction walk 必须由父会话 Windows CI 原生确认；独立 recheck 待执行，6.6 未勾选。保守规则会保留合法但通过链接提供 required path／addon package 的 backup，需显式 repair 后再 clean，宁可保留不误删。40 跳以上／无法安全解析 home 明确拒绝，用户需选独立 home；不新增等待、重试、锁层级或自动恢复。未 push、未用 gh、未新建分支；另两个 change 未触碰。
