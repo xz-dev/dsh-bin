@@ -58,7 +58,7 @@ test.skipIf(!hasZig)("MC-ADDON: install/select/list/uninstall are native; defaul
 		expect(run(i, ["manager", "list"]).stdout).toContain(B); expect(tree(i.data)).toEqual(before); expect(s.requests.length).toBe(count);
 		expect(run(i, ["--use", V, "probe"]).status).toBe(0); expect(launchOf(i).addons.office.version).toBe(B);
 		expect(run(i, ["manager", "select", "--use", V, "--addon", `office:${A}`]).status).toBe(0); expect(started(i)).toBe(false);
-		expect(JSON.parse(selection(i)).addons).toEqual({ office: A });
+		expect(JSON.parse(selection(i)).addons).toEqual({ office: A }); expect(run(i, ["manager", "select"]).stdout).toContain(`office: ${A}`);
 		expect(run(i, ["probe"]).status).toBe(0); expect(launchOf(i).addons.office.version).toBe(A);
 		const refused = run(i, ["manager", "uninstall", "--addon", "office"]); expect(refused.status).toBe(1); expect(refused.stderr).toContain("selection"); expect(existsSync(join(i.data, "addons/office", B))).toBe(true);
 		expect(run(i, ["--addon", "office:none", "probe"]).status).toBe(0); expect(launchOf(i).addons.office).toBeUndefined();
@@ -81,7 +81,7 @@ test.skipIf(!hasZig)("MC-ADDON: slots never bypassed by force; missing/incompati
 		}
 		rmSync(join(i.data, "addons/office", A), { recursive: true });
 		const missing = run(i, ["probe"]); expect(missing.status).toBe(0); expect(missing.stderr).toContain("missing"); expect(launchOf(i).addons.office).toBeUndefined(); expect(selection(i)).toBe(saved); expect(s.requests.length).toBe(count);
-		for (const addon of ["../../bad", "office:../bad", "unknown:1", "office:"]) expect(run(i, ["--addon", addon, "probe"]).status).toBe(1);
+		for (const addon of ["../../bad", "office:../bad", "unknown:1", "office:", "office:addon-office-v"]) expect(run(i, ["--addon", addon, "probe"]).status).toBe(1);
 		expect(run(i, ["--addon", "office:../bad", "--addon", "office:none", "probe"]).status).toBe(1);
 		expect(run(i, ["manager", "select", "--use", V, "--addon", "office:none"]).status).toBe(0);
 		expect(run(i, ["manager", "select", "--use", "latest", "--addon", "office:none"]).status).toBe(0);

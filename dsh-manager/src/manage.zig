@@ -72,6 +72,9 @@ pub fn snapshotChoice(s: select.Selection) ?[]const u8 {
 
 fn printSelection(ctx: *const Ctx, use: []const u8, snap: ?[]const u8) void {
     util.print("selection: --use {s}\n  snapshot: {s}\n", .{ use, snap orelse "newest (default)" });
+    const stored = selected(ctx);
+    const addon = addons.storedChoice(stored) catch |err| util.fatal("invalid addon selection: {s}", .{@errorName(err)});
+    util.print("  office: {s}\n", .{addon orelse "newest installed in-slot (default)"});
     const resolved = select.resolve(.{ .opts = .{}, .bundles = runtimes.list(ctx), .channel = state.channel(ctx), .selection_use = use });
     switch (resolved) {
         .ok => |r| util.print("  version: {s}\n", .{r.version}),

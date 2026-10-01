@@ -47,7 +47,9 @@ pub fn request(raw: []const u8) !?[]const u8 {
     if (!std.mem.startsWith(u8, raw, "office:")) return error.InvalidAddonRequest;
     const v = raw[7..];
     if (!index.component(v)) return error.InvalidAddonRequest;
-    return if (std.mem.startsWith(u8, v, "addon-office-v")) v[14..] else v;
+    const version = if (std.mem.startsWith(u8, v, "addon-office-v")) v[14..] else v;
+    if (!index.component(version)) return error.InvalidAddonRequest;
+    return version;
 }
 pub fn option(opts: []const []const u8) !?[]const u8 {
     if (opts.len == 0) return null;
