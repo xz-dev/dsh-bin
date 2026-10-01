@@ -71,6 +71,14 @@ pub fn main() !void {
         }
     }
 
+    if (env.get("FAKE_SNAPSHOT_WRITE")) |text| {
+        const payload = try std.json.parseFromSliceLeaky(std.json.Value, a, env.get("DSH_MANAGER_LAUNCH").?, .{});
+        const snapshot_dir = payload.object.get("snapshot").?.object.get("dir").?.string;
+        const profile = try std.fs.path.join(a, &.{ snapshot_dir, "profiles", "probe" });
+        try std.fs.cwd().makePath(profile);
+        try std.fs.cwd().writeFile(.{ .sub_path = try std.fs.path.join(a, &.{ profile, "plugin" }), .data = text });
+    }
+
     if (env.get("FAKE_HOLD") != null) {
         try dir.writeFile(.{ .sub_path = "started", .data = "" });
         std.Thread.sleep(30 * std.time.ns_per_s);

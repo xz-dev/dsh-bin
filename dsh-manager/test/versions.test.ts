@@ -199,3 +199,34 @@ test.skipIf(!hasZig)("FB-RESTORE-CHANNEL: uninstall last live then plain launch 
 		const fresh = newInstall(); expect((await command(fresh, s, ["probe"])).status).toBe(0); expect(launchOf(fresh).runtime).toBe(B); expect(channel(fresh)).toBe("release");
 	} finally { s.stop(); }
 });
+
+test.skipIf(!hasZig)("MC-SNAPSHOT / MC-CROSS-SNAPSHOT: install, update and bootstrap copy the previous version's newest snapshot without touching source/home", async () => {
+	const i = newInstall(), s = source();
+	const fingerprint = (path: string) => tree(path).filter(p => !p.endsWith(".usage.lock")).map(p => { try { return [p, createHash("sha256").update(readFileSync(join(path, p))).digest("hex")]; } catch { return [p, "dir"]; } });
+	try {
+		expect((await manager(i, s, ["install", A])).status).toBe(0);
+		expect(run(i, ["--use", A, "probe"], { env: { FAKE_SNAPSHOT_WRITE: "first plugin" } }).status).toBe(0);
+		expect(run(i, ["manager", "snapshot", "new", "--use", A, "--name", "newest"]).status).toBe(0);
+		expect(run(i, ["--use", A, "probe"], { env: { FAKE_SNAPSHOT_WRITE: "newest plugin" } }).status).toBe(0);
+		const a = join(i.data, "snapshots", `${A}@2`), b = join(i.data, "snapshots", `${B}@1`), home = join(i.data, "home/profiles/probe");
+		mkdirSync(home, { recursive: true }); writeFileSync(join(home, "cordis.patch.yml"), "shared only");
+		const original = fingerprint(a);
+		expect((await manager(i, s, ["install", B])).status).toBe(0);
+		expect(readFileSync(join(b, "profiles/probe/plugin"), "utf8")).toBe("newest plugin");
+		expect(JSON.parse(readFileSync(join(b, "snapshot.json"), "utf8"))).toMatchObject({ source: `${A}@2`, reason: "install" });
+		expect(existsSync(join(b, "profiles/probe/cordis.patch.yml"))).toBe(false); expect(fingerprint(a)).toEqual(original); expect(started(i)).toBe(false);
+		expect(run(i, ["--use", B, "probe"], { env: { FAKE_SNAPSHOT_WRITE: "B plugin" } }).status).toBe(0); expect(fingerprint(a)).toEqual(original);
+		const savedB = fingerprint(b);
+		expect(run(i, ["--use", B, "--snapshot", `${A}@2`, "probe"]).status).toBe(0);
+		expect(launchOf(i)).toMatchObject({ runtime: B, snapshot: { id: `${A}@2` } }); expect(fingerprint(a)).toEqual(original); expect(fingerprint(b)).toEqual(savedB);
+		expect(run(i, ["manager", "uninstall", A]).status).toBe(0);
+		expect((await manager(i, s, ["update", "--channel", "live"])).status).toBe(0);
+		const live = join(i.data, "snapshots", `${L}@1`); expect(readFileSync(join(live, "profiles/probe/plugin"), "utf8")).toBe("B plugin");
+		expect(JSON.parse(readFileSync(join(live, "snapshot.json"), "utf8")).source).toBe(`${B}@1`);
+		expect(run(i, ["manager", "snapshot", "remove", `${L}@1`]).status).toBe(0);
+		expect(run(i, ["manager", "uninstall", B, L]).status).toBe(0);
+		expect((await command(i, s, ["probe"])).status).toBe(0);
+		expect(launchOf(i).snapshot.id).toBe(`${L}@2`); expect(readFileSync(join(i.data, "snapshots", `${L}@2`, "profiles/probe/plugin"), "utf8")).toBe("B plugin");
+		expect(fingerprint(a)).toEqual(original); expect(readFileSync(join(home, "cordis.patch.yml"), "utf8")).toBe("shared only");
+	} finally { s.stop(); }
+});

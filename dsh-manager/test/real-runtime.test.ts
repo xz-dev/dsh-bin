@@ -318,3 +318,66 @@ test.skipIf(!available)(`MC-EMPTY / MC-BROKEN: only manager -> local runtime ind
 		expect(tree(working)).toEqual([]);
 	} finally { await server.stop(true); }
 }, 180_000);
+
+// RB-PLUGIN: install via the real managed dsh CLI and embedded pnpm, not a fabricated node_modules tree.
+test.skipIf(!available)(`RB-PLUGIN / MC-SNAPSHOT / MC-CROSS-SNAPSHOT: real installed plugin inherits independently; runtime and manager bytes unchanged${available ? "" : ` — SKIP: ${skipReason}`}`, async () => {
+	const fresh = join(root, "snapshot-plugin"), tools = join(fresh, "tools"), userHome = join(fresh, "isolated-home"), working = join(fresh, "workspace");
+	for (const d of [tools, userHome, working]) mkdirSync(d, { recursive: true });
+	const exe = join(tools, `dsh${EXE}`), data = join(tools, "dsh-bin"); cpSync(managers[0]!, exe);
+	const secondOut = join(fresh, "second-build");
+	const built = JSON.parse(execFileSync(process.execPath, ["scripts/local-build.mjs", secondOut, "release", "2", "--native", join(bundle, `dsh-native${EXE}`)], { cwd: RUNTIME_PROJECT, encoding: "utf8", timeout: 240_000 }).trim().split("\n").at(-1)!);
+	const indexPath = join(fresh, "runtime-index.json");
+	for (const manifest of [runtimeManifest, join(secondOut, `${built.tag}.json`)]) execFileSync(process.execPath, ["scripts/index.mjs", "append-bundle", indexPath, manifest], { cwd: RUNTIME_PROJECT, timeout: 30_000 });
+	const index = JSON.parse(readFileSync(indexPath, "utf8"));
+	const zips = new Map([[index.channels.release.find((e: any) => e.id === id).tag, runtimeZip], [built.tag, built.zip]]);
+	const requests: string[] = [];
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+		const p = new URL(req.url).pathname; requests.push(p);
+		if (p === "/runtime-index.json") return Response.json(index);
+		const tag = p.split("/")[2]; if (p.startsWith("/download/") && zips.has(tag)) return new Response(Bun.file(zips.get(tag)!));
+		return new Response(null, { status: 404 });
+	} });
+	const inherited = { PATH: path, HOME: userHome, USERPROFILE: userHome, NO_COLOR: "1", DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: `http://127.0.0.1:${server.port}`, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) };
+	const command = async (args: string[]) => {
+		const p = Bun.spawn([exe, ...args], { cwd: working, env: inherited, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+		const timer = setTimeout(() => p.kill("SIGKILL"), 120_000);
+		try { const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]); if (code !== 0) console.error(stdout, stderr); expect(code).toBe(0); return stdout; }
+		finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await p.exited; } }
+	};
+	const { createHash } = await import("node:crypto"), { lstatSync, readlinkSync } = await import("node:fs");
+	const digest = (dir: string) => tree(dir).map(p => {
+		const file = join(dir, p), stat = lstatSync(file);
+		return [p, stat.isSymbolicLink() ? `link:${readlinkSync(file)}` : stat.isFile() ? createHash("sha256").update(readFileSync(file)).digest("hex") : "directory"];
+	});
+	try {
+		await command(["manager", "install", id]);
+		const managerBefore = readFileSync(exe), runtimeBefore = digest(join(data, "bundles", id));
+		const snapshotA = join(data, "snapshots", `${id}@1`), profile = join(snapshotA, "profiles", "snapshot-probe");
+		mkdirSync(profile); writeFileSync(join(profile, "package.json"), JSON.stringify({ name: "snapshot-profile", private: true, dsh: { profile: { bundles: [] } } }));
+		const plugin = join(fresh, "dsh-snapshot-probe.tgz");
+		const bytes = await new Bun.Archive({
+			"package/package.json": JSON.stringify({ name: "dsh-snapshot-probe", version: "1.0.0", type: "module", main: "index.js" }),
+			"package/index.js": 'export function apply(ctx) { ctx.appReady.onReady(() => { console.log("REAL_SNAPSHOT_PLUGIN " + JSON.parse(process.env.DSH_MANAGER_LAUNCH).snapshot.id); ctx.appExit(0); }); }\n',
+		}, { compress: "gzip" }).bytes(); writeFileSync(plugin, bytes);
+		await command(["--use", id, "plugin", "--profile", "snapshot-probe", "add", plugin, "--offline", "--ignore-scripts", "--config.update-notifier=false"]);
+		expect(existsSync(join(profile, "node_modules/dsh-snapshot-probe/index.js"))).toBe(true);
+		const shared = join(data, "home/profiles/snapshot-probe"); mkdirSync(shared, { recursive: true });
+		writeFileSync(join(shared, "cordis.patch.yml"), "- insert:\n    - id: real-snapshot-probe\n      name: dsh-snapshot-probe\n");
+		expect(await command(["--use", id, "--profile", "snapshot-probe"])).toContain(`REAL_SNAPSHOT_PLUGIN ${id}@1`);
+		expect(digest(join(data, "bundles", id))).toEqual(runtimeBefore); expect(readFileSync(exe)).toEqual(managerBefore);
+		const sourceBefore = digest(snapshotA), sharedBefore = digest(shared);
+		await command(["manager", "install", built.id]);
+		const snapshotB = join(data, "snapshots", `${built.id}@1`), runtimeBBefore = digest(join(data, "bundles", built.id));
+		expect(digest(snapshotA)).toEqual(sourceBefore); expect(digest(shared)).toEqual(sharedBefore);
+		expect(existsSync(join(snapshotB, "profiles/snapshot-probe/cordis.patch.yml"))).toBe(false);
+		expect(readFileSync(join(snapshotB, "profiles/snapshot-probe/node_modules/dsh-snapshot-probe/index.js"))).toEqual(readFileSync(join(profile, "node_modules/dsh-snapshot-probe/index.js")));
+		expect(await command(["--use", built.id, "--profile", "snapshot-probe"])).toContain(`REAL_SNAPSHOT_PLUGIN ${built.id}@1`);
+		const crossSource = digest(snapshotA), crossTarget = digest(snapshotB), seen = requests.length;
+		expect(await command(["--use", built.id, "--snapshot", `${id}@1`, "--profile", "snapshot-probe"])).toContain(`REAL_SNAPSHOT_PLUGIN ${id}@1`);
+		expect(digest(snapshotA)).toEqual(crossSource); expect(digest(snapshotB)).toEqual(crossTarget); expect(requests.length).toBe(seen);
+		writeFileSync(join(snapshotB, "profiles/snapshot-probe/node_modules/dsh-snapshot-probe/index.js"), "// changed copied plugin\n");
+		expect(digest(snapshotA)).toEqual(crossSource);
+		expect(digest(join(data, "bundles", id))).toEqual(runtimeBefore); expect(digest(join(data, "bundles", built.id))).toEqual(runtimeBBefore); expect(readFileSync(exe)).toEqual(managerBefore);
+		expect(tree(userHome)).toEqual([]);
+	} finally { await server.stop(true); }
+}, 360_000);
