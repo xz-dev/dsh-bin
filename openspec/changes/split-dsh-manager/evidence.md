@@ -732,3 +732,20 @@
 - `unverified-source.ts`：`.part` 被换入 `UNVERIFIED INPUT` 后退出 1，不输出 prepared；最终文件保留供检查。
 - `invalid-candidate-clean.ts`：冲突版本 marker 文件保留；只有合法单条 marker、伪 ELF 头的文件 **仍会被 clean 删除**（同上浅层校验边界）。因此不声称原复审 P1-3 的全部 native-table 诉求关闭。
 - Windows/macOS 这里只 cross-build；原生不替换发布、文件身份与删除语义仍需三平台 CI。7.2/7.3 在执行/替换候选前须重新验证完整候选内容，不能依赖此前 prepared 输出永远有效。
+
+### 7.1 父会话验收
+
+- 实现：ccb2b78、6599c39、6f820f5。Windows `Unexpected` 失败的根因：Zig 以不跟随链接方式打开文件时返回异步句柄，而读取用的是同步调用。修复后 CI 36920666035 三平台全绿。
+- 独立复审（run 43b7482e）结论 BLOCK，三项 P1：clean 可能递归删除被换成目录的候选位置；发布和删除旧候选时，校验之后路径可能被替换；marker 只要在任意位置出现就通过。修复：3ec64a4、b647127、8de4ba9、102a4df、0f1ffd2。父会话裁定的边界：
+  - 候选只用 deleteFile 删除；
+  - 发布用 no-replace，发布后对最终文件重新计算哈希；
+  - 删除前做身份比较；
+  - version 和 protocol marker 各必须恰好出现一次。
+- 聚焦复审（run fb3d8d88）结论 **OK with notes**，无 P0/P1/P2。复审员把原四份 probe 改写后重跑，前两项 P1 已关闭，第三项在上述边界内关闭；另外确认，连续用 `--force` 重新准备同一版本时只保留一个候选。
+- 父会话在 0f1ffd2 上跑完整验证：Zig 45/45，Bun 239 pass / 18 skip / 0 fail。**CI 36927771600 三平台全绿**：ubuntu 238 pass、macOS 237 pass、windows 208 pass。Windows 上实际跑过 8 项 self-update 和候选 clean 回归，包括竞争场景和 marker 场景。
+- **明确接受的残余风险**，已写入 design.md 和 evidence.md：
+  - 身份检查与 unlink 之间还有一个系统调用级别的窗口：同一用户的其他进程恰好在这一刻替换路径，仍可能删掉用户文件。
+  - native header 只做浅层检查，伪造的 ELF 也能通过；但归档已经按可信索引的 sha256 校验过，而且候选从不执行。
+  - 候选准备好之后仍可能被同一用户修改。
+- **移交给 7.2/7.3**：在执行或替换之前，必须重新完整验证候选；MC-SELF-ONLY 的完整替换证明也在那时给出。7.1 本身只证明「准备候选时其余数据不变」。
+- 勾选 **7.1**。
