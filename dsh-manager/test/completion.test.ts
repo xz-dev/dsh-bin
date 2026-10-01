@@ -1,6 +1,6 @@
 // Completion scenarios exercise the real manager, offline local state and real shell registrations.
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { acquireClaim } from "./claim-probe.ts";
 import { spawnSync } from "node:child_process";
@@ -113,6 +113,9 @@ for (const shell of ["bash", "zsh"] as const) {
 		env: { ...baseEnv(i), PATH: `${i.dir}:${process.env.PATH}`, ZDOTDIR: i.home }, encoding: "utf8", timeout: 15_000,
 	});
 	const rcName = shell === "bash" ? ".bashrc" : ".zshrc";
+	// Stock Zsh also completes an unrelated Distributed Shell named dsh. Clean-fixture
+	// cases explicitly remove only that mapping; collision cases keep foreign registrations.
+	const cleanZsh = "autoload -Uz compinit; compinit -D -i; unset '_comps[dsh]'\n";
 	const harness = shell === "bash" ? `source "$1"
 complete -p dsh
 COMP_WORDS=(dsh manager in); COMP_CWORD=2
@@ -120,7 +123,7 @@ _dsh_manager_complete
 printf '%s\\n' "\${COMPREPLY[@]}"
 COMP_WORDS=(dsh manager install --channel r); COMP_CWORD=4
 _dsh_manager_complete
-printf '%s\\n' "\${COMPREPLY[@]}"` : `source "$1"
+printf '%s\\n' "\${COMPREPLY[@]}"` : `${cleanZsh}source "$1"
 print -r -- "\${_comps[dsh]}"
 compadd() { shift; print -rl -- "$@"; }
 words=(dsh manager in); CURRENT=3
@@ -144,6 +147,16 @@ _dsh_manager_complete`;
 		expect(loaded.status).toBe(0);
 		expect(loaded.stdout).toContain("_dsh_manager_complete");
 		for (const word of ["install", "info", "release"]) expect(loaded.stdout.split("\n")).toContain(word);
+		const cleanFunctions = join(i.home, "clean-zsh-functions");
+		if (shell === "zsh") {
+			const location = shellRun(i, 'for p in $fpath; do if [[ -f "$p/compinit" ]]; then print -r -- "$p"; break; fi; done');
+			expect(location.status).toBe(0);
+			mkdirSync(cleanFunctions);
+			for (const functionName of ["compinit", "compaudit", "compdump", "compinstall"]) cpSync(join(location.stdout.trim(), functionName), join(cleanFunctions, functionName));
+		}
+		const initialized = shellRun(i, shell === "bash" ? 'source "$1"; complete -p dsh' : 'fpath=("$2"); source "$1"; print -r -- "${_comps[dsh]}"', [generated, cleanFunctions]);
+		expect(initialized.status).toBe(0);
+		expect(initialized.stdout).toContain("_dsh_manager_complete");
 		const install = run(i, ["manager", "completion", "install", "--shell", shell], { env: { ZDOTDIR: i.home } });
 		expect(install.status).toBe(0);
 		expect(install.stdout).toContain(rc);
@@ -210,7 +223,7 @@ _dsh_manager_complete`;
 		const rc = join(i.home, rcName);
 		const options = { env: { ZDOTDIR: i.home } };
 		expect(run(i, ["manager", "completion", "install", shell], options).status).toBe(0);
-		const loaded = shellRun(i, shell === "bash" ? 'source "$1"; source "$1"; complete -p dsh' : 'source "$1"; compinit() { print -ru2 -- "compinit must not run twice"; return 1; }; source "$1"; print -r -- "${_comps[dsh]}"', [rc]);
+		const loaded = shellRun(i, shell === "bash" ? 'source "$1"; source "$1"; complete -p dsh' : `${cleanZsh}source "$1"; compinit() { print -ru2 -- "compinit must not run twice"; return 1; }; source "$1"; print -r -- "\${_comps[dsh]}"`, [rc]);
 		expect(loaded.status).toBe(0);
 		expect(loaded.stdout).toContain("_dsh_manager_complete");
 		expect(loaded.stderr).toBe("");
