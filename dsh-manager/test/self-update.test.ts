@@ -1,9 +1,9 @@
 // Manager self-update: real Zig candidates, isolated HOME, no JS in child PATH.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { writeZip, type ZipInput } from "../../dsh-bun-build/runtime/zip.ts";
 import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
 import { addRuntime, baseEnv, build, bundleMeta, cleanup, EXE, hasZig, MANAGER_VERSION, newInstall, run, started, tempDir, tree, WIN, type Install } from "./harness.ts";
@@ -303,5 +303,21 @@ test.skipIf(!hasZig || WIN)("MC-SELF-FAIL POSIX: changed installed entry is kept
 		expect(r.status).toBe(1); expect(r.stderr).toContain("ManagerFileChanged"); expect(r.stdout).not.toContain("updated manager");
 		expect(readFileSync(i.exe, "utf8")).toBe("USER CREDENTIAL"); expect(protectedBytes(i)).toEqual(before);
 		expect(run(i, ["manager", "--version"], { exe: join(i.dir, "saved-manager") }).stdout).toContain(MANAGER_VERSION);
+	} finally { s.stop(); }
+}, 60_000);
+
+test.skipIf(!hasZig)("MC-SELF-FAIL review: extracted source must still match bytes from the verified archive", async () => {
+	const i = fixture(), bytes = archive(), s = source([entry(NEXT, bytes)], bytes), old = sha(readFileSync(i.exe)), before = protectedBytes(i);
+	try {
+		const r = await paused(i, ["manager", "self-update"], "self-update-verify", () => {
+			const stage = readdirSync(join(i.data, "tmp")).find(n => n.startsWith(".install-"))!;
+			const path = join(i.data, "tmp", stage, `dsh${EXE}`), changed = Buffer.from(readFileSync(path));
+			if (process.platform === "linux") changed.fill(0, 24, 32); // Keep headers/markers, break ELF entry point.
+			else changed[changed.length - 1] ^= 1;
+			writeFileSync(path, changed);
+		}, { DSH_MANAGER_TEST_ORIGIN: s.origin });
+		expect(r.status).toBe(1); expect(r.stdout).not.toContain("updated manager"); expect(r.stdout).not.toContain("prepared, not installed");
+		expect(sha(readFileSync(i.exe))).toBe(old); expect(run(i, ["manager", "--version"]).stdout).toContain(MANAGER_VERSION);
+		expect(protectedBytes(i)).toEqual(before);
 	} finally { s.stop(); }
 }, 60_000);

@@ -171,6 +171,10 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
 }
 
 pub fn fetchTree(ctx: *const Ctx, tmp: std.fs.Dir, asset: index.Asset, tag: []const u8) ![]const u8 {
+    return fetchTreeHashed(ctx, tmp, asset, tag, null);
+}
+
+pub fn fetchTreeHashed(ctx: *const Ctx, tmp: std.fs.Dir, asset: index.Asset, tag: []const u8, entry_digest: ?*zip.EntryDigest) ![]const u8 {
     const endpoints = http.endpoints(ctx.a, &ctx.env);
     defer endpoints.deinit(ctx.a);
     var cache = ctx.ensureDir(&.{ "cache", "downloads" });
@@ -185,7 +189,7 @@ pub fn fetchTree(ctx: *const Ctx, tmp: std.fs.Dir, asset: index.Asset, tag: []co
     errdefer tmp.deleteTree(staging) catch {};
     var dir = try tmp.openDir(staging, .{ .iterate = true, .no_follow = true });
     defer dir.close();
-    try zip.extractIn(ctx.a, archive, dir);
+    try zip.extractInHashed(ctx.a, archive, dir, entry_digest);
     return staging;
 }
 

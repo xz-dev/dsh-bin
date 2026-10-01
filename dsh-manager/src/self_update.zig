@@ -53,7 +53,11 @@ fn prepare(ctx: *Ctx, force: bool) !void {
     var tmp = ctx.ensureDir(&.{"tmp"});
     defer tmp.close();
     binary.testPause(ctx, "self-update-download", name);
-    const staging = try install.fetchTree(ctx, tmp, candidate.asset, candidate.entry.tag);
+    var archive_digest: [32]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&archive_digest, candidate.asset.sha256);
+    var trusted = @import("zip.zig").EntryDigest{ .name = binary.executable, .archive_size = candidate.asset.size, .archive_sha256 = archive_digest };
+    const staging = try install.fetchTreeHashed(ctx, tmp, candidate.asset, candidate.entry.tag, &trusted);
+    const expected = trusted.value orelse return error.MissingManagerEntry;
     defer tmp.deleteTree(staging) catch |err| util.warn("leftover tmp/{s}: {s}; run `dsh manager clean`", .{ staging, @errorName(err) });
     var tree = try tmp.openDir(staging, .{ .iterate = true, .no_follow = true });
     defer tree.close();
@@ -63,6 +67,7 @@ fn prepare(ctx: *Ctx, force: bool) !void {
     binary.testPause(ctx, "self-update-verify", name);
     var source = try binary.validated(ctx.a, tree, binary.executable, candidate.entry.version);
     defer source.close();
+    if (!std.mem.eql(u8, &(try binary.digest(source)), &expected)) return error.ManagerFileChanged;
     try source.seekTo(0);
     // Copy from a validated private tree into an exclusive file beside the executable. Never execute it.
     const part = try std.fmt.allocPrint(ctx.a, "{s}.part-{x}", .{ name, std.crypto.random.int(u64) });
@@ -70,15 +75,12 @@ fn prepare(ctx: *Ctx, force: bool) !void {
     var open = true;
     defer if (open) file.close();
     defer parent.deleteFile(part) catch {};
-    var hash = std.crypto.hash.sha2.Sha256.init(.{});
     var buf: [64 * 1024]u8 = undefined;
     while (true) {
         const n = try source.read(&buf);
         if (n == 0) break;
-        hash.update(buf[0..n]);
         try file.writeAll(buf[0..n]);
     }
-    const expected = hash.finalResult();
     try file.sync();
     file.close();
     open = false;

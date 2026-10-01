@@ -142,9 +142,22 @@ pub fn extract(a: std.mem.Allocator, archive_path: []const u8, dest_path: []cons
 }
 
 /// Same extractor, retaining the caller's validated staging handle through all writes.
+pub const EntryDigest = struct {
+    name: []const u8,
+    archive_size: u64,
+    archive_sha256: [32]u8,
+    value: ?[32]u8 = null,
+};
+
+/// Manager updates anchor their binary hash in verified archive bytes, not the staging file.
 pub fn extractIn(a: std.mem.Allocator, archive_path: []const u8, dest: std.fs.Dir) Error!void {
+    return extractInHashed(a, archive_path, dest, null);
+}
+
+pub fn extractInHashed(a: std.mem.Allocator, archive_path: []const u8, dest: std.fs.Dir, entry_digest: ?*EntryDigest) Error!void {
     const file = std.fs.cwd().openFile(archive_path, .{}) catch |e| return ioErr(e);
     defer file.close();
+    if (entry_digest) |d| try verifyArchive(file, d);
     var central_buf: [8192]u8 = undefined;
     var central = file.reader(&central_buf);
     const size = central.getSize() catch |e| return ioErr(e);
@@ -238,6 +251,8 @@ pub fn extractIn(a: std.mem.Allocator, archive_path: []const u8, dest: std.fs.Di
         var inflate = std.compress.flate.Decompress.init(&compressed.interface, .raw, &flate_buf);
         const body = if (header.compression_method == .store) &compressed.interface else &inflate.reader;
         var crc = std.hash.Crc32.init();
+        var hash = std.crypto.hash.sha2.Sha256.init(.{});
+        const capture = if (entry_digest) |d| std.mem.eql(u8, name, d.name) else false;
         var count: u64 = 0;
         var chunk: [8192]u8 = undefined;
         while (true) {
@@ -246,9 +261,11 @@ pub fn extractIn(a: std.mem.Allocator, archive_path: []const u8, dest: std.fs.Di
             if (n == 0) break;
             output.writeAll(chunk[0..n]) catch |e| return ioErr(e);
             crc.update(chunk[0..n]);
+            if (capture) hash.update(chunk[0..n]);
             count += n;
         }
         if (count != header.uncompressed_size or crc.final() != header.crc32) return error.ChecksumMismatch;
+        if (capture) entry_digest.?.value = hash.finalResult();
         if (builtin.os.tag != .windows) {
             const unix_host = header.version_made_by >> 8 == 3;
             output.chmod(if (unix_host and unix_mode & 0o111 != 0) 0o755 else 0o644) catch |e| return ioErr(e);
@@ -265,6 +282,21 @@ pub fn extractIn(a: std.mem.Allocator, archive_path: []const u8, dest: std.fs.Di
     for (ranges.items, 0..) |range, i| {
         if (i != 0 and range.start < ranges.items[i - 1].end) return error.BadArchive;
     }
+    if (entry_digest) |d| try verifyArchive(file, d);
+}
+
+fn verifyArchive(file: std.fs.File, expected: *const EntryDigest) Error!void {
+    if ((file.stat() catch |e| return ioErr(e)).size != expected.archive_size) return error.ChecksumMismatch;
+    file.seekTo(0) catch |e| return ioErr(e);
+    var hash = std.crypto.hash.sha2.Sha256.init(.{});
+    var buf: [64 * 1024]u8 = undefined;
+    while (true) {
+        const n = file.read(&buf) catch |e| return ioErr(e);
+        if (n == 0) break;
+        hash.update(buf[0..n]);
+    }
+    if (!std.mem.eql(u8, &hash.finalResult(), &expected.archive_sha256)) return error.ChecksumMismatch;
+    file.seekTo(0) catch |e| return ioErr(e);
 }
 
 // Test archives use independent ZIP records. The checked-in fixture comes from runtime/zip.ts.
