@@ -89,6 +89,27 @@ test.skipIf(!hasZig)("MC-CHANNEL: failed live update leaves channel/runtime/sele
 	} finally { s.stop(); }
 });
 
+test.skipIf(!hasZig)("MC-CHANNEL review: post-update pin warning stays advisory with an unrecognized sibling entry", async () => {
+	const i = newInstall(), s = source();
+	try {
+		expect((await manager(i, s, ["install", A])).status).toBe(0);
+		expect(run(i, ["manager", "select", "--use", A]).status).toBe(0);
+		const pin = selection(i);
+		writeFileSync(join(i.data, "bundles", "stray-file"), "unrecognized runtime storage");
+		const updated = await manager(i, s, ["update", "--channel", "live"]);
+		expect(updated.status).toBe(0); expect(updated.stdout).toContain(`Installed dsh ${L}`);
+		expect(updated.stderr).not.toContain("automatic install refused");
+		expect(channel(i)).toBe("live"); expect(selection(i)).toBe(pin);
+		expect(existsSync(join(i.data, "bundles", L, `dsh-native${EXE}`))).toBe(true);
+		expect(readFileSync(join(i.data, "bundles", "stray-file"), "utf8")).toBe("unrecognized runtime storage");
+		expect(started(i)).toBe(false);
+		const before = s.requests.length, repeated = await manager(i, s, ["update", "--channel", "live"]);
+		expect(repeated.status).toBe(0); expect(repeated.stdout).toContain("already installed");
+		expect(s.requests.slice(before)).toEqual(["/runtime-index.json"]);
+		expect(channel(i)).toBe("live"); expect(selection(i)).toBe(pin); expect(started(i)).toBe(false);
+	} finally { s.stop(); }
+});
+
 test.skipIf(!hasZig)("MC-NAMESPACE: list is offline/read-only; --available lists host-compatible runtime candidates, never manager", async () => {
 	const i = newInstall(), s = source();
 	try {
@@ -190,7 +211,7 @@ test.skipIf(!hasZig)("MC-LAST / MC-REINSTALL: unpin then uninstall all, preserve
 test.skipIf(!hasZig)("FB-MISSING review: missing stored snapshot fails before bootstrap without requests, snapshot creation or app execution", async () => {
 	const i = newInstall(), s = source();
 	try {
-		s.entries.splice(s.entries.findIndex(e => e.id === B), 1); // Restoring A would recreate its missing snapshot.
+		s.entries.splice(s.entries.findIndex(e => e.id === B), 1); // Only the original runtime remains available for automatic restore.
 		expect((await manager(i, s, ["install", A])).status).toBe(0);
 		expect(run(i, ["manager", "select", "--use", "latest", "--snapshot", `${A}@1`]).status).toBe(0);
 		expect(run(i, ["manager", "uninstall", A]).status).toBe(0);

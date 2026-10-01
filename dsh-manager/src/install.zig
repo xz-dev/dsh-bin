@@ -68,13 +68,14 @@ fn command(ctx: *Ctx, args: []const []const u8, updating: bool) u8 {
 fn pinnedWarning(ctx: *const Ctx, installed: []const u8) void {
     const stored = state.readSelection(ctx);
     if (stored != .ok or std.mem.eql(u8, stored.ok.use, "latest")) return;
-    const bundles = runtimes.list(ctx);
-    const matched = select.matchVersion(bundles, stored.ok.use);
-    if (matched != .found) return;
-    const pinned = select.Bundle{ .version = matched.found, .meta = runtimes.metaOf(bundles, matched.found) };
-    const fresh = select.Bundle{ .version = installed, .meta = runtimes.metaOf(bundles, installed) };
+    // Advisory only: read the two known IDs, never fatal storage enumeration after activation.
+    if (!index.component(stored.ok.use)) return;
+    const pinned_bytes = std.fs.cwd().readFileAlloc(ctx.a, ctx.path(&.{ "bundles", stored.ok.use, "bundle.json" }), 1 << 20) catch return;
+    const fresh_bytes = std.fs.cwd().readFileAlloc(ctx.a, ctx.path(&.{ "bundles", installed, "bundle.json" }), 1 << 20) catch return;
+    const pinned = select.Bundle{ .version = stored.ok.use, .meta = select.parseMeta(ctx.a, pinned_bytes) };
+    const fresh = select.Bundle{ .version = installed, .meta = select.parseMeta(ctx.a, fresh_bytes) };
     if (pinned.meta != null and fresh.meta != null and pinned.meta.?.ordered() and fresh.meta.?.ordered() and select.before(pinned, fresh))
-        util.warn("plain `dsh` still starts {s}, which the selection pins; run `dsh manager select --use latest` to follow the newest installed version", .{matched.found});
+        util.warn("plain `dsh` still starts {s}, which the selection pins; run `dsh manager select --use latest` to follow the newest installed version", .{stored.ok.use});
 }
 
 fn usage() u8 {
