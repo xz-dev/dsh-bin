@@ -1,8 +1,8 @@
 // Native install acceptance: local HTTP source, real manager, no host JS in tested PATH.
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeZip, type ZipInput } from "../../dsh-bun-build/runtime/zip.ts";
 import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
@@ -425,7 +425,8 @@ test.skipIf(!hasZig)("DL-CORRUPT: --force refuses an unrecognized same-id direct
 });
 
 // 5.2: ordinary empty launches reuse the native install, never manager/GitHub Latest.
-async function bootstrap(i: Install, origin: string, args: string[] = [], extra: Record<string, string> = {}, input = "") {
+async function bootstrap(i: Install, origin: string, args: string[] = [], extra: Record<string, string> = {}, input: string | Uint8Array = "") {
+	for (const g of ["1", "2"]) rmSync(join(i.out, `${g}.argv`), { force: true });
 	const proc = Bun.spawn([i.exe, ...args], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: origin, DSH_MANAGER_TEST_RETRY_MS: "20", ...extra }, stdin: new Response(input), stdout: "pipe", stderr: "pipe" });
 	const timer = setTimeout(() => proc.kill("SIGKILL"), 30_000);
 	try {
@@ -466,7 +467,7 @@ test.skipIf(!hasZig)("FB-EMPTY: automatic download failure activates nothing and
 	} finally { await s.stop(); }
 });
 
-test.skipIf(!hasZig)("FB-EMPTY: explicit/pinned missing versions and damaged runtimes never auto-install", async () => {
+test.skipIf(!hasZig)("FB-MISSING: explicit/pinned missing versions and damaged runtimes never auto-install", async () => {
 	const a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
 	try {
 		for (const fixture of ["explicit", "snapshot", "pinned", "broken"] as const) {
@@ -511,7 +512,6 @@ test.skipIf(!hasZig)("FB-EMPTY: recorded live channel and latest selection survi
 const ptyReason = process.platform === "win32" ? "real Windows console/ConPTY harness not available" : !Bun.which("python3") || !Bun.which("bash") ? "real Python PTY/Bash unavailable" : !hasZig ? "Zig unavailable" : "";
 test.skipIf(!!ptyReason)(`FB-EMPTY / FB-ORDER: PTY downloads only after completion consent then launches original argv${ptyReason ? ` — SKIP: ${ptyReason}` : ""}`, async () => {
 	const i = newInstall(), a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
-	const { spawn } = await import("node:child_process");
 	const python = Bun.which("python3")!, bash = Bun.which("bash")!;
 	const proc = spawn(python, [join(import.meta.dir, "terminal-driver.py"), bash, "--noprofile", "--norc", "-c", '"$@"; code=$?; exit "$code"', "pty-bash", i.exe, "--profile", "headless", "-p", "hello world"], { env: { ...baseEnv(i), SHELL: bash, DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: s.origin, FAKE_EXIT: "23" }, cwd: i.home, stdio: "pipe" });
 	let output = ""; proc.stdout.on("data", (b) => { output += b.toString(); }); proc.stderr.on("data", (b) => { output += b.toString(); });
@@ -526,3 +526,89 @@ test.skipIf(!!ptyReason)(`FB-EMPTY / FB-ORDER: PTY downloads only after completi
 		expect(output).not.toMatch(/download\?|install\?/i); expect(launchOf(i).runtime).toBe(ID);
 	} finally { clearTimeout(timer); if (proc.exitCode === null) { proc.kill("SIGTERM"); await done; } await s.stop(); }
 }, 120_000);
+
+// 5.3/5.4: prove missing external seams; reuse the install fixtures above.
+test.skipIf(!hasZig)("FB-PIPE: empty noninteractive launch preserves 1 MiB binary stdin and leaves consent unset", async () => {
+	const i = newInstall(), a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
+	const payload = Uint8Array.from({ length: 1 << 20 }, (_, n) => n % 256);
+	try {
+		const result = await bootstrap(i, s.origin, [], { FAKE_STDIN_HASH: "1" }, payload);
+		expect(result.status).toBe(0); expect(result.stderr).not.toMatch(/\[Y\/n\/o\]|Choose completion/);
+		expect(readFileSync(join(i.out, "1.stdin-sha256"), "utf8")).toBe(sha(payload));
+		expect(existsSync(join(i.data, "state/completion.json"))).toBe(false);
+	} finally { await s.stop(); }
+});
+
+test.skipIf(!hasZig)("FB-READONLY: cold helper queries use no network, create nothing, and consume no stdin", async () => {
+	const i = newInstall(), s = source([], new Map());
+	const queries = [["manager", "--version"], ["manager", "--help"], ["manager", "info"], ["manager", "list"], ["--help"], ["--version"], ["-h"], ["-V"], ["manager", "__complete", "--shell", "bash", "--", "manager", ""], ["manager", "completion", "script", "bash"]];
+	try {
+		for (const args of queries) {
+			// Child inherits our open descriptor; after it exits, the shared file offset must
+			// still be at the first byte, proving the query consumed none of its input.
+			const input = join(i.out, "query-input"); writeFileSync(input, "unread\x00sentinel");
+			const fd = openSync(input, "r");
+			const p = spawn(i.exe, args, { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: s.origin }, stdio: [fd, "pipe", "pipe"] });
+			let stdout = "", stderr = ""; p.stdout!.on("data", b => stdout += b); p.stderr!.on("data", b => stderr += b);
+			const timer = setTimeout(() => p.kill("SIGKILL"), 5000);
+			try {
+				expect(await new Promise((resolve, reject) => { p.on("exit", resolve); p.on("error", reject); })).toBe(0);
+				const remaining = Buffer.alloc(32); const n = readSync(fd, remaining, 0, remaining.length, null);
+				expect(remaining.subarray(0, n).toString()).toBe("unread\x00sentinel");
+				expect(stderr).not.toMatch(/completion|installing/i);
+				if (["--help", "--version", "-h", "-V"].includes(args[0]!) || args[1] === "list") expect(stdout).toContain("No dsh runtime is installed");
+			} finally { clearTimeout(timer); closeSync(fd); if (p.exitCode === null) p.kill("SIGKILL"); }
+			expect(existsSync(i.data)).toBe(false); expect(tree(i.home)).toEqual([]); expect(started(i)).toBe(false);
+		}
+		expect(s.requests).toEqual([]);
+	} finally { await s.stop(); }
+});
+
+test.skipIf(!hasZig)("FB-OFFLINE: installed pinned runtime starts without any index or asset request", async () => {
+	const i = existingInstall(), pin = selection(i), s = source([], new Map());
+	try {
+		expect((await bootstrap(i, s.origin)).status).toBe(0); expect(launchOf(i).runtime).toBe(OLD);
+		expect(s.requests).toEqual([]); expect(selection(i)).toBe(pin);
+		await s.stop();
+		expect((await bootstrap(i, s.origin)).status).toBe(0); expect(selection(i)).toBe(pin);
+	} finally { await s.stop(); }
+});
+
+test.skipIf(!hasZig)("FB-CONCURRENT: fresh-root first launches succeed or fail with initialization retry; rerun succeeds", async () => {
+	const a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
+	try {
+		for (let n = 0; n < 24; n++) {
+			const i = newInstall(), before = s.requests.length;
+			const results = await Promise.all([bootstrap(i, s.origin), bootstrap(i, s.origin)]);
+			expect(results.filter(r => r.status === 0).length).toBeGreaterThanOrEqual(1);
+			for (const r of results.filter(r => r.status !== 0)) expect(r.stderr).toContain("initialization was interrupted");
+			expect(JSON.parse(readFileSync(join(i.data, ".dsh-bin-data.json"), "utf8"))).toEqual({ kind: "dsh-manager-data", schema: 1 });
+			expect(readdirSync(join(i.data, "bundles"))).toEqual([ID]);
+			expect(s.requests.slice(before).map(r => r.path)).toEqual(["/runtime-index.json", assetPath(e)]);
+			expect((await bootstrap(i, s.origin)).status).toBe(0);
+			expect(launchOf(i).runtime).toBe(ID); expect(existsSync(join(i.data, "state/selection.json"))).toBe(false);
+		}
+	} finally { await s.stop(); }
+}, 120_000);
+
+test.skipIf(!hasZig)("FB-RETRY: interrupted automatic download resumes verified archive without resetting selection", async () => {
+	const i = newInstall(), a = archive(), e = entry(ID, a.bytes); let broken = true;
+	mkdirSync(join(i.data, "state"), { recursive: true });
+	writeFileSync(join(i.data, ".dsh-bin-data.json"), JSON.stringify({ kind: "dsh-manager-data", schema: 1 }));
+	const pin = '{"schema":1,"use":"latest","snapshot":null,"addons":{}}';
+	writeFileSync(join(i.data, "state/selection.json"), pin);
+	const s = source([e], new Map([[assetPath(e), a.bytes]]), (req, bytes) => {
+		if (!broken) return ranged(req, bytes);
+		const start = Number(/^bytes=(\d+)-$/.exec(req.headers.get("range") ?? "")?.[1] ?? 0);
+		return new Response(new ReadableStream({ start(c) { c.enqueue(bytes.subarray(start, start + 37)); setTimeout(() => { try { c.error(null); } catch {} }, 20); } }), { status: start ? 206 : 200, headers: start ? { "content-range": `bytes ${start}-${bytes.length - 1}/${bytes.length}` } : {} });
+	});
+	try {
+		const failed = await bootstrap(i, s.origin);
+		expect(failed.status).toBe(1); expect(failed.stderr).toContain("Network"); expect(failed.stdout).toBe("");
+		expect(installed(i)).toBe(false); expect(started(i)).toBe(false); expect(selection(i)).toBe(pin);
+		expect(existsSync(join(i.data, "snapshots", `${ID}@1`))).toBe(false);
+		const before = s.requests.length; broken = false;
+		expect((await bootstrap(i, s.origin)).status).toBe(0); expect(launchOf(i).runtime).toBe(ID);
+		expect(s.requests.slice(before).some(r => r.range !== null)).toBe(true); expect(selection(i)).toBe(pin);
+	} finally { await s.stop(); }
+});

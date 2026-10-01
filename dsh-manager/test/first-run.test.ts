@@ -148,3 +148,11 @@ test.skipIf(!!crossShellReason)(`FB-ORDER review: concurrent Bash and Fish conse
 	expect(state(i).shells.bash.result).toBe("declined"); expect(state(i).shells.fish.result).toBe("declined");
 	const again = terminal(i, "bash"); expect(await again.done).toBe(0); expect(again.output).not.toContain("Register bash");
 }, 120_000);
+
+test.skipIf(!!reason)(`FB-PIPE: noninteractive skip still asks on next real interactive launch${reason ? ` — SKIP: ${reason}` : ""}`, async () => {
+	const i = newInstall(); addRuntime(i.data, "1.0.0");
+	expect(run(i, [], { input: "app input", env: { FAKE_STDIN: "1" } }).status).toBe(0);
+	expect(existsSync(statePath(i))).toBe(false);
+	const t = terminal(i); await t.wait("Register bash completion at "); t.answer("n\n"); expect(await t.done).toBe(0);
+	expect(state(i).shells.bash.result).toBe("declined");
+}, 120_000);

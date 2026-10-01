@@ -316,3 +316,13 @@ test.skipIf(!hasZig)("PS-CONFLICT / PS-CONTAIN: directory links cannot redirect 
 		expect(tree(external)).toEqual(before);
 	}
 });
+
+test.skipIf(!hasZig)("FB-CONCURRENT: initialization residue gets retry diagnostic, never adoption or extra writes", () => {
+	for (const [name, bytes] of [[".dsh-data-123abc.tmp", '{"kind":"dsh-manager-data"'], [DATA_MARKER, ""], [DATA_MARKER, '{"kind":"dsh-manager-data","schema":']]) {
+		const i = newInstall(); mkdirSync(i.data); writeFileSync(join(i.data, name!), bytes!);
+		const before = tree(i.data), result = run(i, []);
+		expect(result.status).toBe(1); expect(result.stderr).toContain("initialization was interrupted");
+		expect(result.stderr).toContain("retry"); expect(result.stderr).toContain("Never remove a root containing user data");
+		expect(tree(i.data)).toEqual(before); expect(readFileSync(join(i.data, name!), "utf8")).toBe(bytes!);
+	}
+});

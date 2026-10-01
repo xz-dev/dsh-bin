@@ -3,7 +3,7 @@
 //! - FAKE_OUT (required): directory for `<gen>.argv` (one argument per line) and `<gen>.env` (KEY=VALUE lines);
 //! - FAKE_EXIT: exit status (default 0);
 //! - `<gen>.cwd` gets the working directory; with FAKE_STDIN set, `<gen>.stdin` gets up to 4 KiB of stdin;
-//! - FAKE_HOLD: when set, write `<FAKE_OUT>/started` and then sleep 30 s;
+//! - FAKE_STDIN_HASH: stream all stdin and record its SHA-256 (binary/pipeline acceptance);
 //! - FAKE_RESTART_WRITE / FAKE_RESTART_DATA: restart once like an in-app restart, after writing DATA to the
 //!   file WRITE: respawn this executable with the same arguments and environment (plus FAKE_GEN=2), then
 //!   exit with the replacement's status.
@@ -27,6 +27,17 @@ pub fn main() !void {
     while (it.next()) |e| try env_text.print(a, "{s}={s}\n", .{ e.key_ptr.*, e.value_ptr.* });
     try dir.writeFile(.{ .sub_path = try std.fmt.allocPrint(a, "{s}.env", .{gen}), .data = env_text.items });
     try dir.writeFile(.{ .sub_path = try std.fmt.allocPrint(a, "{s}.cwd", .{gen}), .data = try std.process.getCwdAlloc(a) });
+    if (env.get("FAKE_STDIN_HASH") != null) {
+        var hash = std.crypto.hash.sha2.Sha256.init(.{});
+        var buf: [8192]u8 = undefined;
+        while (true) {
+            const n = try std.fs.File.stdin().read(&buf);
+            if (n == 0) break;
+            hash.update(buf[0..n]);
+        }
+        const digest = std.fmt.bytesToHex(hash.finalResult(), .lower);
+        try dir.writeFile(.{ .sub_path = try std.fmt.allocPrint(a, "{s}.stdin-sha256", .{gen}), .data = &digest });
+    }
     if (env.get("FAKE_STDIN") != null) {
         var buf: [4096]u8 = undefined;
         const n = try std.fs.File.stdin().readAll(&buf);

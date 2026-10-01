@@ -3,6 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const util = @import("util.zig");
+const marker_bytes = "{\"kind\":\"dsh-manager-data\",\"schema\":1}\n";
 
 pub const is_windows = builtin.os.tag == .windows;
 pub const data_dir_name = "dsh-bin";
@@ -47,19 +48,27 @@ pub const Ctx = struct {
             else => self.conflict(),
         };
         if (bytes) |b| {
+            const partial = std.mem.trim(u8, b, " \t\r\n");
+            const complete = std.mem.trim(u8, marker_bytes, " \t\r\n");
+            if (partial.len < complete.len and std.mem.startsWith(u8, complete, partial)) self.initializing();
             const Marker = struct { kind: []const u8, schema: u32 };
             const m = std.json.parseFromSliceLeaky(Marker, self.a, b, .{}) catch self.conflict();
             if (m.schema != 1 or !std.mem.eql(u8, m.kind, "dsh-manager-data")) self.conflict();
         } else {
             var it = dir.iterate();
-            if ((it.next() catch |err| self.writeError(err)) != null) self.conflict();
+            if (it.next() catch |err| self.writeError(err)) |entry| {
+                // Another first writer may have published its marker since our read, or left
+                // its initialization temp behind. Do not adopt or write into either case.
+                if (std.mem.eql(u8, entry.name, data_marker) or initializationTemp(entry.name)) self.initializing();
+                self.conflict();
+            }
         }
         // A real exclusive write catches Windows ACLs too; POSIX mode bits alone are insufficient.
         const temp = std.fmt.allocPrint(self.a, ".dsh-data-{x}.tmp", .{std.crypto.random.int(u64)}) catch util.oom();
         const file = dir.createFile(temp, .{ .exclusive = true, .mode = 0o600 }) catch |err| self.writeError(err);
         defer dir.deleteFile(temp) catch {};
         if (bytes == null) {
-            file.writeAll("{\"kind\":\"dsh-manager-data\",\"schema\":1}\n") catch |err| self.writeError(err);
+            file.writeAll(marker_bytes) catch |err| self.writeError(err);
             file.sync() catch |err| self.writeError(err);
         }
         file.close(); // Close before rename, including Windows.
@@ -79,6 +88,10 @@ pub const Ctx = struct {
         return dir;
     }
 
+    fn initializing(self: *const Ctx) noreturn {
+        util.fatal("data root {s} is being initialized by another dsh process (or initialization was interrupted); retry. If this persists, inspect and remove only an empty/partial initialization root. Never remove a root containing user data", .{self.data});
+    }
+
     fn conflict(self: *const Ctx) noreturn {
         util.fatal("data root conflict at {s}: expected an empty directory or a valid {s}", .{ self.data, data_marker });
     }
@@ -87,6 +100,16 @@ pub const Ctx = struct {
         util.fatal("data root {s} is not writable: {s}; no fallback location is used", .{ self.data, @errorName(err) });
     }
 };
+
+fn initializationTemp(name: []const u8) bool {
+    const prefix = ".dsh-data-";
+    const suffix = ".tmp";
+    if (!std.mem.startsWith(u8, name, prefix) or !std.mem.endsWith(u8, name, suffix)) return false;
+    const nonce = name[prefix.len .. name.len - suffix.len];
+    if (nonce.len == 0 or nonce.len > 16) return false;
+    for (nonce) |c| if (!std.ascii.isHex(c)) return false;
+    return true;
+}
 
 fn userHome(env: *const std.process.EnvMap) []const u8 {
     const key = if (is_windows) "USERPROFILE" else "HOME";
