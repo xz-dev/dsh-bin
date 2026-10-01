@@ -413,3 +413,9 @@
 - **red 记录缺失**：worker 跑满 60 分钟超时，此前已有 4 个提交，但没有把 red 运行写进 evidence。这里不补一个没人跑过的 red→green，只记录父会话复跑的 green。
 - **父会话复跑**：`zig build test` **44/44**；`bun test ./test` **187 pass / 18 skip / 0 fail**；versions 与 launch 共 **24 pass**；`zig fmt --check`、`git diff --check`、windows 和 macOS 交叉编译成功。
 - **CI 36843683851（f3fcf1c）三平台全绿**：MC-PIN、MC-CHANNEL、MC-NAMESPACE、MC-REINSTALL、MC-LAST、FB-RESTORE-CHANNEL 和元数据回归在 ubuntu、macOS、windows 都实际通过。勾选 **6.1、6.5**；独立复审随 6.2 一起进行，如果不通过就重新打开。
+
+## 6.2
+
+- **red 已运行**：`cd dsh-manager && TMPDIR=/var/tmp bun test ./test/snapshots.test.ts` → **0 pass / 3 fail**（日志 `/var/tmp/dsh-62-red.log`）；原生 `manager snapshot list/new` 尚未实现，进程返回 1 而场景要求 0，覆盖命名/复制/空快照/编号、创建中断和 pnpm 型内部链接复制。
+- **supervisor 确认**：只保留既有 `--target`（brief 中 `--from` 为命名笔误，不加别名），`snapshot new` 接受 `--use`；只复制 `profiles`，内部相对符号链接原样复制，绝对或越界链接明确拒绝并丢弃暂存，不修复 pnpm，不共享源文件。
+- **首个 green**：同一命令 `TMPDIR=/var/tmp bun test ./test/snapshots.test.ts` → **3 pass / 0 fail / 75 assertions**；复制只遍历 profiles，文件独立复制，编号在复制前原子保留，中断后空缺不回收；相对内部链接和越界/绝对链接拒绝场景在本机 Linux 实际执行，Windows 此链接专项显式 skip（普通复制仍执行）。
