@@ -179,3 +179,26 @@ test.skipIf(!hasZig)("MC-CLEAN review: public paths dependent on backup links ne
 		expect(r.stderr).toContain("public generation missing or invalid");
 	}
 });
+
+
+test.skipIf(!hasZig)("MC-CLEAN review: multihop application homes preserve every intermediate residue or cache alias", () => {
+	for (const name of ["tmp/.install-aa", "cache/bun/home-link"]) {
+		const i = fixture(), external = join(i.home, "external/profiles"), alias = join(i.home, "home-alias");
+		mkdirSync(external, { recursive: true }); writeFileSync(join(external, "credential"), "KEEP");
+		const middle = join(i.data, name); mkdirSync(join(middle, ".."), { recursive: true });
+		symlinkSync(join(external, ".."), middle, WIN ? "junction" : "dir");
+		symlinkSync(join(middle, "profiles"), alias, WIN ? "junction" : "dir");
+		put(i, "tmp/.install-b/item"); const before = bytes(i.data);
+		expect(readFileSync(join(alias, "credential"), "utf8")).toBe("KEEP");
+		const r = run(i, ["manager", "clean"], { env: { DSH_HOME: alias } });
+		expect(r.status).toBe(1); expect(r.stderr).toContain("DSH_HOME"); expect(r.stderr).toContain("nothing removed");
+		expect(bytes(i.data)).toEqual(before); expect(readFileSync(join(alias, "credential"), "utf8")).toBe("KEEP");
+	}
+	// Ordinary symlinked home ancestors outside manager storage remain supported.
+	const i = fixture(), external = join(i.home, "external/profiles"), alias = join(i.home, "home-alias");
+	mkdirSync(external, { recursive: true }); writeFileSync(join(external, "credential"), "KEEP");
+	symlinkSync(join(external, ".."), alias, WIN ? "junction" : "dir"); put(i, "tmp/.install-b/item");
+	const r = run(i, ["manager", "clean"], { env: { DSH_HOME: join(alias, "profiles") } });
+	expect(r.status).toBe(0); expect(existsSync(join(i.data, "tmp/.install-b"))).toBe(false);
+	expect(readFileSync(join(alias, "profiles/credential"), "utf8")).toBe("KEEP");
+});

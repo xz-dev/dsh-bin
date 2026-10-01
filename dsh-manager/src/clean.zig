@@ -179,14 +179,38 @@ fn overlap(a: std.mem.Allocator, x: []const u8, y: []const u8) bool {
     const rel = std.fs.path.relative(a, x, y) catch return true;
     return !std.fs.path.isAbsolute(rel) and !eq(u8, rel, "..") and !std.mem.startsWith(u8, rel, "../") and !std.mem.startsWith(u8, rel, "..\\");
 }
+/// Visit every home alias before resolving it, not just the final realpath. Ordinary home
+/// symlinks outside cleanup candidates remain supported; unresolvable chains fail closed.
+fn homeOverlap(ctx: *const Ctx, candidate: []const u8) !bool {
+    var home = ctx.home();
+    for (0..40) |_| {
+        if (overlap(ctx.a, candidate, home) or overlap(ctx.a, home, candidate)) return true;
+        var parts = try std.fs.path.componentIterator(home);
+        home = while (parts.next()) |part| {
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const target = std.fs.cwd().readLink(part.path, &buf) catch |err| switch (err) {
+                error.NotLink => continue,
+                error.FileNotFound => return false, // A not-yet-created application home is allowed.
+                else => return err,
+            };
+            const base = std.fs.path.dirname(part.path) orelse part.path;
+            const resolved = try std.fs.path.resolve(ctx.a, &.{ base, target });
+            // Check the alias target itself before appending the remaining home components.
+            if (overlap(ctx.a, candidate, resolved)) return true;
+            break try std.fs.path.join(ctx.a, &.{ resolved, home[part.path.len..] });
+        } else return false;
+    }
+    return error.SymLinkLoop;
+}
+
 fn protectHome(ctx: *const Ctx, items: []const Item) !void {
-    const home = std.fs.cwd().realpathAlloc(ctx.a, ctx.home()) catch ctx.home();
     for (items) |item| {
         const parent = try item.store.dir.realpathAlloc(ctx.a, ".");
         const path = try std.fs.path.join(ctx.a, &.{ parent, item.name });
         const resolved = if (item.kind == .sym_link) path else std.fs.cwd().realpathAlloc(ctx.a, path) catch path;
-        if (overlap(ctx.a, resolved, home) or overlap(ctx.a, home, resolved) or overlap(ctx.a, path, ctx.home()) or overlap(ctx.a, ctx.home(), path)) {
-            util.warn("cannot clean {s}/{s}: overlaps DSH_HOME {s}; nothing removed; choose a separate application home before retry", .{ item.store.path, item.name, ctx.home() });
+        const depends = homeOverlap(ctx, path) catch true;
+        if (depends or (homeOverlap(ctx, resolved) catch true)) {
+            util.warn("cannot clean {s}/{s}: overlaps or cannot safely resolve DSH_HOME {s}; nothing removed; choose a separate application home before retry", .{ item.store.path, item.name, ctx.home() });
             return error.Reported;
         }
     }
