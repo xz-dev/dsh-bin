@@ -363,15 +363,22 @@ fn encodeProfile(ctx: *Ctx, bytes: []const u8, utf16: bool) ![]const u8 {
     return std.mem.sliceAsBytes(units);
 }
 
-fn resultHint(ctx: *Ctx, shell: Shell, path: []const u8, installing: bool, dry: bool, action: []const u8) void {
-    if (std.mem.startsWith(u8, binding(ctx), "abs:")) util.print("Bound to this absolute manager location. After a move, re-register with the new manager: manager completion install {s}\n", .{@tagName(shell)});
-    util.print("Completion registration: {s}\n{s}{s}\n", .{ path, if (dry) "Dry run: " else "Action: ", action });
+fn report(diagnostics: bool, comptime fmt: []const u8, args: anytype) void {
+    if (!diagnostics) return util.print(fmt, args);
+    var buffer: [16384]u8 = undefined;
+    const text = std.fmt.bufPrint(&buffer, fmt, args) catch return;
+    std.fs.File.stderr().writeAll(text) catch {};
+}
+
+fn resultHint(ctx: *Ctx, shell: Shell, path: []const u8, installing: bool, dry: bool, action: []const u8, diagnostics: bool) void {
+    if (std.mem.startsWith(u8, binding(ctx), "abs:")) report(diagnostics, "Bound to this absolute manager location. After a move, re-register with the new manager: manager completion install {s}\n", .{@tagName(shell)});
+    report(diagnostics, "Completion registration: {s}\n{s}{s}\n", .{ path, if (dry) "Dry run: " else "Action: ", action });
     if (installing) {
-        util.print("Completion activates in {s} sessions that load {s}. For the current session: {s} {s}\n", .{ @tagName(shell), quoted(ctx, shell, path), if (isPowerShell(shell)) "." else "source", quoted(ctx, shell, path) });
+        report(diagnostics, "Completion activates in {s} sessions that load {s}. For the current session: {s} {s}\n", .{ @tagName(shell), quoted(ctx, shell, path), if (isPowerShell(shell)) "." else "source", quoted(ctx, shell, path) });
     } else if (isPowerShell(shell)) {
-        util.print("Start a new session; PowerShell has no public unregister API for the current session.\n", .{});
+        report(diagnostics, "Start a new session; PowerShell has no public unregister API for the current session.\n", .{});
     } else {
-        util.print("Start a new session; for the current session: {s}\n", .{switch (shell) {
+        report(diagnostics, "Start a new session; for the current session: {s}\n", .{switch (shell) {
             .bash => "complete -r dsh",
             .zsh => "compdef -d dsh",
             .fish => "complete -e -c dsh; functions -e _dsh_manager_complete; set -e _dsh_manager_completion_owner; set -e _dsh_manager_completion_registration",
@@ -381,6 +388,11 @@ fn resultHint(ctx: *Ctx, shell: Shell, path: []const u8, installing: bool, dry: 
 }
 
 pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
+    return runReporting(ctx, args, false);
+}
+
+/// First-run registration uses stderr; explicit commands and script generation keep stdout.
+pub fn runReporting(ctx: *Ctx, args: []const []const u8, diagnostics: bool) u8 {
     if (args.len < 2) {
         util.warn("use `dsh manager completion script|install|uninstall <bash|zsh|fish|pwsh|powershell>`; choose a shell explicitly", .{});
         return 1;
@@ -479,7 +491,7 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
         action = if (existing == null) "create" else "append";
     }
     if (dry) {
-        resultHint(ctx, shell, path, installing, true, action);
+        resultHint(ctx, shell, path, installing, true, action, diagnostics);
         return 0;
     }
     if (remove_file) {
@@ -507,6 +519,6 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
             return 1;
         };
     }
-    resultHint(ctx, shell, path, installing, false, action);
+    resultHint(ctx, shell, path, installing, false, action, diagnostics);
     return 0;
 }

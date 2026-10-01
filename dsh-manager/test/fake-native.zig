@@ -63,6 +63,7 @@ pub fn main() !void {
         try dir.writeFile(.{ .sub_path = "started", .data = "" });
         std.Thread.sleep(30 * std.time.ns_per_s);
     }
+    if (env.get("FAKE_STDOUT")) |text| try std.fs.File.stdout().writeAll(text);
     const code = std.fmt.parseInt(u8, env.get("FAKE_EXIT") orelse "0", 10) catch 0;
     std.process.exit(code);
 }

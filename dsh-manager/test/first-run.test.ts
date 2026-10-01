@@ -120,3 +120,19 @@ test.skipIf(!!reason)(`FB-ORDER: invalid completion state refuses before app; no
 	const j = newInstall(); addRuntime(j.data, "1.0.0"); const piped = run(j, [], { input: "application input", env: { FAKE_STDIN: "1" } });
 	expect(piped.status).toBe(0); expect(readFileSync(join(j.out, "1.stdin"), "utf8")).toBe("application input"); expect(existsSync(statePath(j))).toBe(false);
 }, 120_000);
+
+// stdout stays separate while stdin/stderr are a real terminal (registration must not pollute pipes).
+test.skipIf(!!reason)(`FB-ORDER: accepted first-run completion writes hints only to stderr${reason ? ` — SKIP: ${reason}` : ""}`, async () => {
+	const i = newInstall(); addRuntime(i.data, "1.0.0");
+	const stdoutFile = join(i.out, "stdout");
+	const p = spawn(python!, [join(import.meta.dir, "terminal-driver.py"), bash!, "--noprofile", "--norc", "-c", 'out=$1; shift; "$@" > "$out"; code=$?; exit "$code"', "pty-bash", stdoutFile, i.exe], { env: { ...baseEnv(i), SHELL: bash!, FAKE_STDOUT: "application stdout\n" }, cwd: i.home, stdio: "pipe" });
+	let output = ""; p.stdout.on("data", (b) => { output += b.toString(); }); p.stderr.on("data", (b) => { output += b.toString(); });
+	const done = new Promise<number | null>((resolve, reject) => { p.on("exit", resolve); p.on("error", reject); });
+	const timer = setTimeout(() => p.kill("SIGTERM"), 15_000);
+	try {
+		for (let n = 0; n < 300 && !output.includes("[Y/n/o]") && p.exitCode === null; n++) await Bun.sleep(20);
+		expect(output).toContain("[Y/n/o]"); p.stdin.write("yes\n"); expect(await done).toBe(0);
+		expect(output).toContain("Completion registration:"); expect(output).toContain("For the current session:");
+		expect(readFileSync(stdoutFile, "utf8")).toBe("application stdout\n");
+	} finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGTERM"); await done; } }
+}, 120_000);

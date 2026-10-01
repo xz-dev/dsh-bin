@@ -221,7 +221,7 @@ pub fn run(ctx: *Ctx) void {
     var result: Result = .declined;
     if (choice.register) {
         const shell = choice.shell.?;
-        result = if (completion.run(ctx, &.{ "install", @tagName(shell) }) == 0) .registered else .failed;
+        result = if (completion.runReporting(ctx, &.{ "install", @tagName(shell) }, true) == 0) .registered else .failed;
         if (result == .failed) util.warn("completion is not registered; retry with `dsh manager completion install {s}`; continuing runtime check", .{@tagName(shell)});
     }
     if (choice.shell) |shell| record(&s, shell, result);
