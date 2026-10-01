@@ -342,3 +342,17 @@
 - **lost-update red/green**：并发真实 Bash/Fish PTY 同时到达提示（证明未跨提示持锁）；Bash 先拒绝，Fish 后拒绝。两项状态都必须保留，随后 Bash 不再询问。`-t 'concurrent Bash'` 首次 **0 pass / 1 fail**（Fish 的 stale 写入后 bash 键消失）；fbc9ba4 `fix(manager): merge first-run consent under a short state lock` 后与 stdout test 合跑 **2 pass / 0 fail**。答完才获取 `state/completion.lock`，重读并只合并本次涉及的 shell/origin/undetected 键，原子保存后释放；同键以最新回答为准，无效重读状态仍失败。
 - **最终全量**：`TMPDIR=/var/tmp/dsh-52 PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH timeout 300 zig build test --summary all` **44/44**；`timeout 1800 bun test ./test` **171 pass / 18 skip / 0 fail**，189 项、13 文件。新增六项 bootstrap + 两项 review 场景实际通过；18 skip 为缺 Zsh、Windows PowerShell 5.1、Windows 特定路径语义和未配置的真实代理，不计通过。`zig fmt --check src/completion.zig src/first_run.zig src/launch.zig src/install.zig test/fake-native.zig`、`git diff --check` 通过。x86_64-windows-gnu、aarch64-macos 交叉构建成功；它们不是运行证据。最终日志 `/var/tmp/dsh-52/final-*.log`。
 - **任务状态**：5.2 暂不勾选，父会话下一步触发真实三平台 CI 后决定。5.1 原勾选由父会话处理；本 worker 不擅自更新。Windows 控制台/ConPTY 询问仍未实测，已有明确 skip；新非交互 bootstrap 场景在 Windows CI 应真实执行。未 push、未触发 workflow、未修改两个并行 change、未操作真实用户配置/安装。
+
+## 5.1 复审修复与 5.2 父会话验收
+
+- **5.1 独立复审（run 2228d76f）BLOCK，两项 P1**：① 两个终端同时首次启动，后答的那个会用旧状态整体覆盖先答的（实测 bash 答 n、fish 答 n 后状态里只剩 fish）；② 自动注册的提示写到了 stdout，污染应用输出。修复期间 5.1 视为重新打开，修复后恢复勾选。修复由 5.2 worker 单独提交：1f09338（stdout）、fbc9ba4（答完才加短锁、重读、合并）。
+- **父会话手工复现**（918a8ea，自建 manager，真实 PTY）：
+  - bash 和 fish 两个提示同时打开后都答 n，`completion.json` 得到 `{"bash":declined,"fish":declined}`，两项都保留。
+  - stdin/stderr 接 PTY、stdout 重定向到文件，答 y：注册提示和自动安装信息都在 stderr，stdout 文件为空（fixture 没有可下载源，安装按预期失败，并给出重试命令）。
+- 本地：`zig build test` 通过；`bun test ./test` **171 pass / 18 skip / 0 fail**；first-run 12 项与 install 的 FB-EMPTY 8 项全部通过。
+- **CI 36830987643（918a8ea）三平台全绿**：
+  - ubuntu 与 macOS：FB-EMPTY 各场景（最新兼容 release、argv/cwd/stdin/退出码、下载失败不激活且不启动、显式或固定版本缺失不自动安装、并发只激活一个、已记录的渠道保留、PTY 中先询问补全再下载）以及两项 5.1 复审回归都实际通过。
+  - windows-2022：非交互 FB-EMPTY 6 项实际通过。PTY 相关场景因没有 ConPTY 测试框架而写明原因 skip。
+- 勾选 **5.2**；5.1 维持勾选。残余风险：
+  - 数据根尚未初始化时，并发首次启动存在 ownership 初始化竞争（worker 报告），归 5.4。
+  - Windows 控制台交互仍无运行证据，归 8.2。
