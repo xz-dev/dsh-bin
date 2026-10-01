@@ -1,7 +1,8 @@
 // Manager discovery/verification only: real Zig candidates, isolated HOME, no JS in child PATH.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { writeZip, type ZipInput } from "../../dsh-bun-build/runtime/zip.ts";
 import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
@@ -38,6 +39,19 @@ async function command(i: Install, s: ReturnType<typeof source>, args = ["manage
 	const timer = setTimeout(() => p.kill(), 30_000);
 	try { const [stdout, stderr, status] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]); return { stdout, stderr, status }; }
 	finally { clearTimeout(timer); }
+}
+async function paused(i: Install, args: string[], stage: string, action: (name: string) => void, env: Record<string, string> = {}) {
+	const p = spawn(i.exe, args, { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_PAUSE: stage, ...env }, stdio: "pipe" });
+	let stdout = "", stderr = ""; p.stdout.on("data", b => { stdout += b.toString(); }); p.stderr.on("data", b => { stderr += b.toString(); });
+	const done = new Promise<number | null>((resolve, reject) => { p.on("close", resolve); p.on("error", reject); });
+	const timer = setTimeout(() => p.kill("SIGKILL"), 20_000);
+	try {
+		const deadline = Date.now() + 10_000;
+		while (!stderr.includes(`test pause: ${stage} `) && p.exitCode === null && Date.now() < deadline) await Bun.sleep(10);
+		expect(stderr).toContain(`test pause: ${stage} `);
+		const name = stderr.split(`test pause: ${stage} `)[1].split("\n")[0]; action(name); p.stdin.end("continue");
+		const status = await done; return { stdout, stderr, status };
+	} finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await done; } }
 }
 const protectedDirs = ["bundles", "snapshots", "addons", "home"];
 function protectedBytes(i: Install) {
@@ -154,3 +168,13 @@ test.skipIf(!hasZig)("MC-CLEAN: portable manager candidates reclaim only exact m
 	writeFileSync(partial, "interrupted"); writeFileSync(prereleasePart, "interrupted prerelease"); writeFileSync(malformedPart, "USER PART FILE"); symlinkSync(external, partialAlias, WIN ? "junction" : "dir");
 	expect(run(i, ["manager", "clean"]).status).toBe(0); expect(existsSync(partial)).toBe(false); expect(existsSync(prereleasePart)).toBe(false); expect(readFileSync(malformedPart, "utf8")).toBe("USER PART FILE"); expect(existsSync(partialAlias)).toBe(true); expect(existsSync(real)).toBe(false); expect(readFileSync(unknown, "utf8")).toBe("USER FILE"); expect(readdirSync(i.dir)).toContain(alias.split(/[\\/]/).at(-1)!); expect(readFileSync(join(external, "keep"), "utf8")).toBe("KEEP");
 }, 60_000);
+
+test.skipIf(!hasZig)("MC-CLEAN review: a candidate swapped for a user directory never deletes credentials", async () => {
+	const i = fixture(), name = `.dsh-manager-candidate-${NEXT}`, path = join(i.dir, name);
+	cpSync(next, path);
+	const r = await paused(i, ["manager", "clean"], "candidate-clean-delete", () => {
+		renameSync(path, join(i.home, "saved")); mkdirSync(path); writeFileSync(join(path, "credential"), "USER CREDENTIAL");
+	});
+	expect(r.status).toBe(0); expect(readFileSync(join(path, "credential"), "utf8")).toBe("USER CREDENTIAL");
+	expect(r.stderr).toContain("kept manager candidate"); expect(r.stdout).not.toContain(`Removed manager-directory/${name}`);
+}, 30_000);

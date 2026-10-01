@@ -91,6 +91,15 @@ pub fn validate(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, version
     if (std.mem.indexOf(u8, bytes, marker) == null) return error.ManagerVersionMismatch;
     if (std.mem.indexOf(u8, bytes, protocol_marker) == null) return error.ManagerProtocolMismatch;
 }
+/// Deterministic race barrier; production ignores both variables.
+pub fn testPause(ctx: *const @import("context.zig").Ctx, stage: []const u8, name: []const u8) void {
+    if (!std.mem.eql(u8, ctx.env.get("DSH_MANAGER_TEST") orelse "", "1") or
+        !std.mem.eql(u8, ctx.env.get("DSH_MANAGER_TEST_PAUSE") orelse "", stage)) return;
+    @import("util.zig").warn("test pause: {s} {s}", .{ stage, name });
+    var byte: [1]u8 = undefined;
+    if ((std.fs.File.stdin().read(&byte) catch 0) == 0) std.process.exit(1);
+}
+
 pub fn candidateVersion(name: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, name, candidate_prefix)) return null;
     const version = name[candidate_prefix.len..];
