@@ -267,3 +267,11 @@
 - 首轮 red：`TMPDIR=/var/tmp/dsh-45 PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH timeout 300 bun test ./test/completion-relocate.test.ts`：**0 pass / 4 skip / 6 fail**。Bash/Fish/pwsh 的 PATH 绑定仍固定旧绝对 exe，移动后读不到新 snapshot；特殊字符 snapshot 被 safeWord 过滤而没有候选。Zsh、Windows PowerShell 缺宿主而明确 skip。日志 `/var/tmp/dsh-45/red.log`，失败发生于缺目标候选而非 harness 解析错误。
 - 第一阶段 green：相同 `completion-relocate.test.ts` 命令 **6 pass / 4 skip / 0 fail**，Bash/Fish/pwsh 实际覆盖 PATH 更新后移动数据根、旧目录不存在、旧绝对绑定无候选、从新位置刷新/撤销，以及带空格/单引号/双引号/非 ASCII 的 exe 路径。Windows 文件名不能含双引号，Windows 样本明确省略该非法字符。候选含 `$()`、backtick、`;`、`*`、空格、非 ASCII、单引号；Bash/Fish 接受插入文本、pwsh 静态解析 CompletionText 都还原精确 literal，canary 不存在。测试 harness 的 eval 仅用于模拟用户接受转义后的插入词，产品无 eval。
 - `completion.test.ts completion-shells.test.ts` **15 pass / 9 skip / 0 fail**；`zig build test --summary all` **44/44**。Zsh/Windows 真实运行留给 CI，4.5 未勾选。尝试先前孤立 Zsh binary 时出现本地 `sigsuspend` 等待（连既有 4.3 load 场景也挂起），未作为 green；没有修改生产逻辑规避此宿主行为。
+
+### 4.4 独立复审（随 4.5 修复）
+
+- 独立 reviewer 报告两项 P1（可编辑 ownership/count 导致删除用户父目录；PowerShell `"d`sh"` 绕过 foreign 检查）及 P2（自定义 profile 被错误宣称新会话自动加载）。父会话授权本 worker 同轮修复并单独提交。
+- 复审 regression red：`TMPDIR=/var/tmp/dsh-45 PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH timeout 200 bun test ./test/completion-shells.test.ts -t review`：**0 pass / 3 skip / 3 fail**。失败分别是 existing→created 改写被接受、真实 pwsh escaped foreign 补全被接管、自定义 profile hint 宣称 autoload；5.1 本机明确 skip。
+- 用户批准统一 v2 block integrity：只允许 existing/created，不接受 created:N；SHA-256 行覆盖带 ownership/binding 的精确模板正文（不含 checksum 自己），改任何一字节则拒绝；从不删除父目录，文件仅在 created 且移除 block 后字节为空时删除，创建的 PS BOM 属 block。checksum 是修改探测，不是防恶意重算的认证。4.4 从未发布，不加 legacy fixture/migration，旧/未知 marker 拒绝并保持字节不变。
+- PowerShell foreign scan 保守拒绝有 Register-ArgumentCompleter 且含 dsh/backtick/$/括号的代码；这会拒绝部分无关动态 completer，换取不覆盖无法排除的 foreign dsh。hint 统一为 sessions that load <file>，保留当前会话 dot-source。
+- green：同环境 `bun test ./test/completion-shells.test.ts` **11 pass / 8 skip / 0 fail**，三个新增真实 pwsh review 场景实际通过，5.1 留给 CI。测试改为断言 parent directories 保留。

@@ -247,13 +247,14 @@ fn script(ctx: *Ctx, shell: Shell, bound: []const u8) []const u8 {
     return std.mem.replaceOwned(u8, ctx.a, template, "@DSH@", quoted(ctx, shell, boundCommand(bound).?)) catch util.oom();
 }
 
-fn block(ctx: *Ctx, shell: Shell, created: bool, parents: usize, bound: []const u8) []const u8 {
-    // Keep existing Bash/Zsh marker bytes stable. New owned files record created parent count.
-    const ownership = if (created and (shell == .fish or isPowerShell(shell)))
-        std.fmt.allocPrint(ctx.a, "created:{d}", .{parents}) catch util.oom()
-    else if (created) "created" else "existing";
+fn block(ctx: *Ctx, shell: Shell, created: bool, bound: []const u8) []const u8 {
     const encoded = std.json.Stringify.valueAlloc(ctx.a, bound, .{}) catch util.oom();
-    return std.fmt.allocPrint(ctx.a, "\n# >>> dsh-manager completion v2 {s} {s}\n# binding: {s}\n{s}{s}", .{ @tagName(shell), ownership, encoded, script(ctx, shell, bound), end_marker }) catch util.oom();
+    const header = std.fmt.allocPrint(ctx.a, "\n# >>> dsh-manager completion v2 {s} {s}\n", .{ @tagName(shell), if (created) "created" else "existing" }) catch util.oom();
+    const body = std.fmt.allocPrint(ctx.a, "# binding: {s}\n{s}{s}", .{ encoded, script(ctx, shell, bound), end_marker }) catch util.oom();
+    const bom = if (created and isPowerShell(shell)) "\xef\xbb\xbf" else "";
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(std.mem.concat(ctx.a, u8, &.{ bom, header, body }) catch util.oom(), &digest, .{});
+    return std.fmt.allocPrint(ctx.a, "{s}{s}# sha256: {s}\n{s}", .{ bom, header, std.fmt.bytesToHex(digest, .lower), body }) catch util.oom();
 }
 
 fn isPowerShell(shell: Shell) bool {
@@ -281,7 +282,7 @@ fn foreign(ctx: *Ctx, bytes: []const u8, shell: Shell) bool {
     // ponytail: conservative file-level PS scan covers multiline CommandName arrays;
     // use a parser if false-positive refusals become a real problem.
     const lower = std.ascii.allocLowerString(ctx.a, ps.items) catch util.oom();
-    return std.mem.indexOf(u8, lower, "register-argumentcompleter") != null and std.mem.indexOf(u8, lower, "dsh") != null;
+    return std.mem.indexOf(u8, lower, "register-argumentcompleter") != null and (std.mem.indexOf(u8, lower, "dsh") != null or std.mem.indexOfScalar(u8, lower, '`') != null or std.mem.indexOfScalar(u8, lower, '$') != null or std.mem.indexOfScalar(u8, lower, '(') != null);
 }
 
 fn standardCollision(ctx: *Ctx, shell: Shell, home: []const u8) bool {
@@ -341,17 +342,6 @@ pub fn registrationPath(ctx: *Ctx, shell: Shell, override: ?[]const u8) ![]const
     return path;
 }
 
-fn missingParents(path: []const u8) usize {
-    var parent = std.fs.path.dirname(path);
-    var count: usize = 0;
-    while (parent) |p| {
-        if (util.exists(p)) break;
-        count += 1;
-        parent = std.fs.path.dirname(p);
-    }
-    return count;
-}
-
 fn decodeProfile(ctx: *Ctx, bytes: []const u8) ![]const u8 {
     if (!std.mem.startsWith(u8, bytes, "\xff\xfe")) {
         if (std.mem.startsWith(u8, bytes, "\xfe\xff") or std.mem.indexOfScalar(u8, bytes, 0) != null) return error.InvalidEncoding;
@@ -373,7 +363,7 @@ fn resultHint(ctx: *Ctx, shell: Shell, path: []const u8, installing: bool, dry: 
     if (std.mem.startsWith(u8, binding(ctx), "abs:")) util.print("Bound to this absolute manager location. After a move, re-register with the new manager: manager completion install {s}\n", .{@tagName(shell)});
     util.print("Completion registration: {s}\n{s}{s}\n", .{ path, if (dry) "Dry run: " else "Action: ", action });
     if (installing) {
-        util.print("New interactive {s} sessions load it. For the current session: {s} {s}\n", .{ @tagName(shell), if (isPowerShell(shell)) "." else "source", quoted(ctx, shell, path) });
+        util.print("Completion activates in {s} sessions that load {s}. For the current session: {s} {s}\n", .{ @tagName(shell), quoted(ctx, shell, path), if (isPowerShell(shell)) "." else "source", quoted(ctx, shell, path) });
     } else if (isPowerShell(shell)) {
         util.print("Start a new session; PowerShell has no public unregister API for the current session.\n", .{});
     } else {
@@ -443,7 +433,6 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
     const bytes = if (isPowerShell(shell)) decodeProfile(ctx, raw) catch return collision(path) else raw;
     var output: []const u8 = bytes;
     var remove_file = false;
-    var parents: usize = 0;
     var action: []const u8 = if (installing) "already-registered" else "nothing-to-remove";
     const home = ctx.env.get(if (@import("context.zig").is_windows) "USERPROFILE" else "HOME") orelse "";
     if (std.mem.indexOf(u8, bytes, "\n# >>> dsh-manager completion v2 ")) |start| {
@@ -451,37 +440,38 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
         const line_end = std.mem.indexOfScalarPos(u8, tail, 1, '\n') orelse return collision(path);
         const line = tail[1..line_end];
         const token = line[(std.mem.lastIndexOfScalar(u8, line, ' ') orelse return collision(path)) + 1 ..];
-        const created = eq(token, "created") or std.mem.startsWith(u8, token, "created:");
-        if (std.mem.startsWith(u8, token, "created:")) parents = std.fmt.parseInt(usize, token[8..], 10) catch return collision(path);
-        if (parents > 128) return collision(path);
-        const binding_start = line_end + 1;
+        if (!eq(token, "created") and !eq(token, "existing")) return collision(path);
+        const created = eq(token, "created");
+        const integrity_end = std.mem.indexOfScalarPos(u8, tail, line_end + 1, '\n') orelse return collision(path);
+        const binding_start = integrity_end + 1;
         const binding_end = std.mem.indexOfScalarPos(u8, tail, binding_start, '\n') orelse return collision(path);
         const binding_line = tail[binding_start..binding_end];
         if (!std.mem.startsWith(u8, binding_line, "# binding: ")) return collision(path);
         const stored = std.json.parseFromSliceLeaky([]const u8, ctx.a, binding_line[11..], .{}) catch return collision(path);
         if (boundCommand(stored) == null) return collision(path);
-        const owned = block(ctx, shell, created, parents, stored);
-        if (!std.mem.startsWith(u8, tail, owned)) return collision(path);
-        const rest = tail[owned.len..];
+        const remove_start = if (created and isPowerShell(shell) and start == 3 and std.mem.startsWith(u8, bytes, "\xef\xbb\xbf")) 0 else start;
+        const owned = block(ctx, shell, created, stored);
+        const owned_tail = bytes[remove_start..];
+        if (!std.mem.startsWith(u8, owned_tail, owned)) return collision(path);
+        const rest = owned_tail[owned.len..];
         if (std.mem.indexOf(u8, rest, "# >>> dsh-manager completion") != null) return collision(path);
         if (shell == .fish and (start != 0 or rest.len != 0)) return collision(path);
         if (installing) {
             if (foreign(ctx, bytes[0..start], shell) or foreign(ctx, rest, shell) or standardCollision(ctx, shell, home)) return collision(path);
             if (!eq(stored, bound)) {
-                output = std.mem.concat(ctx.a, u8, &.{ bytes[0..start], block(ctx, shell, created, parents, bound), rest }) catch util.oom();
+                output = std.mem.concat(ctx.a, u8, &.{ bytes[0..remove_start], block(ctx, shell, created, bound), rest }) catch util.oom();
                 action = "refresh";
             }
         } else {
-            output = std.mem.concat(ctx.a, u8, &.{ bytes[0..start], rest }) catch util.oom();
-            remove_file = created and (output.len == 0 or (isPowerShell(shell) and eq(output, "\xef\xbb\xbf")));
+            output = std.mem.concat(ctx.a, u8, &.{ bytes[0..remove_start], rest }) catch util.oom();
+            remove_file = created and output.len == 0;
             action = "would-remove";
         }
     } else if (std.mem.indexOf(u8, bytes, "# >>> dsh-manager completion") != null or std.mem.indexOf(u8, bytes, end_marker) != null or (shell == .fish and existing != null)) {
         return collision(path);
     } else if (installing) {
         if (foreign(ctx, bytes, shell) or standardCollision(ctx, shell, home)) return collision(path);
-        parents = if (existing == null) missingParents(path) else 0;
-        output = std.mem.concat(ctx.a, u8, &.{ if (existing == null and isPowerShell(shell)) "\xef\xbb\xbf" else bytes, block(ctx, shell, existing == null, parents, bound) }) catch util.oom();
+        output = std.mem.concat(ctx.a, u8, &.{ bytes, block(ctx, shell, existing == null, bound) }) catch util.oom();
         action = if (existing == null) "create" else "append";
     }
     if (dry) {
@@ -493,12 +483,7 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
             util.warn("cannot remove completion registration {s}: {s}", .{ path, @errorName(err) });
             return 1;
         };
-        var parent = std.fs.path.dirname(path);
-        for (0..parents) |_| {
-            const p = parent orelse break;
-            std.fs.cwd().deleteDir(p) catch break; // Only our created, still-empty parents.
-            parent = std.fs.path.dirname(p);
-        }
+        // Retain parent directories: editable profile metadata must never authorize ancestor deletion.
     } else if (!eq(output, bytes)) {
         if (existing == null) std.fs.cwd().makePath(std.fs.path.dirname(path) orelse return 1) catch |err| {
             util.warn("cannot create completion parent for {s}: {s}", .{ path, @errorName(err) });

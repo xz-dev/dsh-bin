@@ -122,7 +122,7 @@ HTTPS 下载支持 `HTTPS_PROXY/https_proxy`（以及 `ALL_PROXY/all_proxy`）�
 
 公开接口固定为 `manager completion script|install|uninstall <shell>`（install/uninstall 也接受 `--shell <shell>`）；shell 的薄钩子调用管理器私有候选接口，输入命令词和光标位置均作为数据。当前 Bash/Zsh 通过 `manager __complete --shell <shell> -- <words...>` 查询：words 不含命令路径，截到光标所在词且保留末尾空词；不解释输入。候选来自管理命令声明、安装/快照/addon 状态及有效运行包的 `completion.json`。未知描述或缺少运行包只减少应用候选，不触发修复/联网。
 
-Bash 注册为 `$HOME/.bashrc` 标记块，Zsh 注册为 `${ZDOTDIR:-$HOME}/.zshrc` 标记块；Zsh 仅在 compdef 尚不存在时运行 `compinit -D -i`，已初始化时不重跑。块记录目标文件原先是否存在，撤销恢复原字节或删除仅由注册创建的空 rc；标记/内容被修改则保留并提示手工处理。片段加载时也检查已注册的 foreign completion。注册/生成时以 Zig 查询 PATH 的首个 dsh（Windows 用 PATHEXT）并解析 realpath：与当前真实 exe 相同时绑定 name:dsh，否则绑定 abs:<path>；v2 所有权标记保存绑定，精确验证原模板后才可搬迁后刷新或撤销，绝对绑定提示重新注册，查询缺入口时静默无候选，不扫描文件系统。
+Bash 注册为 `$HOME/.bashrc` 标记块，Zsh 注册为 `${ZDOTDIR:-$HOME}/.zshrc` 标记块；Zsh 仅在 compdef 尚不存在时运行 `compinit -D -i`，已初始化时不重跑。块记录目标文件原先是否存在，撤销恢复原字节或删除仅由注册创建的空 rc；标记/内容被修改则保留并提示手工处理。片段加载时也检查已注册的 foreign completion。注册/生成时以 Zig 查询 PATH 的首个 dsh（Windows 用 PATHEXT）并解析 realpath：与当前真实 exe 相同时绑定 name:dsh，否则绑定 abs:<path>；v2 所有权标记保存绑定与 existing/created，并以 SHA-256 检查整块精确模板（含 ownership/binding，不含 checksum 自己）未被改写后才可搬迁后刷新或撤销；创建的空文件可撤销，父目录一律保留，绝对绑定提示重新注册，查询缺入口时静默无候选，不扫描文件系统。
 
 Bash 使用 complete，Zsh 使用 compdef/fpath 并尊重现有 compinit 顺序，Fish 使用用户 completion 目录，PowerShell 使用用户 profile 的原生 completer。注册前列出目标，不仅凭 `$SHELL` 猜测；不确定时让用户选择。保留用户自定义补全，不覆盖非本工具内容。生成片段带所有权标记；重复 install 幂等，uninstall 仅移除仍可确认归本工具所有且未被用户修改的内容。
 
