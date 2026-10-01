@@ -12,8 +12,8 @@ else
         local candidate
         while IFS= read -r candidate; do
             candidates+=("$candidate")
-        done < <(@DSH@ manager __complete --shell zsh -- "${words[@]:1:$((CURRENT - 1))}" 2>/dev/null)
-        (( ${#candidates} )) && compadd -- "${candidates[@]}"
+        done < <(command @DSH@ manager __complete --shell zsh -- "${words[@]:1:$((CURRENT - 1))}" 2>/dev/null)
+        (( ${#candidates} )) && compadd -Q -- "${(@q)candidates}"
     }
     _dsh_manager_completion_owner=@DSH@
     compdef _dsh_manager_complete dsh

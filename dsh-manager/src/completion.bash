@@ -7,8 +7,9 @@ else
         local candidate
         COMPREPLY=()
         while IFS= read -r candidate; do
+            printf -v candidate '%q' "$candidate"
             COMPREPLY+=("$candidate")
-        done < <(@DSH@ manager __complete --shell bash -- "${COMP_WORDS[@]:1:COMP_CWORD}" 2>/dev/null)
+        done < <(command @DSH@ manager __complete --shell bash -- "${COMP_WORDS[@]:1:COMP_CWORD}" 2>/dev/null)
     }
     _dsh_manager_completion_owner=@DSH@
     complete -F _dsh_manager_complete dsh

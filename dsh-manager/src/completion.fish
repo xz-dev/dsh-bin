@@ -8,7 +8,7 @@ else
     function _dsh_manager_complete
         set -l prior (commandline -opc)
         set -l prefix (commandline -ct)
-        @DSH@ manager __complete --shell fish -- $prior[2..-1] "$prefix" 2>/dev/null
+        command @DSH@ manager __complete --shell fish -- $prior[2..-1] "$prefix" 2>/dev/null | string escape
     end
     complete -c dsh -f -a '(_dsh_manager_complete)'
     set -g _dsh_manager_completion_owner @DSH@

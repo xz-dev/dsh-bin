@@ -22,13 +22,16 @@ Register-ArgumentCompleter -Native -CommandName dsh,dsh.exe -ScriptBlock {
     foreach ($word in $words) {
         if ($word.IndexOf([char]0) -ge 0 -or $word.IndexOf($separator) -ge 0) { return }
     }
+    $manager = Get-Command -Name @DSH@ -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $manager) { return }
     $oldWords = [Environment]::GetEnvironmentVariable('DSH_COMPLETE_WORDS', 'Process')
     $oldEncoding = [Console]::OutputEncoding
     try {
         [Environment]::SetEnvironmentVariable('DSH_COMPLETE_WORDS', [string]::Join($separator.ToString(), $words.ToArray()), 'Process')
         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-        foreach ($candidate in (& @DSH@ manager __complete --shell pwsh --words-env 2>$null)) {
-            [System.Management.Automation.CompletionResult]::new($candidate, $candidate, 'ParameterValue', $candidate)
+        foreach ($candidate in (& $manager.Source manager __complete --shell pwsh --words-env 2>$null)) {
+            $insert = if ($candidate -cmatch '^[A-Za-z0-9_.+@:-]+$') { $candidate } else { "'" + $candidate.Replace("'", "''") + "'" }
+            [System.Management.Automation.CompletionResult]::new($insert, $candidate, 'ParameterValue', $candidate)
         }
     } finally {
         [Environment]::SetEnvironmentVariable('DSH_COMPLETE_WORDS', $oldWords, 'Process')

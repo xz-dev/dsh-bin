@@ -260,3 +260,10 @@
 - **修正（eb4b9f2）**：psRun 改为以真实进程环境为基础（滤掉 `DSH_*`），只覆盖 HOME/USERPROFILE/XDG/FAKE_OUT/PATH；profile 仍通过 -NoProfile/--profile 隔离；timeout 调到 90 秒。
 - **CI 36813128417 三平台全绿**：windows-2022 上 powershell 5.1 与 pwsh 共 **10 项实际执行全部通过**（load/候选/重复注册/逐字节还原、words-env 的空前缀/空格/引号/非 ASCII、foreign completer 拒绝、改写块保护与 dry-run 零写入、默认路径与真实 `$PROFILE.CurrentUserAllHosts` 一致）；ubuntu-24.04 与 macos-15 的 Fish 三项实际执行通过。Windows 上 Fish/Bash/Zsh 写明原因 skip。
 - **勾选 4.4**。4.5（稳定 PATH、搬迁、四种 shell 的完整 quoting 矩阵）未做。
+
+## 4.5 SC-RELOCATE / SC-QUOTING（实施中）
+
+- 用户通过 supervisor 批准：注册时 Zig 查询 PATH 的第一个 dsh 命中并解析 realpath；只有它与当前 exe 相同才绑定 `name:dsh`，否则 `abs:<path>`。绑定写入所有权标记，验证原模板后允许移动后重新注册/撤销。无 `--command` 或 argv[0] 猜测。允许本地候选的可打印 UTF-8 名字（拒绝控制字符与路径分隔符），严格 CLI command/flag 校验不变；各 shell 对插入文本转义。
+- 首轮 red：`TMPDIR=/var/tmp/dsh-45 PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH timeout 300 bun test ./test/completion-relocate.test.ts`：**0 pass / 4 skip / 6 fail**。Bash/Fish/pwsh 的 PATH 绑定仍固定旧绝对 exe，移动后读不到新 snapshot；特殊字符 snapshot 被 safeWord 过滤而没有候选。Zsh、Windows PowerShell 缺宿主而明确 skip。日志 `/var/tmp/dsh-45/red.log`，失败发生于缺目标候选而非 harness 解析错误。
+- 第一阶段 green：相同 `completion-relocate.test.ts` 命令 **6 pass / 4 skip / 0 fail**，Bash/Fish/pwsh 实际覆盖 PATH 更新后移动数据根、旧目录不存在、旧绝对绑定无候选、从新位置刷新/撤销，以及带空格/单引号/双引号/非 ASCII 的 exe 路径。Windows 文件名不能含双引号，Windows 样本明确省略该非法字符。候选含 `$()`、backtick、`;`、`*`、空格、非 ASCII、单引号；Bash/Fish 接受插入文本、pwsh 静态解析 CompletionText 都还原精确 literal，canary 不存在。测试 harness 的 eval 仅用于模拟用户接受转义后的插入词，产品无 eval。
+- `completion.test.ts completion-shells.test.ts` **15 pass / 9 skip / 0 fail**；`zig build test --summary all` **44/44**。Zsh/Windows 真实运行留给 CI，4.5 未勾选。尝试先前孤立 Zsh binary 时出现本地 `sigsuspend` 等待（连既有 4.3 load 场景也挂起），未作为 green；没有修改生产逻辑规避此宿主行为。

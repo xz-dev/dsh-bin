@@ -32,6 +32,14 @@ fn safeWord(word: []const u8) bool {
     return true;
 }
 
+fn localWord(word: []const u8) bool {
+    if (word.len == 0 or eq(word, ".") or eq(word, "..")) return false;
+    var view = std.unicode.Utf8View.init(word) catch return false;
+    var it = view.iterator();
+    while (it.nextCodepoint()) |c| if (c < 0x20 or (c >= 0x7f and c <= 0x9f) or c == '/' or c == '\\') return false;
+    return true;
+}
+
 fn emit(prefix: []const u8, word: []const u8) void {
     if (safeWord(word) and std.mem.startsWith(u8, word, prefix)) util.print("{s}\n", .{word});
 }
@@ -53,7 +61,7 @@ fn localDirs(ctx: *Ctx, prefix: []const u8, parts: []const []const u8, name_pref
     var words: std.ArrayList([]const u8) = .empty;
     var it = dir.iterate();
     while (it.next() catch null) |e| {
-        if (e.kind != .directory or e.name[0] == '.' or !safeWord(e.name)) continue;
+        if (e.kind != .directory or e.name[0] == '.' or !localWord(e.name)) continue;
         words.append(ctx.a, std.fmt.allocPrint(ctx.a, "{s}{s}", .{ name_prefix, e.name }) catch util.oom()) catch util.oom();
     }
     std.mem.sort([]const u8, words.items, {}, struct {
@@ -61,7 +69,7 @@ fn localDirs(ctx: *Ctx, prefix: []const u8, parts: []const []const u8, name_pref
             return std.mem.lessThan(u8, x, y);
         }
     }.lt);
-    for (words.items) |w| emit(prefix, w);
+    for (words.items) |w| if (localWord(w) and std.mem.startsWith(u8, w, prefix)) util.print("{s}\n", .{w});
 }
 
 fn addons(ctx: *Ctx, prefix: []const u8) void {
@@ -189,7 +197,7 @@ pub fn query(ctx: *Ctx, inherited: select.Options, args: []const []const u8) u8 
 }
 
 pub const Shell = enum { bash, zsh, fish, pwsh, powershell };
-const end_marker = "# <<< dsh-manager completion v1\n";
+const end_marker = "# <<< dsh-manager completion v2\n";
 
 fn quoted(ctx: *Ctx, shell: Shell, text: []const u8) []const u8 {
     const replacement = switch (shell) {
@@ -202,22 +210,50 @@ fn quoted(ctx: *Ctx, shell: Shell, text: []const u8) []const u8 {
     return std.fmt.allocPrint(ctx.a, "'{s}'", .{escaped}) catch util.oom();
 }
 
-fn script(ctx: *Ctx, shell: Shell) []const u8 {
+/// The first PATH hit must be this manager, not an unrelated dsh (or a wrapper).
+fn binding(ctx: *Ctx) []const u8 {
+    const win = @import("context.zig").is_windows;
+    var paths = std.mem.splitScalar(u8, ctx.env.get("PATH") orelse "", if (win) ';' else ':');
+    while (paths.next()) |p| {
+        const dir = if (p.len == 0) "." else if (win) std.mem.trim(u8, p, "\"") else p;
+        var extensions = std.mem.splitScalar(u8, if (win) ctx.env.get("PATHEXT") orelse ".COM;.EXE;.BAT;.CMD" else "", ';');
+        while (extensions.next()) |ext| {
+            const name = std.fmt.allocPrint(ctx.a, "dsh{s}", .{ext}) catch util.oom();
+            const path = util.join(ctx.a, &.{ dir, name });
+            const st = std.fs.cwd().statFile(path) catch continue;
+            if (st.kind != .file) continue;
+            if (!win) std.posix.access(path, std.posix.X_OK) catch continue;
+            const real = std.fs.cwd().realpathAlloc(ctx.a, path) catch continue;
+            return if (if (win) std.ascii.eqlIgnoreCase(real, ctx.exe) else eq(real, ctx.exe)) "name:dsh" else std.fmt.allocPrint(ctx.a, "abs:{s}", .{ctx.exe}) catch util.oom();
+        }
+    }
+    return std.fmt.allocPrint(ctx.a, "abs:{s}", .{ctx.exe}) catch util.oom();
+}
+
+fn boundCommand(bound: []const u8) ?[]const u8 {
+    if (eq(bound, "name:dsh")) return "dsh";
+    if (!std.mem.startsWith(u8, bound, "abs:") or !std.fs.path.isAbsolute(bound[4..])) return null;
+    for (bound) |c| if (c < 0x20 or c == 0x7f) return null;
+    return bound[4..];
+}
+
+fn script(ctx: *Ctx, shell: Shell, bound: []const u8) []const u8 {
     const template = switch (shell) {
         .bash => @embedFile("completion.bash"),
         .zsh => @embedFile("completion.zsh"),
         .fish => @embedFile("completion.fish"),
         .pwsh, .powershell => @embedFile("completion.ps1"),
     };
-    return std.mem.replaceOwned(u8, ctx.a, template, "@DSH@", quoted(ctx, shell, ctx.exe)) catch util.oom();
+    return std.mem.replaceOwned(u8, ctx.a, template, "@DSH@", quoted(ctx, shell, boundCommand(bound).?)) catch util.oom();
 }
 
-fn block(ctx: *Ctx, shell: Shell, created: bool, parents: usize) []const u8 {
+fn block(ctx: *Ctx, shell: Shell, created: bool, parents: usize, bound: []const u8) []const u8 {
     // Keep existing Bash/Zsh marker bytes stable. New owned files record created parent count.
     const ownership = if (created and (shell == .fish or isPowerShell(shell)))
         std.fmt.allocPrint(ctx.a, "created:{d}", .{parents}) catch util.oom()
     else if (created) "created" else "existing";
-    return std.fmt.allocPrint(ctx.a, "\n# >>> dsh-manager completion v1 {s} {s}\n{s}{s}", .{ @tagName(shell), ownership, script(ctx, shell), end_marker }) catch util.oom();
+    const encoded = std.json.Stringify.valueAlloc(ctx.a, bound, .{}) catch util.oom();
+    return std.fmt.allocPrint(ctx.a, "\n# >>> dsh-manager completion v2 {s} {s}\n# binding: {s}\n{s}{s}", .{ @tagName(shell), ownership, encoded, script(ctx, shell, bound), end_marker }) catch util.oom();
 }
 
 fn isPowerShell(shell: Shell) bool {
@@ -334,6 +370,7 @@ fn encodeProfile(ctx: *Ctx, bytes: []const u8, utf16: bool) ![]const u8 {
 }
 
 fn resultHint(ctx: *Ctx, shell: Shell, path: []const u8, installing: bool, dry: bool, action: []const u8) void {
+    if (std.mem.startsWith(u8, binding(ctx), "abs:")) util.print("Bound to this absolute manager location. After a move, re-register with the new manager: manager completion install {s}\n", .{@tagName(shell)});
     util.print("Completion registration: {s}\n{s}{s}\n", .{ path, if (dry) "Dry run: " else "Action: ", action });
     if (installing) {
         util.print("New interactive {s} sessions load it. For the current session: {s} {s}\n", .{ @tagName(shell), if (isPowerShell(shell)) "." else "source", quoted(ctx, shell, path) });
@@ -376,9 +413,14 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
             return 1;
         }
     }
+    const bound = binding(ctx);
+    if (boundCommand(bound) == null) {
+        util.warn("completion requires a manager path without control characters", .{});
+        return 1;
+    }
     if (eq(verb, "script")) {
         if (profile != null or dry) return 1;
-        util.print("{s}", .{script(ctx, shell)});
+        util.print("{s}", .{script(ctx, shell, bound)});
         return 0;
     }
     const installing = eq(verb, "install");
@@ -404,7 +446,7 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
     var parents: usize = 0;
     var action: []const u8 = if (installing) "already-registered" else "nothing-to-remove";
     const home = ctx.env.get(if (@import("context.zig").is_windows) "USERPROFILE" else "HOME") orelse "";
-    if (std.mem.indexOf(u8, bytes, "\n# >>> dsh-manager completion v1 ")) |start| {
+    if (std.mem.indexOf(u8, bytes, "\n# >>> dsh-manager completion v2 ")) |start| {
         const tail = bytes[start..];
         const line_end = std.mem.indexOfScalarPos(u8, tail, 1, '\n') orelse return collision(path);
         const line = tail[1..line_end];
@@ -412,13 +454,23 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
         const created = eq(token, "created") or std.mem.startsWith(u8, token, "created:");
         if (std.mem.startsWith(u8, token, "created:")) parents = std.fmt.parseInt(usize, token[8..], 10) catch return collision(path);
         if (parents > 128) return collision(path);
-        const owned = block(ctx, shell, created, parents);
+        const binding_start = line_end + 1;
+        const binding_end = std.mem.indexOfScalarPos(u8, tail, binding_start, '\n') orelse return collision(path);
+        const binding_line = tail[binding_start..binding_end];
+        if (!std.mem.startsWith(u8, binding_line, "# binding: ")) return collision(path);
+        const stored = std.json.parseFromSliceLeaky([]const u8, ctx.a, binding_line[11..], .{}) catch return collision(path);
+        if (boundCommand(stored) == null) return collision(path);
+        const owned = block(ctx, shell, created, parents, stored);
         if (!std.mem.startsWith(u8, tail, owned)) return collision(path);
         const rest = tail[owned.len..];
         if (std.mem.indexOf(u8, rest, "# >>> dsh-manager completion") != null) return collision(path);
         if (shell == .fish and (start != 0 or rest.len != 0)) return collision(path);
         if (installing) {
             if (foreign(ctx, bytes[0..start], shell) or foreign(ctx, rest, shell) or standardCollision(ctx, shell, home)) return collision(path);
+            if (!eq(stored, bound)) {
+                output = std.mem.concat(ctx.a, u8, &.{ bytes[0..start], block(ctx, shell, created, parents, bound), rest }) catch util.oom();
+                action = "refresh";
+            }
         } else {
             output = std.mem.concat(ctx.a, u8, &.{ bytes[0..start], rest }) catch util.oom();
             remove_file = created and (output.len == 0 or (isPowerShell(shell) and eq(output, "\xef\xbb\xbf")));
@@ -429,7 +481,7 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
     } else if (installing) {
         if (foreign(ctx, bytes, shell) or standardCollision(ctx, shell, home)) return collision(path);
         parents = if (existing == null) missingParents(path) else 0;
-        output = std.mem.concat(ctx.a, u8, &.{ if (existing == null and isPowerShell(shell)) "\xef\xbb\xbf" else bytes, block(ctx, shell, existing == null, parents) }) catch util.oom();
+        output = std.mem.concat(ctx.a, u8, &.{ if (existing == null and isPowerShell(shell)) "\xef\xbb\xbf" else bytes, block(ctx, shell, existing == null, parents, bound) }) catch util.oom();
         action = if (existing == null) "create" else "append";
     }
     if (dry) {

@@ -210,7 +210,7 @@ _dsh_manager_complete`;
 		writeFileSync(rc, "# keep me\n");
 		expect(run(i, ["manager", "completion", "install", shell], { env: { ZDOTDIR: i.home } }).status).toBe(0);
 		const owned = readFileSync(rc, "utf8");
-		for (const modified of [owned.replace("_dsh_manager_complete()", "_user_modified_complete()"), owned.replace("# >>> dsh-manager completion v1", "# >>> dsh-manager completion changed")]) {
+		for (const modified of [owned.replace("_dsh_manager_complete()", "_user_modified_complete()"), owned.replace("# >>> dsh-manager completion v2", "# >>> dsh-manager completion changed")]) {
 			writeFileSync(rc, modified);
 			const uninstall = run(i, ["manager", "completion", "uninstall", shell], { env: { ZDOTDIR: i.home } });
 			expect(uninstall.status).toBe(1);

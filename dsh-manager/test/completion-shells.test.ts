@@ -88,7 +88,7 @@ test.skipIf(!!fishReason)(`SC-IDEMPOTENT: fish refuses modified owned file; dry-
 	expect(tree(i.home)).toEqual(before); expect(existsSync(i.data)).toBe(false);
 	expect(run(i, ["manager", "completion", "install", "fish"], { env }).status).toBe(0);
 	const owned = readFileSync(path, "utf8");
-	for (const modified of [owned.replace("function _dsh_manager_complete", "function _user_modified_complete"), owned.replace("# >>> dsh-manager completion v1", "# >>> dsh-manager completion changed"), owned + "# user addition\n"]) {
+	for (const modified of [owned.replace("function _dsh_manager_complete", "function _user_modified_complete"), owned.replace("# >>> dsh-manager completion v2", "# >>> dsh-manager completion changed"), owned + "# user addition\n"]) {
 		writeFileSync(path, modified);
 		for (const verb of ["install", "uninstall"]) {
 			const result = run(i, ["manager", "completion", verb, "fish"], { env });
@@ -190,7 +190,7 @@ for (const shell of ["powershell", "pwsh"] as const) {
 		expect(tree(i.home)).toEqual(before); expect(existsSync(i.data)).toBe(false);
 		expect(run(i, args(i, "install")).status).toBe(0);
 		const owned = readFileSync(path, "utf8");
-		for (const modified of [owned.replace("Register-ArgumentCompleter", "Register-UserCompleter"), owned.replace("# >>> dsh-manager completion v1", "# >>> dsh-manager completion changed")]) {
+		for (const modified of [owned.replace("Register-ArgumentCompleter", "Register-UserCompleter"), owned.replace("# >>> dsh-manager completion v2", "# >>> dsh-manager completion changed")]) {
 			writeFileSync(path, modified);
 			for (const verb of ["install", "uninstall"]) {
 				const result = run(i, args(i, verb));
