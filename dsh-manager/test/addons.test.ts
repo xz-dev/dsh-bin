@@ -1,7 +1,7 @@
 // MC-ADDON: native manager operations and launch payload, no application needed.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { writeZip } from "../../dsh-bun-build/runtime/zip.ts";
@@ -48,6 +48,18 @@ async function command(i: Install, s: ReturnType<typeof source>, args: string[])
 }
 const selection = (i: Install) => readFileSync(join(i.data, "state/selection.json"), "utf8");
 const install = (i: Install, s: ReturnType<typeof source>, v = "office") => command(i, s, ["--use", V, "manager", "install", "--addon", v]);
+
+test.skipIf(!hasZig)("MC-CLEAN: explicit addon install restores a validated interrupted retirement before downloading", async () => {
+	const i = newInstall(), s = source(i);
+	try {
+		expect((await install(i, s, `office:${A}`)).status).toBe(0);
+		const dir = join(i.data, "addons/office", A), backup = join(i.data, "tmp", `.previous-addon-office-${A}`);
+		writeFileSync(join(dir, "node_modules/keep"), "last generation"); renameSync(dir, backup);
+		const before = s.requests.length, recovered = await install(i, s, `office:${A}`);
+		expect(recovered.status).toBe(0); expect(s.requests.slice(before)).toEqual(["/runtime-index.json"]);
+		expect(readFileSync(join(dir, "node_modules/keep"), "utf8")).toBe("last generation"); expect(existsSync(backup)).toBe(false); expect(started(i)).toBe(false);
+	} finally { s.stop(); }
+});
 
 test.skipIf(!hasZig)("MC-IN-USE: force addon activation rechecks a session that starts during download", async () => {
 	const i = newInstall(); let armed = false, session: Awaited<ReturnType<typeof holdSession>> | undefined;

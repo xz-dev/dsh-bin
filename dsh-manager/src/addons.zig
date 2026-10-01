@@ -200,9 +200,13 @@ fn perform(ctx: *Ctx, t: Table, query: ?[]const u8, force: bool) !void {
     defer tmp.close();
     const installer = @import("install.zig");
     const backup = try std.fmt.allocPrint(ctx.a, ".previous-addon-office-{s}", .{c.version});
+    // Mirror runtime install recovery under maintenance: never discard the only validated generation.
+    if (installer.existsIn(tmp, backup)) {
+        _ = try readIn(ctx, tmp, backup, c.version);
+        if (!installer.existsIn(parent, c.version)) try std.fs.rename(tmp, backup, parent, c.version);
+    }
     const exists = installer.existsIn(parent, c.version);
     if (exists) _ = try readIn(ctx, parent, c.version, c.version);
-    if (installer.existsIn(tmp, backup)) _ = try readIn(ctx, tmp, backup, c.version);
     if (exists and !force) {
         var current = try parent.openDir(c.version, .{ .no_follow = true });
         defer current.close();
