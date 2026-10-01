@@ -162,6 +162,8 @@ CI 分开筛选 manager 与 build/runtime 变更。组合测试显式选已验�
 
 **数据根布局与所有权**：数据根内 `.dsh-bin-data.json`（`{"kind":"dsh-manager-data","schema":1}`）是所有权标记。首次写入时，数据根不存在或为空目录才会创建并写标记；已有非空目录而无标记、或同名为文件，均报冲突。管理状态放在 `state/`：`selection.json`（`{schema:1,use,snapshot,addons}`，与旧格式同形）、`channel`、`completion.json`（每个 shell 的选择及结果）、`manager.lock`（维护互斥）。快照计数与快照锁在 `snapshots/.counters.json`、`snapshots/.lock`。
 
+首次写入未初始化数据根时，FB-CONCURRENT 允许后到进程明确报初始化竞争/中断并退出、提示重试；按用户决定不新增锁、等待或自动修复，非空无标记目录仍不接管。
+
 **运行包 `bundle.json` v1**：`kind="dsh-runtime"`、`schemaVersion=1`、`id`、`channel`、`target`、`upstream{commit,commitTime,tag?,version}`、`run`、`attempt`、`builderCommit`、`launchProtocol=1`、`entry`（相对路径，如 `dsh-native`）、`requiredPaths`（相对运行包根）、`addons.office{slot,pinned,known}`。归档根就是运行包根。管理器以 `commitTime`→`run`→`attempt` 排序。任何缺 `kind`/`schemaVersion`，或含 `launcherProtocol`/`bundles/` 外层的归档都视为旧格式。
 
 **`completion.json` v1**：运行包根固定路径，列入 bundle.json.requiredPaths；`{schemaVersion:1,commands:[{name:"",options:[{names:["-V","--version"],takesValue:false},...]},{name:"plugin",options:[...]}]}`。空 name 是根命令，其余为固定子命令；数据不含 help 文本、profile/plugin 内容或 shell 代码。构建器静态读取已部署的 `app/lib/bin.js` 中 literal Commander command/option/version 声明，不能识别的声明使构建失败；不导入应用。管理器仅接受 v1，按既有 `select.resolve` 的 `--use` → `--snapshot` → 默认 selection/channel 规则读取对应描述。

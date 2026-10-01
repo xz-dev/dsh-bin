@@ -4,6 +4,7 @@
 //! - FAKE_EXIT: exit status (default 0);
 //! - `<gen>.cwd` gets the working directory; with FAKE_STDIN set, `<gen>.stdin` gets up to 4 KiB of stdin;
 //! - FAKE_STDIN_HASH: stream all stdin and record its SHA-256 (binary/pipeline acceptance);
+//! - FAKE_HOLD: when set, write `<FAKE_OUT>/started` and then sleep 30 s;
 //! - FAKE_RESTART_WRITE / FAKE_RESTART_DATA: restart once like an in-app restart, after writing DATA to the
 //!   file WRITE: respawn this executable with the same arguments and environment (plus FAKE_GEN=2), then
 //!   exit with the replacement's status.

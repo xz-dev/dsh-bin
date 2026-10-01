@@ -356,3 +356,37 @@
 - 勾选 **5.2**；5.1 维持勾选。残余风险：
   - 数据根尚未初始化时，并发首次启动存在 ownership 初始化竞争（worker 报告），归 5.4。
   - Windows 控制台交互仍无运行证据，归 8.2。
+
+## 5.3 / 5.4
+
+### 场景映射与最小实现
+
+| 场景 | 已有入口/测试 | 本轮补足的外部断言 |
+|---|---|---|
+| FB-PIPE | `first_run.run` 的 stdin+stderr TTY 门禁；5.2 普通空启动保留 argv/cwd/stdin/exit | install.test.ts `FB-PIPE: empty noninteractive…` 用含 NUL 的 1 MiB 输入，由真实 Zig fake-runtime 流式 SHA-256，与测试侧摘要比较；不存 completion 选择。first-run.test.ts `FB-PIPE: noninteractive skip…` 验证下一次真实 Bash PTY 仍询问。 |
+| FB-READONLY | main.zig 在 launch 前分流 manager 和仅一个顶层 help/version；completion.query 不启动应用；storage.test.ts 原有无创建断言 | install.test.ts `FB-READONLY: cold helper queries…` 覆盖 manager --help/--version/info/list、顶层 --help/--version/-h/-V、__complete、completion script；记录源零请求、无数据根/用户文件、无应用启动，共享继承 stdin 文件偏移仍在首字节；顶层和 list 明确显示未安装。未改变路由，`--profile … --help` 仍是应用调用。 |
+| FB-OFFLINE | `launch.plan` 仅空目录自举；3.4 显式安装后停源启动；storage PS-MOVE | install.test.ts `FB-OFFLINE: installed pinned…` 固定版本带记录源启动零请求，停源后再次启动成功，selection 字节不变。 |
+| FB-MISSING | launch.test.ts 缺失/歧义/固定选择/旧格式/协议/缺入口诊断；5.2 无网络 no-fallback | 加强既有 install.test.ts `FB-MISSING: explicit/pinned…` 为显式版本、快照、固定版本、缺入口、旧格式、不兼容协议六种；均不下载、不启动并提供具体修复入口。另加下述 5.2 复审存储损坏回归。 |
+| FB-CONCURRENT | 5.2 已初始化数据根 install mutex 单激活；first-run 两种 shell 短锁合并 | 新 fresh-root 测试重复 24 轮双进程：两者成功或一成功另一明确初始化 retry；每轮只有一组 index/archive 请求、一个完整 bundle、marker 有效、不写/重置 selection，重跑成功。storage.test.ts 残留 temp/空或部分 marker 只报 retry，无接管/额外写入。 |
+| FB-RETRY | 3.2/3.3 install.test.ts 断连 Range、坏哈希、激活前后 crash、选择不变 | 新 `FB-RETRY: interrupted automatic…` 从无 runtime、latest 选择开始，自动下载断连失败不激活/不启动/无快照；再次启动带 Range 完成验证，启动目标，selection 字节不变。不重复显式安装 crash 矩阵。 |
+
+- **用户决定**（supervisor 转述的明确最终决定）：未初始化根的竞争无需工程化串行化；可预测错误优先。不新增锁、等待循环或自动修复，识别自身初始化 temp 或空/部分 marker 时只报清楚 retry 及安全恢复提示。保留 ensureData 原写入状态机。该过程可能两者均成功，也可能后到者非零退出；不会把非空无标记根自动接管。恢复提示明确禁止删除含用户数据的根。记录在 design.md D10。
+- **生产改动**：context.zig 识别 `.dsh-data-<1..16 hex>.tmp` 和未完成的 marker 字节前缀，读取无 marker 后若另一进程刚发布 marker也按竞争诊断，不修改失败方的根。未增加依赖。
+- **5.2 独立复审带入的 P1**（review run 9cbd750f，父会话本轮明确批准）：runtimes.list 原先忽略普通文件/悬空链接及目录打开/遍历错误，可误当空安装。单独提交 `a5c7294 fix(manager): refuse damaged runtime storage before auto-install`：只把不存在的 bundles/ 或真正无条目的目录视为空；bundles/ 链接/文件、非目录条目、隐藏未知条目、打开/遍历错误均带具体路径和 install --force/clean 指引拒绝。暂存实际在 tmp/，无需忽略 bundles/ 内任何隐藏名。回归覆盖普通文件条目、悬空链接、bundles/ 文件及隐藏未知条目，零请求、无激活/应用执行且树不变。Windows 跳过悬空链接子例（不假定权限），其余子例保留。
+
+### Red / green
+
+均在仓库根，`TMPDIR=/var/tmp/dsh-534`，真实本机 Zig 管理器/隔离 HOME/受控 origin，无宿主 JS runtime 位于被测 PATH。日志 `/var/tmp/dsh-534/`。
+
+1. `timeout 180 bun test dsh-manager/test/install.test.ts dsh-manager/test/storage.test.ts -t 'FB-PIPE|FB-READONLY|FB-OFFLINE|FB-CONCURRENT: fresh|initialization residue|FB-RETRY: interrupted automatic'`：**3 pass / 3 fail** (`red.log`)。fresh-root 在实际并发中得到旧 foreign-conflict 而不是 retry；残留 temp 同因失败；binary 哈希缺少 fake 观测入口（这是测试探针缺口，不冒充生产 stdin bug）。补探针和 retry 诊断后，加 first-run 同过滤器 **7 pass / 0 fail** (`green.log`)。
+2. 反事实输入消费检查：临时在 main 的 context.init 前读一字节 stdin，`timeout 180 bun test dsh-manager/test/install.test.ts -t 'FB-PIPE: empty|FB-READONLY'`：**0 pass / 2 fail** (`consume-counterfactual.log`)。二进制摘要不同；共享输入剩 `nread\x00sentinel` 而非 `unread\x00sentinel`。恢复原 main 后 `-t 'FB-PIPE: empty|FB-READONLY|FB-MISSING|FB-CONCURRENT: fresh'` **4 pass / 0 fail** (`green-focused.log`)。反事实修改未提交。
+3. 5.2 review 回归 `timeout 180 bun test dsh-manager/test/install.test.ts -t 'FB-MISSING review'`：**0 pass / 1 fail**，旧实现进入自动安装并给 RuntimeDirectoryConflict 而非在联网前拒绝 (`damaged-red.log`)；修改后 **1 pass / 0 fail / 25 expect** (`damaged-green.log`)。
+4. 初次 green 中错误把合法 JSON（无尾换行）识别成部分 marker，造成 3 fail；已修正为 trim 后比较严格不完整前缀。此是本轮实现错误，不算原缺陷的 red。
+
+### 验证与剩余门禁
+
+- `cd dsh-manager && zig build test --summary all`：**4/4 steps，44/44 tests passed**。
+- `cd dsh-manager && bun test ./test`（PATH 前置 `/var/tmp/dsh-section4.4-validation/pwsh`）：**179 pass / 18 skip / 0 fail** (`suite.log`)。本轮新增 8 个场景测试全跑；fresh-root 24 轮（48 次并发启动 + 24 次复跑）完成。
+- `zig fmt --check src test/fake-native.zig`、`zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-534/windows`、`zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-534/macos` 通过。交叉编译不当作原生执行证据。
+- 本机 skip：Windows PowerShell 5.1/Windows PATH 语义、缺 Zsh、本轮无 real-proxy 环境；Windows PTY/ConPTY 仍需 8.2 原生证据。本轮 5.3/5.4 任务保持未勾选，等父会话三平台 CI/独立验收；不存在 Windows 交互 green 主张。
+- 初始化 crash 残留只提供安全重试/人工恢复指引，不自动删除/修复，是用户批准的简化；损坏存储明确失败，clean 的具体实现仍属 6.6。不改用户真实 HOME/安装、不碰并行 change、不 push/dispatch。
