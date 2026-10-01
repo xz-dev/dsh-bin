@@ -342,3 +342,16 @@ test.skipIf(!hasZig || WIN)("MC-SELF-FAIL review: index-time ancestor swap never
 		expect(readFileSync(join(external, "credential"), "utf8")).toBe("KEEP");
 	} finally { clearTimeout(timer); release(); p.kill(); await p.exited; server.stop(true); }
 }, 60_000);
+
+test.skipIf(!hasZig || WIN)("MC-SELF-FAIL review: candidate hardlinks refuse before changing external owner or mode", async () => {
+	const i = fixture(), bytes = archive(), s = source([entry(NEXT, bytes)], bytes), old = sha(readFileSync(i.exe)), external = join(i.home, "other-manager");
+	writeFileSync(external, readFileSync(next), { mode: 0o700 }); chmodSync(i.exe, 0o751); const before = statSync(external);
+	try {
+		const r = await paused(i, ["manager", "self-update"], "self-update-before-replace", name => {
+			const path = join(i.dir, name); renameSync(path, join(i.home, "saved-candidate")); linkSync(external, path);
+		}, { DSH_MANAGER_TEST_ORIGIN: s.origin });
+		expect(r.status).toBe(1); expect(r.stdout).not.toContain("updated manager"); expect(r.stderr).toContain("self-update failed");
+		const after = statSync(external); expect(after.mode & 0o7777).toBe(before.mode & 0o7777); expect(after.uid).toBe(before.uid); expect(after.gid).toBe(before.gid);
+		expect(sha(readFileSync(i.exe))).toBe(old); expect(run(i, ["manager", "--version"]).stdout).toContain(MANAGER_VERSION);
+	} finally { s.stop(); }
+}, 60_000);

@@ -135,6 +135,7 @@ fn replace(ctx: *const Ctx, parent: std.fs.Dir, installed: std.fs.File, name: []
     defer candidate.close();
     if (!std.mem.eql(u8, &(try binary.digest(candidate)), &expected)) return error.ManagerFileChanged;
     const current = try std.posix.fstat(candidate.handle);
+    if (current.nlink != 1) return error.ManagerCandidateHardlinked;
     if (current.uid != original.uid or current.gid != original.gid) try candidate.chown(original.uid, original.gid);
     try candidate.chmod(original.mode & 0o7777);
     try candidate.sync();
