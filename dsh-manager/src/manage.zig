@@ -45,7 +45,8 @@ pub fn selection(ctx: *Ctx, args: []const []const u8) u8 {
     ctx.ensureData();
     const mutex = maintenance(ctx);
     defer mutex.release();
-    const use = if (std.mem.eql(u8, query, "latest")) query else require(runtimes.list(ctx), query);
+    const bundles = runtimes.list(ctx);
+    const use = if (std.mem.eql(u8, query, "latest")) query else require(bundles, query);
     const snap: ?snapshot.Snapshot = if (opts.snapshot) |id| snapshot.existing(ctx, id) catch |err|
         util.fatal("cannot select snapshot {s}: {s}; run `dsh manager snapshot list`", .{ id, @errorName(err) }) else null;
     const bytes = std.json.Stringify.valueAlloc(ctx.a, .{ .schema = @as(u32, 1), .use = use, .snapshot = if (snap) |s| s.id else null, .addons = struct {}{} }, .{}) catch util.oom();

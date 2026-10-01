@@ -11,8 +11,9 @@ beforeAll(() => { if (hasZig) build(); }, 300_000);
 afterAll(cleanup);
 const A = "1.0.0-b1.1.gdeadbeef", B = "1.0.0-b2.1.gdeadbeef", L = "live-cafebad-b3.1.gdeadbeef";
 const target = hostTargetId();
+type Entry = ReturnType<typeof bundleMeta> & { tag: string; seq: number; assets: Record<string, { name: string; size: number; sha256: string }> };
 function source() {
-	const requests: string[] = [], entries: any[] = [], assets = new Map<string, Buffer>();
+	const requests: string[] = [], entries: Entry[] = [], assets = new Map<string, Buffer>();
 	for (const [id, channel, time, n] of [[A, "release", "2026-09-01T00:00:00.000Z", 1], [B, "release", "2026-09-01T00:00:00.000Z", 2], [L, "live", "2026-09-02T00:00:00.000Z", 3]] as const) {
 		const meta = bundleMeta(id, { channel, commitTime: time, run: n, patch: { target } });
 		const zip = join(tempDir("dsh-versions-zip-"), "runtime.zip");
@@ -51,9 +52,17 @@ test.skipIf(!hasZig)("MC-PIN / MC-NAMESPACE: native update adds newest release, 
 		expect(updated.status).toBe(0); expect(updated.stderr).toContain("pins");
 		expect(selection(i)).toBe(pin); expect(channel(i)).toBe("release");
 		expect(readdirSync(join(i.data, "bundles")).sort()).toEqual([A, B]); expect(started(i)).toBe(false);
+		const completed = s.requests.length;
+		expect((await manager(i, s, ["update"])).status).toBe(0);
+		expect(s.requests.slice(completed)).toEqual(["/runtime-index.json"]);
+		rmSync(join(i.data, "bundles", B, `dsh-native${EXE}`));
+		expect((await manager(i, s, ["update"])).status).toBe(1);
+		expect((await manager(i, s, ["update", "--force"])).status).toBe(0);
+		expect(existsSync(join(i.data, "bundles", B, `dsh-native${EXE}`))).toBe(true);
+		expect(selection(i)).toBe(pin); expect(started(i)).toBe(false);
 		expect(run(i, ["probe"]).status).toBe(0); expect(launchOf(i).runtime).toBe(A);
-        expect(run(i, ["--use", "latest", "probe"]).status).toBe(0); expect(launchOf(i).runtime).toBe(B);
-        expect(run(i, ["manager", "select"]).stdout).toContain(A); expect(started(i)).toBe(false);
+		expect(run(i, ["--use", "latest", "probe"]).status).toBe(0); expect(launchOf(i).runtime).toBe(B);
+		expect(run(i, ["manager", "select"]).stdout).toContain(A); expect(started(i)).toBe(false);
 	} finally { s.stop(); }
 });
 
@@ -63,7 +72,7 @@ test.skipIf(!hasZig)("MC-CHANNEL: failed live update leaves channel/runtime/sele
 		expect((await manager(i, s, ["install", A])).status).toBe(0);
 		expect(run(i, ["manager", "select", "--use", A]).status).toBe(0);
 		const pin = selection(i), original = readFileSync(join(i.data, "bundles", A, `dsh-native${EXE}`));
-		const live = s.entries.find(e => e.id === L), hash = live.assets[target].sha256;
+		const live = s.entries.find(e => e.id === L)!, hash = live.assets[target].sha256;
 		live.assets[target].sha256 = "a".repeat(64);
 		const bad = await manager(i, s, ["update", "--channel", "live"]);
 		expect(bad.status).toBe(1); expect(bad.stderr).toContain("HashMismatch");
@@ -73,6 +82,10 @@ test.skipIf(!hasZig)("MC-CHANNEL: failed live update leaves channel/runtime/sele
 		expect((await manager(i, s, ["update", "--channel=live"])).status).toBe(0); expect(channel(i)).toBe("live"); expect(selection(i)).toBe(pin);
 		expect((await manager(i, s, ["update", "--channel", "release"])).status).toBe(0); expect(channel(i)).toBe("release");
 		expect((await manager(i, s, ["update", "--channel", "live"])).status).toBe(0); expect(channel(i)).toBe("live");
+        expect((await manager(i, s, ["install", A, "--channel", "release"])).status).toBe(0); expect(channel(i)).toBe("release");
+        expect((await manager(i, s, ["install", "missing", "--channel", "live"])).status).toBe(1); expect(channel(i)).toBe("release");
+        expect((await manager(i, s, ["install", L, "--channel", "live"])).status).toBe(0); expect(channel(i)).toBe("live");
+        expect(selection(i)).toBe(pin); expect(started(i)).toBe(false);
 	} finally { s.stop(); }
 });
 
@@ -110,14 +123,18 @@ test.skipIf(!hasZig)("MC-PIN: ambiguous/missing selectors refuse unchanged; --us
 		expect(run(i, ["manager", "select", "--use", B, "--snapshot", "1.0.0-b1@keep"]).status).toBe(0);
 		expect(JSON.parse(selection(i))).toMatchObject({ use: B, snapshot: `${A}@1` });
 		expect(run(i, ["probe"]).status).toBe(0); expect(launchOf(i)).toMatchObject({ runtime: B, snapshot: { id: `${A}@1` } });
-        expect(run(i, ["--snapshot", "1.0.0-b1@keep", "probe"]).status).toBe(0); expect(launchOf(i)).toMatchObject({ runtime: A, snapshot: { id: `${A}@1` } });
-        expect(run(i, ["--use", A, "probe"]).status).toBe(0); expect(launchOf(i)).toMatchObject({ runtime: A, snapshot: { id: `${A}@1` } });
+		expect(run(i, ["--use", B, "probe"]).status).toBe(0); expect(launchOf(i)).toMatchObject({ runtime: B, snapshot: { id: `${B}@1` } });
+		expect(run(i, ["--snapshot", "1.0.0-b1@keep", "probe"]).status).toBe(0); expect(launchOf(i)).toMatchObject({ runtime: A, snapshot: { id: `${A}@1` } });
+		expect(run(i, ["--use", A, "probe"]).status).toBe(0); expect(launchOf(i)).toMatchObject({ runtime: A, snapshot: { id: `${A}@1` } });
 		rmSync(join(i.data, "snapshots", `${A}@1`), { recursive: true });
 		expect(run(i, ["probe"]).status).toBe(1); expect(started(i)).toBe(false);
 		expect(run(i, ["manager", "select", "--use", "latest"]).status).toBe(0); expect(JSON.parse(selection(i))).toMatchObject({ use: "latest", snapshot: null });
 		writeFileSync(statePath(i, "selection.json"), "not JSON");
 		expect(run(i, ["manager", "select"]).status).toBe(1);
 		expect(run(i, ["manager", "select", "--use", "latest"]).status).toBe(0);
+		expect(JSON.parse(selection(i))).toEqual({ schema: 1, use: "latest", snapshot: null, addons: {} });
+		expect(run(i, ["manager", "select", "--use", A, "--use", B]).status).toBe(1);
+		expect(run(i, ["manager", "select", "--use", A, "--snapshot", "../../outside@1"]).status).toBe(1);
 	} finally { s.stop(); }
 });
 
@@ -158,16 +175,16 @@ test.skipIf(!hasZig)("MC-LAST / MC-REINSTALL: unpin then uninstall all, preserve
 		expect(readFileSync(join(i.data, "home", "credentials"), "utf8")).toBe("keep credentials");
 		expect(JSON.parse(readFileSync(join(i.data, "snapshots", ".counters.json"), "utf8"))).toEqual({ [A]: 7, [B]: 2 });
 		expect(run(i, ["probe"]).status).toBe(0); expect(launchOf(i)).toMatchObject({ runtime: A, snapshot: { id: `${A}@1` } });
-        expect(run(i, ["manager", "select", "--use", "latest", "--snapshot", `${A}@1`]).status).toBe(0);
-        expect((await manager(i, s, ["update", "--channel", "live"])).status).toBe(0);
-        const cross = selection(i), snapMeta = readFileSync(join(i.data, "snapshots", `${A}@1`, "snapshot.json"));
-        expect(run(i, ["manager", "uninstall", A, L]).status).toBe(0);
-        expect((await command(i, s, ["probe"])).status).toBe(0);
-        expect(launchOf(i)).toMatchObject({ runtime: L, snapshot: { id: `${A}@1` } });
-        expect(channel(i)).toBe("live"); expect(selection(i)).toBe(cross);
-        expect(readFileSync(join(i.data, "snapshots", `${A}@1`, "snapshot.json"))).toEqual(snapMeta);
-        expect(readFileSync(join(i.data, "snapshots", `${A}@1`, "plugin"), "utf8")).toBe("keep plugin");
-    } finally { s.stop(); }
+		expect(run(i, ["manager", "select", "--use", "latest", "--snapshot", `${A}@1`]).status).toBe(0);
+		expect((await manager(i, s, ["update", "--channel", "live"])).status).toBe(0);
+		const cross = selection(i), snapMeta = readFileSync(join(i.data, "snapshots", `${A}@1`, "snapshot.json"));
+		expect(run(i, ["manager", "uninstall", A, L]).status).toBe(0);
+		expect((await command(i, s, ["probe"])).status).toBe(0);
+		expect(launchOf(i)).toMatchObject({ runtime: L, snapshot: { id: `${A}@1` } });
+		expect(channel(i)).toBe("live"); expect(selection(i)).toBe(cross);
+		expect(readFileSync(join(i.data, "snapshots", `${A}@1`, "snapshot.json"))).toEqual(snapMeta);
+		expect(readFileSync(join(i.data, "snapshots", `${A}@1`, "plugin"), "utf8")).toBe("keep plugin");
+	} finally { s.stop(); }
 });
 
 test.skipIf(!hasZig)("FB-RESTORE-CHANNEL: uninstall last live then plain launch restores live; new empty installation defaults release", async () => {

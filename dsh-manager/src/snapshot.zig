@@ -1,5 +1,4 @@
-//! Section 2.3 only: an initial empty snapshot, or the version's newest existing snapshot.
-//! Full numbering, copying, explicit snapshot selection and removal belong to task 6.2.
+// Native persistent selection port; complete snapshot creation/copying/removal stays in task 6.2.
 const std = @import("std");
 const util = @import("util.zig");
 const select = @import("select.zig");
