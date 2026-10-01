@@ -3,8 +3,7 @@ const std = @import("std");
 const options = @import("build_options");
 const util = @import("util.zig");
 const select = @import("select.zig");
-const runtimes = @import("runtimes.zig");
-const state = @import("state.zig");
+const manage = @import("manage.zig");
 const install = @import("install.zig");
 const completion = @import("completion.zig");
 const Ctx = @import("context.zig").Ctx;
@@ -46,14 +45,15 @@ pub fn run(ctx: *Ctx, opts: select.Options, args: []const []const u8) u8 {
         return 0;
     }
     if (std.mem.eql(u8, cmd, "completion")) return completion.run(ctx, args[1..]);
-    if (std.mem.eql(u8, cmd, "install")) return install.run(ctx, args[1..]);
-    if (std.mem.eql(u8, cmd, "list")) {
-        if (args.len != 1) {
-            util.warn("only offline `dsh manager list` is available in this build", .{});
-            return 1;
-        }
-        return list(ctx);
+    if (args.len == 2 and (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h"))) {
+        util.print("{s}", .{help_text});
+        return 0;
     }
+    if (std.mem.eql(u8, cmd, "install")) return install.run(ctx, args[1..]);
+    if (std.mem.eql(u8, cmd, "update")) return install.update(ctx, args[1..]);
+    if (std.mem.eql(u8, cmd, "select")) return manage.selection(ctx, args[1..]);
+    if (std.mem.eql(u8, cmd, "uninstall")) return manage.uninstall(ctx, args[1..]);
+    if (std.mem.eql(u8, cmd, "list")) return manage.list(ctx, args[1..]);
     if (std.mem.eql(u8, cmd, "info")) {
         util.print("Install mode: {s}\nData root: {s}\nApp home: {s}\n", .{ @tagName(ctx.mode), ctx.data, ctx.home() });
         if (ctx.mode != .portable) util.print("Managed user data is an exception to the portable executable-adjacent layout.\n", .{});
@@ -62,26 +62,11 @@ pub fn run(ctx: *Ctx, opts: select.Options, args: []const []const u8) u8 {
             util.print("External DSH_HOME is outside the portability guarantee; only manager data moves with the installation.\n", .{});
         return 0;
     }
-    const known = [_][]const u8{ "update", "uninstall", "select", "snapshot", "clean", "self-update" };
+    const known = [_][]const u8{ "snapshot", "clean", "self-update" };
     for (known) |k| if (std.mem.eql(u8, cmd, k)) {
         util.warn("`dsh manager {s}` is not available in this build yet", .{cmd});
         return 1;
     };
     util.warn("unknown manager command {s}; see `dsh manager --help`", .{cmd});
     return 1;
-}
-
-fn list(ctx: *Ctx) u8 {
-    const bundles = runtimes.list(ctx);
-    if (bundles.len == 0) {
-        util.print("No dsh runtime is installed. Run `dsh manager update` or plain `dsh` to install the newest release.\n", .{});
-        return 0;
-    }
-    util.print("Installed dsh runtimes (channel {s}):\n", .{state.channel(ctx)});
-    for (bundles) |b| {
-        const ch = if (b.meta) |m| m.channel orelse "?" else "?";
-        const ok = runtimes.check(ctx, bundles, b.version) == .ok;
-        util.print("  {s}  {s}{s}\n", .{ b.version, ch, if (ok) "" else "  (not startable)" });
-    }
-    return 0;
 }

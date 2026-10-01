@@ -3,6 +3,7 @@
 const std = @import("std");
 const util = @import("util.zig");
 const select = @import("select.zig");
+const lock = @import("lock.zig");
 const Ctx = @import("context.zig").Ctx;
 
 pub fn selectionPath(ctx: *const Ctx) []u8 {
@@ -24,6 +25,23 @@ pub fn readSelection(ctx: *const Ctx) ReadSelection {
             .bad_use => "no version",
         } },
     };
+}
+
+/// Short maintenance lock for native state mutations; no application is started.
+pub fn maintenance(ctx: *const Ctx) !lock.Lock {
+    var dir = ctx.ensureDir(&.{"state"});
+    dir.close();
+    return lock.tryAcquire(ctx.path(&.{ "state", "manager.lock" }), .exclusive, true);
+}
+
+pub fn write(ctx: *const Ctx, name: []const u8, bytes: []const u8) !void {
+    var dir = ctx.ensureDir(&.{"state"});
+    defer dir.close();
+    var buffer: [4096]u8 = undefined;
+    var file = try dir.atomicFile(name, .{ .mode = 0o600, .write_buffer = &buffer });
+    defer file.deinit();
+    try file.file_writer.interface.writeAll(bytes);
+    try file.finish();
 }
 
 /// Recorded channel (`state/channel`); release when none is recorded.

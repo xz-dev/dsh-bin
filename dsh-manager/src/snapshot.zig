@@ -8,6 +8,35 @@ const Ctx = @import("context.zig").Ctx;
 
 pub const Snapshot = struct { id: []const u8, dir: []const u8 };
 
+/// Resolve an existing numeric ID or metadata name without creating or copying anything.
+pub fn existing(ctx: *const Ctx, query: []const u8) !Snapshot {
+    const version = select.snapshotVersion(query) orelse return error.InvalidSnapshotId;
+    for (version) |c| if (!(std.ascii.isAlphanumeric(c) or c == '.' or c == '+' or c == '_' or c == '-')) return error.InvalidSnapshotId;
+    const name = query[version.len + 1 ..];
+    var root = try std.fs.cwd().openDir(ctx.path(&.{"snapshots"}), .{ .iterate = true, .no_follow = true });
+    defer root.close();
+    var it = root.iterate();
+    var found: ?Snapshot = null;
+    while (try it.next()) |entry| {
+        const v = select.snapshotVersion(entry.name) orelse continue;
+        if (!std.mem.eql(u8, v, version)) continue;
+        const n = std.fmt.parseInt(u64, entry.name[v.len + 1 ..], 10) catch continue;
+        if (n == 0 or entry.kind != .directory) continue;
+        var dir = try root.openDir(entry.name, .{ .no_follow = true });
+        defer dir.close();
+        const bytes = try dir.readFileAlloc(ctx.a, "snapshot.json", 1 << 20);
+        const Meta = struct { id: []const u8, version: []const u8, n: u64, name: ?[]const u8 = null };
+        const meta = try std.json.parseFromSliceLeaky(Meta, ctx.a, bytes, .{ .ignore_unknown_fields = true });
+        if (!std.mem.eql(u8, meta.id, entry.name) or !std.mem.eql(u8, meta.version, version) or meta.n != n) return error.InvalidSnapshot;
+        if (!std.mem.eql(u8, query, meta.id) and !(meta.name != null and std.mem.eql(u8, name, meta.name.?))) continue;
+        try dir.access(".usage.lock", .{});
+        if (found != null) return error.AmbiguousSnapshot;
+        const id = try ctx.a.dupe(u8, entry.name);
+        found = .{ .id = id, .dir = ctx.path(&.{ "snapshots", id }) };
+    }
+    return found orelse error.SnapshotNotFound;
+}
+
 pub fn prepare(ctx: *const Ctx, version: []const u8, meta: select.Meta) Snapshot {
     for (version) |c| if (!(std.ascii.isAlphanumeric(c) or c == '.' or c == '+' or c == '_' or c == '-'))
         util.fatal("invalid runtime id for snapshot: {s}", .{version});

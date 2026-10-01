@@ -14,12 +14,28 @@ const runtimes = @import("runtimes.zig");
 const Ctx = @import("context.zig").Ctx;
 
 pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
-    var query: ?[]const u8 = null;
+    return command(ctx, args, false);
+}
+
+pub fn update(ctx: *Ctx, args: []const []const u8) u8 {
+    return command(ctx, args, true);
+}
+
+fn command(ctx: *Ctx, args: []const []const u8, updating: bool) u8 {
+    var query: ?[]const u8 = if (updating) "latest" else null;
     var channel: ?[]const u8 = null;
     var force = false;
     var n: usize = 0;
     while (n < args.len) : (n += 1) {
         const arg = args[n];
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            util.print("{s}", .{@import("manager.zig").help_text});
+            return 0;
+        }
+        if (std.mem.eql(u8, arg, "--addon") or std.mem.startsWith(u8, arg, "--addon=")) {
+            util.warn("addon management is not available in this build yet", .{});
+            return 1;
+        }
         if (std.mem.eql(u8, arg, "--force")) {
             force = true;
         } else if (std.mem.eql(u8, arg, "--channel") or std.mem.startsWith(u8, arg, "--channel=")) {
@@ -36,18 +52,29 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
     }
     if (query == null) return usage();
     ctx.ensureData();
-    var state_dir = ctx.ensureDir(&.{"state"});
-    state_dir.close();
-    const mutex = lock.tryAcquire(ctx.path(&.{ "state", "manager.lock" }), .exclusive, true) catch |err| {
+    const mutex = state.maintenance(ctx) catch |err| {
         util.warn("cannot acquire maintenance lock {s}: {s}; retry when the other manager operation finishes", .{ ctx.path(&.{ "state", "manager.lock" }), @errorName(err) });
         return 1;
     };
     defer mutex.release();
-    perform(ctx, query.?, channel orelse state.channel(ctx), force, false) catch |err| {
+    const installed = perform(ctx, query.?, channel orelse state.channel(ctx), force, false) catch |err| {
         util.warn("runtime install failed: {s}; no selection was changed", .{@errorName(err)});
         return 1;
     };
+    pinnedWarning(ctx, installed);
     return 0;
+}
+
+fn pinnedWarning(ctx: *const Ctx, installed: []const u8) void {
+    const stored = state.readSelection(ctx);
+    if (stored != .ok or std.mem.eql(u8, stored.ok.use, "latest")) return;
+    const bundles = runtimes.list(ctx);
+    const matched = select.matchVersion(bundles, stored.ok.use);
+    if (matched != .found) return;
+    const pinned = select.Bundle{ .version = matched.found, .meta = runtimes.metaOf(bundles, matched.found) };
+    const fresh = select.Bundle{ .version = installed, .meta = runtimes.metaOf(bundles, installed) };
+    if (pinned.meta != null and fresh.meta != null and pinned.meta.?.ordered() and fresh.meta.?.ordered() and select.before(pinned, fresh))
+        util.warn("plain `dsh` still starts {s}, which the selection pins; run `dsh manager select --use latest` to follow the newest installed version", .{matched.found});
 }
 
 fn usage() u8 {
@@ -66,11 +93,11 @@ pub fn bootstrap(ctx: *Ctx) void {
     if (runtimes.list(ctx).len != 0) return;
     const channel = state.channel(ctx);
     util.warn("no runtime installed; installing latest compatible {s} runtime", .{channel});
-    perform(ctx, "latest", channel, false, true) catch |err|
+    _ = perform(ctx, "latest", channel, false, true) catch |err|
         util.fatal("automatic runtime install failed: {s}; retry with `dsh manager install latest --channel {s}`", .{ @errorName(err), channel });
 }
 
-fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, automatic: bool) !void {
+fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, automatic: bool) ![]const u8 {
     const host = try target.host();
     const endpoints = http.endpoints(ctx.a, &ctx.env);
     defer endpoints.deinit(ctx.a);
@@ -105,8 +132,9 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
     if (exists and !force) {
         _ = validate(ctx, dest, e, host) catch return error.IncompleteRuntimeUseForce;
         _ = snapshot.prepare(ctx, e.id, e.bundle().meta.?);
+        try state.write(ctx, "channel", try std.fmt.allocPrint(ctx.a, "{s}\n", .{channel}));
         if (automatic) util.warn("dsh {s} is already installed", .{e.id}) else util.print("dsh {s} is already installed.\n", .{e.id});
-        return;
+        return e.id;
     }
     var cache = ctx.ensureDir(&.{ "cache", "downloads" });
     defer cache.close();
@@ -132,7 +160,9 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
     try activate(ctx, staging, dest, backup, exists);
     crashPoint(ctx, "after-activation");
     _ = snapshot.prepare(ctx, e.id, meta);
+    try state.write(ctx, "channel", try std.fmt.allocPrint(ctx.a, "{s}\n", .{channel}));
     if (automatic) util.warn("installed dsh {s} ({s}); starting original command", .{ e.id, host }) else util.print("Installed dsh {s} ({s}); selection unchanged.\n", .{ e.id, host });
+    return e.id;
 }
 
 fn recognized(ctx: *const Ctx, path: []const u8, id: []const u8) !void {

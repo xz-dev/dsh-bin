@@ -72,16 +72,25 @@ test.skipIf(!hasZig)("stdin and stdout belong to the app", () => {
 	expect(readFileSync(join(i.out, "1.stdin"), "utf8")).toBe("piped input");
 });
 
+function addSnapshot(i: Install, id: string, n: number) {
+	const dir = join(i.data, "snapshots", `${id}@${n}`);
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "snapshot.json"), JSON.stringify({ id: `${id}@${n}`, version: id, n }));
+	writeFileSync(join(dir, ".usage.lock"), "");
+}
+
 test.skipIf(!hasZig)("--opt=value forms, repeated --addon, and arguments after the first other argument", () => {
 	const i = install();
-	expect(run(i, ["--snapshot=0.1.7-rc.2@2", "--addon", "office:0.1.1", "--addon=office:0.1.2", "plugin", "--use", "x"]).status).toBe(0);
+	addSnapshot(i, R2, 2);
+	expect(run(i, [`--snapshot=${R2}@2`, "--addon", "office:0.1.1", "--addon=office:0.1.2", "plugin", "--use", "x"]).status).toBe(0);
 	expect(argvOf(i)).toEqual(["plugin", "--use", "x"]);
 	expect(launchOf(i)).toMatchObject({ runtime: R2, source: "snapshot" });
 });
 
 test.skipIf(!hasZig)("--use overrides the version implied by --snapshot; tags and unique prefixes name versions", () => {
-	const i = install();
-	run(i, ["--use", "0.2.0-rc.1", "--snapshot", "0.1.7-rc.2@2"]);
+    const i = install();
+    addSnapshot(i, R2, 2);
+    expect(run(i, ["--use", "0.2.0-rc.1", "--snapshot", `${R2}@2`]).status).toBe(0);
 	expect(launchOf(i)).toMatchObject({ runtime: R1, source: "use" });
 	run(i, ["--use", `runtime-v${R2}`]);
 	expect(launchOf(i).runtime).toBe(R2);

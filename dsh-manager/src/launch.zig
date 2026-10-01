@@ -79,7 +79,13 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
         .ok => |p| p,
         else => |p| runtimes.report(resolved.version, p),
     };
-    const snap = snapshot.prepare(ctx, resolved.version, runtimes.metaOf(bundles, resolved.version).?);
+    const explicit_snapshot = if (opts.snapshot) |id| snapshot.existing(ctx, id) catch |err|
+        util.fatal("cannot use snapshot {s}: {s}; run `dsh manager snapshot list`", .{ id, @errorName(err) }) else null;
+    const stored_snapshot = if (selection) |s| @import("manage.zig").snapshotChoice(s) else null;
+    const snap = explicit_snapshot orelse if (opts.use == null and stored_snapshot != null)
+        snapshot.existing(ctx, stored_snapshot.?) catch |err| util.fatal("cannot use selected snapshot {s}: {s}; run `dsh manager select --use latest` to reset it", .{ stored_snapshot.?, @errorName(err) })
+    else
+        snapshot.prepare(ctx, resolved.version, runtimes.metaOf(bundles, resolved.version).?);
     const payload = std.json.Stringify.valueAlloc(ctx.a, .{
         .protocol = select.protocol,
         .runtime = resolved.version,
