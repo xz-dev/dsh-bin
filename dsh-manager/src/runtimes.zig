@@ -6,14 +6,22 @@ const Ctx = @import("context.zig").Ctx;
 
 pub const guard_name = ".usage.lock";
 
-/// `bundles/*` with their parsed `bundle.json` (null when unreadable). Hidden entries (staging, trash) are skipped.
+/// Read every runtime directory. Staging lives in tmp/, never in bundles/; an unrecognized
+/// storage entry is damage, not proof of an empty installation eligible for bootstrap.
 pub fn list(ctx: *const Ctx) []select.Bundle {
-    var dir = std.fs.cwd().openDir(ctx.path(&.{"bundles"}), .{ .iterate = true }) catch return &.{};
+    const path = ctx.path(&.{"bundles"});
+    var dir = std.fs.cwd().openDir(path, .{ .iterate = true, .no_follow = true }) catch |err| {
+        if (err == error.FileNotFound) {
+            var link: [std.fs.max_path_bytes]u8 = undefined;
+            if (std.fs.cwd().readLink(path, &link)) |_| storageProblem(path) else |_| return &.{};
+        }
+        storageProblem(path);
+    };
     defer dir.close();
     var out: std.ArrayList(select.Bundle) = .empty;
     var it = dir.iterate();
-    while (it.next() catch null) |e| {
-        if (e.kind != .directory or e.name[0] == '.') continue;
+    while (it.next() catch storageProblem(path)) |e| {
+        if (e.kind != .directory or e.name[0] == '.') storageProblem(ctx.path(&.{ "bundles", e.name }));
         const name = ctx.a.dupe(u8, e.name) catch util.oom();
         const bytes = dir.readFileAlloc(ctx.a, util.join(ctx.a, &.{ name, "bundle.json" }), 1 << 20) catch null;
         out.append(ctx.a, .{ .version = name, .meta = if (bytes) |b| select.parseMeta(ctx.a, b) else null }) catch util.oom();
@@ -28,6 +36,10 @@ pub fn list(ctx: *const Ctx) []select.Bundle {
         }
     }.lt);
     return out.items;
+}
+
+fn storageProblem(path: []const u8) noreturn {
+    util.fatal("damaged runtime storage at {s}; inspect it and use `dsh manager install <version> --force` or `dsh manager clean`; automatic install refused", .{path});
 }
 
 pub fn metaOf(bundles: []const select.Bundle, id: []const u8) ?select.Meta {

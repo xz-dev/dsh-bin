@@ -616,3 +616,26 @@ test.skipIf(!hasZig)("FB-RETRY: interrupted automatic download resumes verified 
 		expect(s.requests.slice(before).some(r => r.range !== null)).toBe(true); expect(selection(i)).toBe(pin);
 	} finally { await s.stop(); }
 });
+
+test.skipIf(!hasZig)("FB-MISSING review: damaged runtime storage never bootstraps or starts app", async () => {
+	const a = archive(), e = entry(ID, a.bytes), s = source([e], new Map([[assetPath(e), a.bytes]]));
+	try {
+		for (const fault of ["file-entry", "dangling-link", "bundles-file", "hidden-entry"] as const) {
+			if (fault === "dangling-link" && process.platform === "win32") continue; // Windows link privilege not assumed.
+			const i = newInstall(); mkdirSync(i.data);
+			writeFileSync(join(i.data, ".dsh-bin-data.json"), JSON.stringify({ kind: "dsh-manager-data", schema: 1 }));
+			const bundles = join(i.data, "bundles");
+			if (fault === "bundles-file") writeFileSync(bundles, "damaged storage");
+			else {
+				mkdirSync(bundles);
+				if (fault === "dangling-link") { const { symlinkSync } = await import("node:fs"); symlinkSync(join(i.out, "missing"), join(bundles, ID)); }
+				else writeFileSync(join(bundles, fault === "hidden-entry" ? ".unknown" : ID), "not a runtime");
+			}
+			const before = tree(i.data), result = await bootstrap(i, s.origin);
+			expect(result.status).toBe(1); expect(result.stdout).toBe(""); expect(result.stderr).toContain(bundles);
+			expect(result.stderr).toMatch(/manager install .*--force|manager clean/);
+			expect(started(i)).toBe(false); expect(tree(i.data)).toEqual(before);
+		}
+		expect(s.requests).toEqual([]);
+	} finally { await s.stop(); }
+});
