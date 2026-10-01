@@ -182,12 +182,15 @@ test.skipIf(!hasZig)("MC-CLEAN review: public paths dependent on backup links ne
 
 
 test.skipIf(!hasZig)("MC-CLEAN review: multihop application homes preserve every intermediate residue or cache alias", () => {
-	for (const name of ["tmp/.install-aa", "cache/bun/home-link"]) {
+	for (const name of ["tmp/.install-aa", "cache/bun/home-link", ...(WIN ? [] : ["tmp/.install-ac"])]) {
+		const dotdot = name.endsWith(".install-ac");
 		const i = fixture(), external = join(i.home, "external/profiles"), alias = join(i.home, "home-alias");
 		mkdirSync(external, { recursive: true }); writeFileSync(join(external, "credential"), "KEEP");
 		const middle = join(i.data, name); mkdirSync(join(middle, ".."), { recursive: true });
-		symlinkSync(join(external, ".."), middle, WIN ? "junction" : "dir");
-		symlinkSync(join(middle, "profiles"), alias, WIN ? "junction" : "dir");
+		const target = dotdot ? join(external, "../linked") : join(external, "..");
+		mkdirSync(target, { recursive: true }); symlinkSync(target, middle, WIN ? "junction" : "dir");
+		// Preserve '..' after a link: the OS traverses the link before resolving its parent.
+		symlinkSync(dotdot ? `${middle}/../profiles` : join(middle, "profiles"), alias, WIN ? "junction" : "dir");
 		put(i, "tmp/.install-b/item"); const before = bytes(i.data);
 		expect(readFileSync(join(alias, "credential"), "utf8")).toBe("KEEP");
 		const r = run(i, ["manager", "clean"], { env: { DSH_HOME: alias } });

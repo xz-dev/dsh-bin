@@ -187,6 +187,8 @@ fn homeOverlap(ctx: *const Ctx, candidate: []const u8) !bool {
         if (overlap(ctx.a, candidate, home) or overlap(ctx.a, home, candidate)) return true;
         var parts = try std.fs.path.componentIterator(home);
         home = while (parts.next()) |part| {
+            // Do not normalize '..' across an unresolved link: visit the alias first.
+            if (overlap(ctx.a, candidate, part.path)) return true;
             // Windows readLink reports NOT_A_REPARSE_POINT as Unexpected, not NotLink.
             // Inspect the final component through a no-follow handle before calling it.
             if (@import("builtin").os.tag == .windows) {
@@ -214,9 +216,7 @@ fn homeOverlap(ctx: *const Ctx, candidate: []const u8) !bool {
                 else => return err,
             };
             const base = std.fs.path.dirname(part.path) orelse part.path;
-            const resolved = try std.fs.path.resolve(ctx.a, &.{ base, target });
-            // Check the alias target itself before appending the remaining home components.
-            if (overlap(ctx.a, candidate, resolved)) return true;
+            const resolved = if (std.fs.path.isAbsolute(target)) try ctx.a.dupe(u8, target) else try std.fs.path.join(ctx.a, &.{ base, target });
             break try std.fs.path.join(ctx.a, &.{ resolved, home[part.path.len..] });
         } else return false;
     }
