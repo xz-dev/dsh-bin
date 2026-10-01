@@ -270,3 +270,38 @@ test.skipIf(!hasZig || WIN)("MC-SELF-FAIL POSIX: read-only manager directory ref
 		expect(protectedBytes(i)).toEqual(before); expect(tree(i.home)).toEqual([]); expect(readdirSync(i.dir).filter(n => n.startsWith(".dsh-manager-candidate-"))).toEqual([]);
 	} finally { chmodSync(i.dir, 0o755); s.stop(); }
 }, 60_000);
+
+test.skipIf(!hasZig || WIN)("MC-SELF-FAIL POSIX: killed partial download retries without exposing a partial manager entry", async () => {
+	const i = fixture(), bytes = archive(), before = protectedBytes(i), old = sha(readFileSync(i.exe));
+	let release: (() => void) | undefined;
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+		if (new URL(req.url).pathname === "/manager-index.json") return Response.json({ schema: 1, versions: [entry(NEXT, bytes)] });
+		return new Response(new ReadableStream<Uint8Array>({ start(c) {
+			c.enqueue(bytes.subarray(0, Math.floor(bytes.length / 2)));
+			release = () => { try { c.enqueue(bytes.subarray(Math.floor(bytes.length / 2))); c.close(); } catch {} };
+		} }), { headers: { "Content-Length": String(bytes.length) } });
+	} });
+	const p = spawn(i.exe, ["manager", "self-update"], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: `http://127.0.0.1:${server.port}` }, stdio: "pipe" });
+	p.stdout.resume(); p.stderr.resume(); const done = new Promise(resolve => p.on("close", resolve));
+	const timer = setTimeout(() => p.kill("SIGKILL"), 20_000), partial = join(i.data, "cache/downloads", `${sha(bytes)}.zip.part`);
+	try {
+		const deadline = Date.now() + 10_000;
+		while ((!existsSync(partial) || statSync(partial).size === 0) && p.exitCode === null && Date.now() < deadline) await Bun.sleep(10);
+		expect(existsSync(partial)).toBe(true); expect(statSync(partial).size).toBeGreaterThan(0); expect(statSync(partial).size).toBeLessThan(bytes.length);
+		p.kill("SIGKILL"); await done;
+		expect(sha(readFileSync(i.exe))).toBe(old); expect(run(i, ["manager", "--version"]).stdout).toContain(MANAGER_VERSION); expect(protectedBytes(i)).toEqual(before);
+	} finally { clearTimeout(timer); if (p.exitCode === null && p.signalCode === null) { p.kill("SIGKILL"); await done; } release?.(); server.stop(true); }
+	const retry = source([entry(NEXT, bytes)], bytes);
+	try { expect((await command(i, retry)).status).toBe(0); expect(run(i, ["manager", "--version"]).stdout).toContain(NEXT); expect(protectedBytes(i)).toEqual(before); }
+	finally { retry.stop(); }
+}, 60_000);
+
+test.skipIf(!hasZig || WIN)("MC-SELF-FAIL POSIX: changed installed entry is kept rather than overwriting user bytes", async () => {
+	const i = fixture(), bytes = archive(), s = source([entry(NEXT, bytes)], bytes), before = protectedBytes(i);
+	try {
+		const r = await paused(i, ["manager", "self-update"], "self-update-before-replace", () => { renameSync(i.exe, join(i.dir, "saved-manager")); writeFileSync(i.exe, "USER CREDENTIAL"); }, { DSH_MANAGER_TEST_ORIGIN: s.origin });
+		expect(r.status).toBe(1); expect(r.stderr).toContain("ManagerFileChanged"); expect(r.stdout).not.toContain("updated manager");
+		expect(readFileSync(i.exe, "utf8")).toBe("USER CREDENTIAL"); expect(protectedBytes(i)).toEqual(before);
+		expect(run(i, ["manager", "--version"], { exe: join(i.dir, "saved-manager") }).stdout).toContain(MANAGER_VERSION);
+	} finally { s.stop(); }
+}, 60_000);
