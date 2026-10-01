@@ -211,3 +211,8 @@
 - TODO 4.4：Fish/PowerShell 留下一切未实现；不生成其他 shell 冒充支持。
 - TODO 4.5：稳定 PATH/搬迁、完整空格引号非 ASCII 与元字符门禁仍未做；本轮仅固定绝对入口与安全 literal 词，不宣称全部 quoting/relocation 场景完成。
 - 未触碰 `openspec/changes/add-config-snapshots-and-paths/`；其既有 untracked 目录未 stage/commit，无用户安装、包注册或远程 push 操作。
+- 2026-10-01 第六次 CI（aeae6c7，4.1–4.3 完成后）：https://github.com/xz-dev/dsh-bin/actions/runs/36804179918
+  - ubuntu-24.04、macos-15、windows-2022 全部通过。
+  - 真实 zsh 测试在 ubuntu（apt 安装的 zsh）和 macos（系统自带 zsh）上实际执行并通过，真实 bash 测试在两个平台上同样通过；4.3 的勾选以此为依据。本机没有 zsh，这 4 项在本机明确标记为跳过。
+  - windows 上 bash/zsh 的注册测试明确标记为跳过，原因已写明。
+  - 父会话本机复验：Zig 44/44；dsh-manager 121 pass / 4 skip（均为 zsh）；dsh-bun-build 99 pass。
