@@ -163,7 +163,7 @@
 - CI 假归档来自真实 recording Zig executable 和现有 ZIP writer；manager-only 起点，隔离 HOME/cwd/PATH，HTTP index+asset fixture 安装，再断源离线启动原参数。源码测试不把 Bun.serve 当产品依赖；被测 manager 不调用宿主 JS。
 - **真实归档 red**：`timeout 900 bun test ./test/real-runtime.test.ts -t MC-EMPTY` 首次 **0 pass / 1 fail**，新 install 报 UnsafeRequiredPath：把 ID 规则错用于 required path 的 `.usage.lock`。改为安全相对路径规则后 **1 pass / 0 fail**、15 次断言。没有删除 required-path 检查来迎合 fixture。
 - **真实归档 green**：既有 local-build 真正构建 app/pnpm/embedded native，执行新 index.mjs CLI 写 runtime-index；只有 manager 的 fresh tools 目录从 Bun.serve 下载该真实 ZIP，准备 `id@1`，PATH 无 Node/Bun，运行真实 `--version` 和 `--help`。删除 native 后启动明确失败；manager --force 重装，native 前后字节一致、snapshot metadata 不变，真实应用再次启动，HOME/cwd 文件树无散写。复用同一测试进程构建的 archive，不引入跨进程易失效缓存。
-- 缺少 `dsh-bun-build/work/app` 时此新场景和已有三项 real-runtime 场景都以完整原因命名 SKIP（CI 不含输入，真实 archive 未验证），不会把假归档当真制品通过；work/app 存在但其他输入缺失仍失败。
+- 缺少 `dsh-bun-build/work/app` 时此新场景和已有三项 real-runtime 场景都以完整原因命名 SKIP（CI 不含输入，真实 archive 未验证），不会把假归档当真制品通过；work/app 存在但其他输入缺失仍失败。临时移走 work/app 后 `timeout 120 bun test ./test/real-runtime.test.ts` 实测 **0 pass / 4 skip / 0 fail**，四个名称均包含原因；随后原样恢复输入。
 
 ### 第 3 节最终验证、提交与任务状态
 
