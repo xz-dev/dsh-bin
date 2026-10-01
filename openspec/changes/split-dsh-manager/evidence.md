@@ -666,3 +666,12 @@
   - `bun test ./test` → **228 pass / 18 skip / 0 fail / 3056 断言**、246 tests / 18 files、232.52s（`full-final.log`）；真实 RB-HOME、RB-PLUGIN、MC-ADDON 均执行通过。
   - `zig fmt --check src/*.zig test/fake-native.zig`、`zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-fix66w/windows`、`zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-fix66w/macos`、`git diff --check` 全 exit 0（`windows-final.log`／`macos-final.log`）。
 - **残余风险／待验收**：Windows 原生四项回归仍需父会话 push 后运行 CI；cross-build 只证明编译。未知 reparse point 仍保守保留 backup。18 skips 沿用未安装 zsh、Windows／PowerShell 5.1 专属、未配置真实 HTTPS proxy；clean 回归未新增 skip。本 worker 未 push、未运行 gh、未新建分支、未改 tasks.md；另外两个 change 未触碰。
+
+### 6.6 父会话验收
+
+- 实现：2eebcf4..0b894bb。第一轮复审（run 606615ca）BLOCK，四项 P1：mutex 链接写到数据根外；公开 runtime 缺排序字段时健康备份被删；公开路径链接到备份时备份被删；多级 home 别名被删。修复在 0212bf8..4bd6008。
+- 聚焦复审（run ffde71b3）结论 **OK with notes**。父会话在当前工作区复跑四份复审 probe，全部通过：外部文件没有被创建，备份都保留，home 仍可读，凭据原样未动。
+- CI 36903152175（4bd6008）Windows 有 4 项 MC-CLEAN 失败，其中一项**确有数据丢失**：Zig 在 Windows 上把 junction 当普通目录，所以公开路径依赖的备份被删了。修复：c2542f9（逐个路径组件以不跟随链接的方式检查，任何 reparse point 都按链接处理，相关备份保留）；4d1938c 统一输出路径的分隔符；7534afe 修复 addon package 路径分组件时没有处理 Windows 分隔符的问题。这项数据丢失修复的证明是：原回归测试在 Windows CI 上从失败变为通过，测试本身没有改动。
+- **CI 36906330150（679405a）三平台全绿**：ubuntu 227 pass、macOS 226 pass、windows 197 pass，均 0 fail。13 项 MC-CLEAN 在 Windows 上全部实际执行并通过，没有 skip。
+- 设计决定已写入 design.md：`.previous-*` 只有在对应公开版本有效时才回收；任何会话或锁处于忙状态时整次拒绝，零删除；缓存只清理明确列出的名字。
+- 勾选 **6.6**。
