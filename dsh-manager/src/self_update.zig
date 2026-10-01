@@ -61,8 +61,8 @@ fn prepare(ctx: *Ctx, force: bool) !void {
     _ = try std.fmt.hexToBytes(&archive_digest, candidate.asset.sha256);
     var trusted = @import("zip.zig").EntryDigest{ .name = binary.executable, .archive_size = candidate.asset.size, .archive_sha256 = archive_digest };
     const staging = try install.fetchTreeHashed(ctx, tmp, candidate.asset, candidate.entry.tag, &trusted);
-    const expected = trusted.value orelse return error.MissingManagerEntry;
     defer tmp.deleteTree(staging) catch |err| util.warn("leftover tmp/{s}: {s}; run `dsh manager clean`", .{ staging, @errorName(err) });
+    const expected = trusted.value orelse return error.MissingManagerEntry;
     var tree = try tmp.openDir(staging, .{ .iterate = true, .no_follow = true });
     defer tree.close();
     var it = tree.iterate();

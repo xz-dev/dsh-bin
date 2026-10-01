@@ -1,7 +1,7 @@
 // Manager self-update: real Zig candidates, isolated HOME, no JS in child PATH.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { writeZip, type ZipInput } from "../../dsh-bun-build/runtime/zip.ts";
@@ -340,7 +340,10 @@ test.skipIf(!hasZig || WIN)("MC-SELF-FAIL review: index-time ancestor swap never
 		expect(await p.exited).toBe(1); expect(await stdout).not.toContain("updated manager"); expect(await stderr).toContain("self-update failed");
 		expect(sha(readFileSync(externalExe))).toBe(other); expect(sha(readFileSync(join(moved, "tools", `dsh${EXE}`)))).toBe(old);
 		expect(readFileSync(join(external, "credential"), "utf8")).toBe("KEEP");
-	} finally { clearTimeout(timer); release(); p.kill(); await p.exited; server.stop(true); }
+	} finally {
+		clearTimeout(timer); release(); p.kill(); await p.exited; server.stop(true);
+		if (existsSync(moved)) { unlinkSync(root); renameSync(moved, root); }
+	}
 }, 60_000);
 
 test.skipIf(!hasZig || WIN)("MC-SELF-FAIL review: candidate hardlinks refuse before changing external owner or mode", async () => {
