@@ -176,6 +176,8 @@ CI 分开筛选 manager 与 build/runtime 变更。组合测试显式选已验�
 
 **`dsh manager` 命令面**：`--help|--version|help|version`、`info`、`install <version>|--addon office[:v] [--channel] [--force]`、`update [--channel] [--force]`、`uninstall <version>...|--addon office[:v]`、`list [--available] [--json]`（默认只读本地，`--available` 才访问索引）、`select [--use] [--snapshot] [--addon]`、`snapshot new|remove|list`、`clean`、`self-update`、`completion script|install|uninstall <shell>`；私有候选接口为 `manager __complete`。
 
+选择状态移植（6.1，经 supervisor 确认）：`manager select` 无参数只读显示，写入必须给 `--use <version|latest>`，可选 `--snapshot` 仅解析已有编号或 `snapshot.json.alias` 名称并在保存前校验，省略则重置为 null；普通启动消费已存快照，前置 `--use/--snapshot` 覆盖默认、已存快照缺失明确失败，`use=latest` 加已存跨版本快照不固定运行包且卸载全部后仍按记录渠道回装并复用该快照。
+
 **PowerShell 候选传输**：模板把命令词（最后一项为可空光标前缀）以 U+001F 分隔存入仅本次调用的进程环境 `DSH_COMPLETE_WORDS`，调用 `manager __complete --shell pwsh --words-env` 后在 finally 恢复环境和 UTF-8 输出编码；Windows 经 std.process.EnvMap 的 UTF-16 环境读取，模板拒绝 NUL/U+001F 词，避免 5.1 legacy argv 对空词、空格及引号的破坏，不执行 AST 表达式。
 
 **证据**：每个切片的场景 ID、命令、red 原因和 green 结果都记录在变更目录的 `evidence.md`。

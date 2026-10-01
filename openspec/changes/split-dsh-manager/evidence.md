@@ -398,3 +398,17 @@
 - **父会话手工复现**（4e0ab50，复审 reproducer 指向当前工作区）：bundles 是文件、bundles 是软链接、运行包是普通文件、运行包是悬空软链接，这 4 种都退出 1，origin 请求数为 0，没有激活，stdout 为空；真正的空安装按预期请求 index 和 archive、激活并启动。
 - **CI 36835396760（4e0ab50）三平台全绿**：ubuntu 180 pass、macOS 179 pass、windows 152 pass，均 0 fail。FB-PIPE（1 MiB 二进制 stdin 原样传递、跳过询问不记录选择）、FB-READONLY、FB-OFFLINE、FB-MISSING（含复审回归）、FB-CONCURRENT（24 轮全新数据根）、FB-RETRY 在三个平台都实际通过。只有「非交互之后的第一次交互仍会询问」这一项在 Windows 上因没有 ConPTY 而 skip，ubuntu 和 macOS 上已实际通过。
 - 勾选 **5.3、5.4**；5.2 维持勾选。第 5 节全部完成。
+
+### 5.3 / 5.4 独立复审
+
+- 独立复审（run 0c9d9b9f）BLOCK，P1：新加的损坏存储检查把 `bundles/.DS_Store` 和 AppleDouble `._<name>` 也当成损坏，导致完整安装在 macOS 上无法启动、list 和 `--version` 都失败，属于 FB-OFFLINE 回归。修复 e111b37：检查前跳过 `.DS_Store`、`._*`、`Thumbs.db`、`desktop.ini`，其他情况仍严格拒绝；加了正向回归测试（带上述元数据文件的完整安装可以离线启动，list 和 `--version` 正常）。复审确认用户决定的初始化重试报错不算缺陷。
+
+## 6.1 / 6.5
+
+- **实现**（worker gpt-6.1-sol:xhigh）：fb0246e 新增原生 update、select、list（默认只读本地，`--available` 才读索引且只列运行包候选）以及运行包 uninstall；8d2837e 修正快照别名和 latest 的启动选择；d068660 补充 `--force` 与跨版本快照回装的测试。`uninstall --addon` 和 addon 选择归 6.3，目前明确报未支持。
+- **supervisor 决定**（父会话按 spec 和旧行为判断，已写入 design.md）：
+  - `select` 无参数时只显示当前选择；写入必须带 `--use`，`--snapshot` 只接受已存在的编号或别名，保存前先校验，省略则重置为 null；普通启动使用已存快照，命令行前置的选项会覆盖它，已存快照缺失时明确失败。
+  - `use=latest` 加上已存的跨版本快照不算固定运行包。卸载全部运行包后，普通启动按记录的渠道回装并继续用该快照；命令行显式给 `--use` 或 `--snapshot` 时仍阻止自动安装。
+- **场景与测试**（`test/versions.test.ts`）：MC-PIN / MC-NAMESPACE（update 不解除固定，普通启动仍用固定版本）；MC-CHANNEL（live update 失败时渠道、运行包和选择都不变，成功后记录 live）；MC-NAMESPACE（list 离线只读，`--available` 不列管理器）；MC-PIN（选择器歧义或缺失时拒绝且状态不变）；MC-REINSTALL（`--force` 替换损坏的运行包，快照文件、编号和选择都保留）；MC-LAST / MC-REINSTALL（解除固定后卸载全部运行包，数据保留，重装后复用原快照）；FB-RESTORE-CHANNEL（卸载最后一个 live 后普通启动回装 live，全新安装默认 release）。所有场景都用 fake-native 证明管理命令从不启动应用。
+- **red 记录缺失**：worker 跑满 60 分钟超时，此前已有 4 个提交，但没有把 red 运行写进 evidence。这里不补一个没人跑过的 red→green，只记录父会话复跑的 green。
+- **父会话复跑**：`zig build test` **44/44**；`bun test ./test` **187 pass / 18 skip / 0 fail**；versions 与 launch 共 **24 pass**；`zig fmt --check`、`git diff --check`、windows 和 macOS 交叉编译成功。
