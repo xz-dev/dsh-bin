@@ -36,7 +36,7 @@ test.skipIf(!hasZig)("SC-COLD: Tab on an absent data root is read-only and makes
 }, 120_000);
 
 const description = (option: string) => ({ schemaVersion: 1, commands: [
-	{ name: "", options: [{ names: [option], takesValue: false }] },
+	{ name: "", options: [{ names: [option], takesValue: false }, { names: ["--profile"], takesValue: true }] },
 	{ name: "plugin", options: [{ names: ["--profile"], takesValue: true }] },
 ] });
 const candidates = (i: ReturnType<typeof newInstall>, words: string[]) => {
@@ -58,6 +58,7 @@ test.skipIf(!hasZig)("SC-VERSIONS: --use, default selection and channel choose r
 	expect(candidates(i, ["--"])).not.toContain("--new-cli");
 	expect(candidates(i, ["--use", "2.0.0", "--"])).toContain("--new-cli");
 	expect(candidates(i, ["--use", "runtime-v1.0.0", "plugin", "--p"])).toEqual(["--profile"]);
+	expect(candidates(i, ["--profile", "plugin", "--"])).toContain("--old-cli");
 	expect(candidates(i, ["--snapshot", "1.0.0@1", "--"])).toContain("--old-cli");
 	expect(candidates(i, ["--use", "missing", "--"])).not.toContain("--old-cli");
 	writeFileSync(selection, JSON.stringify({ schema: 1, use: "latest", addons: {} }));
@@ -77,12 +78,14 @@ test.skipIf(!hasZig)("SC-LOCAL: local versions/tags, snapshots and addons stay f
 	mkdirSync(join(i.data, "addons/office/0.2.0"), { recursive: true });
 	mkdirSync(join(i.data, "state"));
 	writeFileSync(join(i.data, "state/manager.lock"), "");
-	writeFileSync(join(i.data, "home-secrets.yml"), "token: never-print-this-secret\n");
+	mkdirSync(join(i.data, "home/profiles/probe"), { recursive: true });
+	writeFileSync(join(i.data, "home/profiles/probe/cordis.patch.yml"), "token: never-print-this-secret\n");
 	const guard = join(i.data, "bundles/1.0.0/.usage.lock");
 	const locks = [join(i.data, "state/manager.lock"), guard].map((p) => acquireClaim(p, "exclusive"));
 	const before = tree(i.data);
 	const entry = readFileSync(join(i.data, `bundles/1.0.0/dsh-native${EXE}`));
 	try {
+		for (const lock of locks) expect(lock).not.toBe("busy");
 		expect(candidates(i, ["--use", ""])).toEqual(expect.arrayContaining(["latest", "1.0.0", "runtime-v1.0.0"]));
 		expect(candidates(i, ["manager", "install", "1"])).toEqual(["1.0.0"]);
 		expect(candidates(i, ["manager", "install", "--channel", ""])).toEqual(["release", "live"]);
@@ -179,6 +182,12 @@ _dsh_manager_complete`;
 		expect(active.status).toBe(0);
 		expect(active.stdout).toContain("user_dsh");
 		expect(active.stderr).toMatch(/collision/i);
+		const sameName = original.replaceAll("user_dsh", "_dsh_manager_complete");
+		writeFileSync(rc, sameName);
+		const same = shellRun(i, shell === "bash" ? 'source "$1"; source "$2"; _dsh_manager_complete; printf "%s\\n" "${COMPREPLY[@]}"' : 'source "$1"; source "$2"; compadd() { print -rl -- "$@"; }; _dsh_manager_complete', [rc, generated]);
+		expect(same.status).toBe(0);
+		expect(same.stdout).toContain("foreign");
+		expect(same.stderr).toMatch(/collision/i);
 		expect(existsSync(i.data)).toBe(false);
 	}, 120_000);
 
@@ -187,11 +196,34 @@ _dsh_manager_complete`;
 		const rc = join(i.home, rcName);
 		writeFileSync(rc, "# keep me\n");
 		expect(run(i, ["manager", "completion", "install", shell], { env: { ZDOTDIR: i.home } }).status).toBe(0);
-		const modified = readFileSync(rc, "utf8").replace("_dsh_manager_complete()", "_user_modified_complete()");
-		writeFileSync(rc, modified);
-		const uninstall = run(i, ["manager", "completion", "uninstall", shell], { env: { ZDOTDIR: i.home } });
-		expect(uninstall.status).toBe(1);
-		expect(uninstall.stderr).toMatch(/modified|collision/i);
-		expect(readFileSync(rc, "utf8")).toBe(modified);
+		const owned = readFileSync(rc, "utf8");
+		for (const modified of [owned.replace("_dsh_manager_complete()", "_user_modified_complete()"), owned.replace("# >>> dsh-manager completion v1", "# >>> dsh-manager completion changed")]) {
+			writeFileSync(rc, modified);
+			const uninstall = run(i, ["manager", "completion", "uninstall", shell], { env: { ZDOTDIR: i.home } });
+			expect(uninstall.status).toBe(1);
+			expect(uninstall.stderr).toMatch(/modified|collision/i);
+			expect(readFileSync(rc, "utf8")).toBe(modified);
+		}
+	}, 120_000);
+	test.skipIf(!!reason)(`SC-IDEMPOTENT / SC-COLLISION: ${shell} removes created rc, preserves completion files and initializes once${reason ? ` — SKIP: ${reason}` : ""}`, () => {
+		const i = newInstall();
+		const rc = join(i.home, rcName);
+		const options = { env: { ZDOTDIR: i.home } };
+		expect(run(i, ["manager", "completion", "install", shell], options).status).toBe(0);
+		const loaded = shellRun(i, shell === "bash" ? 'source "$1"; source "$1"; complete -p dsh' : 'source "$1"; compinit() { print -ru2 -- "compinit must not run twice"; return 1; }; source "$1"; print -r -- "${_comps[dsh]}"', [rc]);
+		expect(loaded.status).toBe(0);
+		expect(loaded.stdout).toContain("_dsh_manager_complete");
+		expect(loaded.stderr).toBe("");
+		expect(run(i, ["manager", "completion", "uninstall", shell], options).status).toBe(0);
+		expect(existsSync(rc)).toBe(false);
+		const foreign = shell === "bash" ? join(i.home, ".local/share/bash-completion/completions/dsh") : join(i.home, ".zfunc/_dsh");
+		const original = shell === "bash" ? "complete -W foreign dsh\n" : "#compdef dsh\ncompadd foreign\n";
+		mkdirSync(join(foreign, ".."), { recursive: true });
+		writeFileSync(foreign, original);
+		const install = run(i, ["manager", "completion", "install", shell], options);
+		expect(install.status).toBe(1);
+		expect(install.stderr).toMatch(/collision/i);
+		expect(readFileSync(foreign, "utf8")).toBe(original);
+		expect(existsSync(rc)).toBe(false);
 	}, 120_000);
 }

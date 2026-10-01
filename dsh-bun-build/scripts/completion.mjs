@@ -14,6 +14,8 @@ export function fixedCli(app) {
 		owners.set(m[1], command);
 		commands.push(command);
 	}
+	if (commands.length - 1 !== [...source.matchAll(/\.command\s*\(/g)].length)
+		throw new Error("fixed CLI: unsupported command declaration; review the upstream CLI");
 	let extracted = 0;
 	const option = /\.(option|requiredOption)\("([^"\\]+)"|\.version\([^,;]+,\s*"([^"\\]+)"/g;
 	for (const [owner, command] of owners) {

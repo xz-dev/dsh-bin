@@ -102,8 +102,8 @@ fn runtimeWords(ctx: *Ctx, prefix: []const u8, prior: []const []const u8, opts: 
         for (c.options) |o| for (o.names) |n| if (!safeWord(n) or n[0] != '-') return;
     }
     var command: []const u8 = "";
-    for (prior) |w| for (desc.commands) |c| {
-        if (c.name.len > 0 and eq(w, c.name)) command = c.name;
+    if (prior.len > 0) for (desc.commands) |c| {
+        if (c.name.len > 0 and eq(prior[0], c.name)) command = c.name;
     };
     for (desc.commands) |c| {
         if (eq(c.name, command)) {
@@ -291,8 +291,10 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
             output = std.mem.concat(ctx.a, u8, &.{ bytes[0..at], rest }) catch util.oom();
             remove_file = created and output.len == 0;
         }
+    } else if (std.mem.indexOf(u8, bytes, "# >>> dsh-manager completion") != null or std.mem.indexOf(u8, bytes, end_marker) != null) {
+        return collision(path);
     } else if (installing) {
-        if (std.mem.indexOf(u8, bytes, "# >>> dsh-manager completion") != null or foreign(bytes, shell) or standardCollision(ctx, shell, home)) return collision(path);
+        if (foreign(bytes, shell) or standardCollision(ctx, shell, home)) return collision(path);
         output = std.mem.concat(ctx.a, u8, &.{ bytes, block(ctx, shell, existing == null) }) catch util.oom();
     }
     if (remove_file) {

@@ -3,16 +3,18 @@ if (( ! $+functions[compdef] )); then
     autoload -Uz compinit
     compinit -D -i
 fi
-_dsh_manager_complete() {
-    local -a candidates
-    local candidate
-    while IFS= read -r candidate; do
-        candidates+=("$candidate")
-    done < <(@DSH@ manager __complete --shell zsh -- "${words[@]:1:$((CURRENT - 1))}" 2>/dev/null)
-    (( ${#candidates} )) && compadd -- "${candidates[@]}"
-}
-if [[ -n ${_comps[dsh]-} && ${_comps[dsh]} != _dsh_manager_complete ]]; then
+if { [[ ${_dsh_manager_completion_owner-} != @DSH@ ]] && { [[ -n ${_comps[dsh]-} ]] || (( $+functions[_dsh_manager_complete] )); }; } ||
+   [[ -n ${_comps[dsh]-} && ${_comps[dsh]} != _dsh_manager_complete ]]; then
     print -ru2 -- 'dsh completion collision: existing Zsh completion kept'
 else
+    _dsh_manager_complete() {
+        local -a candidates
+        local candidate
+        while IFS= read -r candidate; do
+            candidates+=("$candidate")
+        done < <(@DSH@ manager __complete --shell zsh -- "${words[@]:1:$((CURRENT - 1))}" 2>/dev/null)
+        (( ${#candidates} )) && compadd -- "${candidates[@]}"
+    }
+    _dsh_manager_completion_owner=@DSH@
     compdef _dsh_manager_complete dsh
 fi
