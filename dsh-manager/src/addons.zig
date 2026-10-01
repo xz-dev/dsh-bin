@@ -98,7 +98,10 @@ fn platform(ctx: *const Ctx) ![]const u8 {
     return std.fmt.allocPrint(ctx.a, "{s}-{s}", .{ parts.next().?, parts.next().? });
 }
 fn read(ctx: *const Ctx, path: []const u8, version: []const u8) !Meta {
-    var d = try std.fs.cwd().openDir(path, .{ .iterate = true, .no_follow = true });
+    return readIn(ctx, std.fs.cwd(), path, version);
+}
+fn readIn(ctx: *const Ctx, parent: std.fs.Dir, path: []const u8, version: []const u8) !Meta {
+    var d = try parent.openDir(path, .{ .iterate = true, .no_follow = true });
     defer d.close();
     if ((try d.stat()).kind != .directory) return error.AddonDirectoryConflict;
     const bytes = try d.readFileAlloc(ctx.a, "addon.json", 1 << 20);
@@ -106,17 +109,27 @@ fn read(ctx: *const Ctx, path: []const u8, version: []const u8) !Meta {
     if (!eq(u8, m.name, "office") or !eq(u8, m.version, version) or !valid(.{ .version = m.version, .tag = m.tag, .slot = m.slot, .assets = .{} }) or !eq(u8, m.kitVersion, m.slot.kitVersion) or !eq(u8, m.platform, try platform(ctx))) return error.InvalidAddonMetadata;
     return m;
 }
-pub fn local(ctx: *const Ctx) ![]Meta {
-    var parent = std.fs.cwd().openDir(ctx.path(&.{"addons"}), .{ .no_follow = true }) catch |err| if (err == error.FileNotFound) return &.{} else return err;
+fn openOffice(ctx: *const Ctx) !?std.fs.Dir {
+    var parent = std.fs.cwd().openDir(ctx.path(&.{"addons"}), .{ .no_follow = true }) catch |err| if (err == error.FileNotFound) return null else return err;
     defer parent.close();
-    var dir = parent.openDir("office", .{ .iterate = true, .no_follow = true }) catch |err| if (err == error.FileNotFound) return &.{} else return err;
+    if ((try parent.stat()).kind != .directory) return error.AddonDirectoryConflict;
+    var dir = parent.openDir("office", .{ .iterate = true, .no_follow = true }) catch |err| if (err == error.FileNotFound) return null else return err;
+    errdefer dir.close();
+    if ((try dir.stat()).kind != .directory) return error.AddonDirectoryConflict;
+    return dir;
+}
+pub fn local(ctx: *const Ctx) ![]Meta {
+    var dir = try openOffice(ctx) orelse return &.{};
     defer dir.close();
+    return localIn(ctx, dir);
+}
+fn localIn(ctx: *const Ctx, dir: std.fs.Dir) ![]Meta {
     var out: std.ArrayList(Meta) = .empty;
     var it = dir.iterate();
     while (try it.next()) |e| {
         if (eq(u8, e.name, ".DS_Store") or std.mem.startsWith(u8, e.name, "._") or std.ascii.eqlIgnoreCase(e.name, "Thumbs.db") or std.ascii.eqlIgnoreCase(e.name, "desktop.ini")) continue;
         if (!index.component(e.name) or e.kind != .directory) return error.AddonDirectoryConflict;
-        try out.append(ctx.a, try read(ctx, ctx.path(&.{ "addons", "office", e.name }), e.name));
+        try out.append(ctx.a, try readIn(ctx, dir, e.name, e.name));
     }
     std.mem.sort(Meta, out.items, {}, struct {
         fn less(_: void, a: Meta, b: Meta) bool {
@@ -268,15 +281,24 @@ pub fn uninstall(ctx: *Ctx, raw: []const u8) u8 {
     ctx.ensureData();
     const mutex = state.maintenance(ctx) catch |err| util.fatal("cannot acquire maintenance lock: {s}; retry", .{@errorName(err)});
     defer mutex.release();
-    const list = local(ctx) catch |err| util.fatal("cannot read addon storage: {s}; nothing uninstalled", .{@errorName(err)});
+    var dir = (openOffice(ctx) catch |err| util.fatal("cannot read addon storage: {s}; nothing uninstalled", .{@errorName(err)})) orelse return 0;
+    defer dir.close();
+    const list = localIn(ctx, dir) catch |err| util.fatal("cannot read addon storage: {s}; nothing uninstalled", .{@errorName(err)});
     const stored = state.readSelection(ctx);
     if (stored == .invalid) util.fatal("invalid selection; reset with `dsh manager select --use latest` before uninstalling", .{});
     const pin = storedChoice(if (stored == .ok) stored.ok else null) catch |err| util.fatal("invalid addon selection: {s}", .{@errorName(err)});
     for (list) |m| if (query == null or eq(u8, query.?, m.version)) {
         if (pin) |p| if (eq(u8, p, m.version)) util.fatal("office addon {s} is named by the selection; run `dsh manager select --use latest --addon office:none` first; nothing uninstalled", .{m.version});
     };
+    // Test-only stdin barrier matches the snapshot ancestor-swap regression.
+    if (eq(u8, ctx.env.get("DSH_MANAGER_TEST") orelse "", "1") and eq(u8, ctx.env.get("DSH_MANAGER_TEST_PAUSE") orelse "", "addon-remove")) {
+        util.warn("test pause: addon-remove", .{});
+        util.flush();
+        var byte: [1]u8 = undefined;
+        if ((std.fs.File.stdin().read(&byte) catch 0) == 0) util.fatal("test pause aborted", .{});
+    }
     for (list) |m| if (query == null or eq(u8, query.?, m.version)) {
-        std.fs.cwd().deleteTree(ctx.path(&.{ "addons", "office", m.version })) catch |err| util.fatal("cannot remove office addon {s}: {s}", .{ m.version, @errorName(err) });
+        dir.deleteTree(m.version) catch |err| util.fatal("cannot remove office addon {s}: {s}", .{ m.version, @errorName(err) });
         util.print("Uninstalled the office addon {s}.\n", .{m.version});
     };
     return 0;
