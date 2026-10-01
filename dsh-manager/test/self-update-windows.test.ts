@@ -104,8 +104,8 @@ native(`MC-SELF-FAIL Windows: TerminateProcess before wait/before move/after mov
 }, 120_000);
 
 native(`MC-SELF-FAIL Windows: candidate denies tampering through handoff; another mapped entry makes one replacement attempt fail${WIN ? "" : reason}`, async () => {
-    const i = fixture(), s = source(), before = protectedState(i), control = tempDir("helper-control-"), u = update(i, s, control, "helper-before-move");
-    let mapped: ReturnType<typeof spawn> | undefined;
+    const i = fixture(), s = source(), control = tempDir("helper-control-"), u = update(i, s, control, "helper-before-move");
+    let mapped: ReturnType<typeof spawn> | undefined, before: ReturnType<typeof protectedState> | undefined;
     try {
         await ready(control, "helper-before-move"); expect(await u.done).toBe(0);
         const candidate = join(i.dir, `.dsh-manager-candidate-${NEXT}`), bytes = hash(readFileSync(candidate));
@@ -113,6 +113,8 @@ native(`MC-SELF-FAIL Windows: candidate denies tampering through handoff; anothe
         // Ordinary runtime hold retains the old manager image without needing the maintenance lock.
         mapped = spawn(i.exe, ["--use", A], { cwd: i.home, env: { ...baseEnv(i), FAKE_HOLD_STDIN: "1" }, stdio: "pipe" });
         await until(() => existsSync(join(i.out, "1.ready")), "mapped manager runtime");
+        // The holding launch itself legitimately creates launch-environment state (e.g. state/pnpm); baseline after it.
+        before = protectedState(i);
         writeFileSync(join(control, "helper-before-move.go"), "go");
         expect(await result(i)).toContain("failed: ManagerReplacementRefused"); expect(run(i, ["manager", "--version"]).stdout).toContain(MANAGER_VERSION);
         expect(protectedState(i)).toEqual(before); expect(existsSync(candidate)).toBe(true);
