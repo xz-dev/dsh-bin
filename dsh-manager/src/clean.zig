@@ -19,6 +19,11 @@ pub const cache_env = .{
     .{ "PNPM_HOME", &.{ "cache", cache_names[3], "home" } },
 };
 
+fn displayPath(a: std.mem.Allocator, parent: []const u8, name: []const u8) ![]const u8 {
+    if (parent.len == 0) return a.dupe(u8, name);
+    return std.fmt.allocPrint(a, "{s}/{s}", .{ parent, name });
+}
+
 const Store = struct { dir: std.fs.Dir, path: []const u8 };
 const Item = struct { store: Store, name: []const u8, kind: std.fs.File.Kind };
 const Cleanup = struct {
@@ -43,7 +48,7 @@ const Cleanup = struct {
         };
         errdefer dir.close();
         if ((try dir.stat()).kind != .directory) return error.LinkedStorage;
-        const store = Store{ .dir = dir, .path = try std.fs.path.join(self.ctx.a, &.{ parent.path, name }) };
+        const store = Store{ .dir = dir, .path = try displayPath(self.ctx.a, parent.path, name) };
         try self.stores.append(self.ctx.a, store);
         return store;
     }
@@ -66,7 +71,7 @@ const Cleanup = struct {
         var it = dir.iterate();
         while (try it.next()) |entry| if (eq(u8, entry.name, ".usage.lock")) {
             if (entry.kind != .file) return error.InvalidUsageGuard;
-            try self.hold(.{ .dir = dir, .path = try std.fs.path.join(self.ctx.a, &.{ parent.path, name }) }, ".usage.lock", false);
+            try self.hold(.{ .dir = dir, .path = try displayPath(self.ctx.a, parent.path, name) }, ".usage.lock", false);
             return;
         };
     }
