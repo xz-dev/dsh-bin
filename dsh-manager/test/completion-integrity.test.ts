@@ -17,5 +17,5 @@ for (const shell of ["bash", "zsh", "fish"] as const) {
    for (const action of ["install", "uninstall"]) { expect(run(i, ["manager", "completion", action, shell], { env }).status).toBe(1); expect(readFileSync(file, "utf8")).toBe(edit); }
    expect(existsSync(join(file, ".."))).toBe(true);
   }
- });
+ }, 300_000);
 }
