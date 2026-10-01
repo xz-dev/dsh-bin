@@ -118,7 +118,9 @@ dsh-bin/
 
 ### D6. 补全是本地查询，注册是外部集成
 
-公开接口固定为 `manager completion script|install|uninstall <shell>`；shell 的薄钩子调用管理器私有候选接口，输入命令词和光标位置均作为数据。候选来自管理命令声明、安装/快照/addon 状态及有效运行包的 `completion.json`。未知描述或缺少运行包只减少应用候选，不触发修复/联网。
+公开接口固定为 `manager completion script|install|uninstall <shell>`（install/uninstall 也接受 `--shell <shell>`）；shell 的薄钩子调用管理器私有候选接口，输入命令词和光标位置均作为数据。当前 Bash/Zsh 通过 `manager __complete --shell <shell> -- <words...>` 查询：words 不含命令路径，截到光标所在词且保留末尾空词；不解释输入。候选来自管理命令声明、安装/快照/addon 状态及有效运行包的 `completion.json`。未知描述或缺少运行包只减少应用候选，不触发修复/联网。
+
+Bash 注册为 `$HOME/.bashrc` 标记块，Zsh 注册为 `${ZDOTDIR:-$HOME}/.zshrc` 标记块；Zsh 仅在 compdef 尚不存在时运行 `compinit -D -i`，已初始化时不重跑。块记录目标文件原先是否存在，撤销恢复原字节或删除仅由注册创建的空 rc；标记/内容被修改则保留并提示手工处理。片段加载时也检查已注册的 foreign completion。当前按绝对 manager 路径生成；稳定 PATH、搬迁和完整特殊字符门禁属于 4.5，不在此切片宣称完成。
 
 Bash 使用 complete，Zsh 使用 compdef/fpath 并尊重现有 compinit 顺序，Fish 使用用户 completion 目录，PowerShell 使用用户 profile 的原生 completer。注册前列出目标，不仅凭 `$SHELL` 猜测；不确定时让用户选择。保留用户自定义补全，不覆盖非本工具内容。生成片段带所有权标记；重复 install 幂等，uninstall 仅移除仍可确认归本工具所有且未被用户修改的内容。
 
@@ -157,6 +159,8 @@ CI 分开筛选 manager 与 build/runtime 变更。组合测试显式选已验�
 **数据根布局与所有权**：数据根内 `.dsh-bin-data.json`（`{"kind":"dsh-manager-data","schema":1}`）是所有权标记。首次写入时，数据根不存在或为空目录才会创建并写标记；已有非空目录而无标记、或同名为文件，均报冲突。管理状态放在 `state/`：`selection.json`（`{schema:1,use,snapshot,addons}`，与旧格式同形）、`channel`、`completion.json`（每个 shell 的选择及结果）、`manager.lock`（维护互斥）。快照计数与快照锁在 `snapshots/.counters.json`、`snapshots/.lock`。
 
 **运行包 `bundle.json` v1**：`kind="dsh-runtime"`、`schemaVersion=1`、`id`、`channel`、`target`、`upstream{commit,commitTime,tag?,version}`、`run`、`attempt`、`builderCommit`、`launchProtocol=1`、`entry`（相对路径，如 `dsh-native`）、`requiredPaths`（相对运行包根）、`addons.office{slot,pinned,known}`。归档根就是运行包根。管理器以 `commitTime`→`run`→`attempt` 排序。任何缺 `kind`/`schemaVersion`，或含 `launcherProtocol`/`bundles/` 外层的归档都视为旧格式。
+
+**`completion.json` v1**：运行包根固定路径，列入 bundle.json.requiredPaths；`{schemaVersion:1,commands:[{name:"",options:[{names:["-V","--version"],takesValue:false},...]},{name:"plugin",options:[...]}]}`。空 name 是根命令，其余为固定子命令；数据不含 help 文本、profile/plugin 内容或 shell 代码。构建器静态读取已部署的 `app/lib/bin.js` 中 literal Commander command/option/version 声明，不能识别的声明使构建失败；不导入应用。管理器仅接受 v1，按既有 `select.resolve` 的 `--use` → `--snapshot` → 默认 selection/channel 规则读取对应描述。
 
 **`DSH_MANAGER_LAUNCH`**：JSON `{protocol:1, runtime, dataRoot, home, snapshot:{id,dir}, addons:{office?:{version,dir}}, cache, tmp, manager}`。管理器同时导出 `DSH_HOME=<home>`，并将 Bun/pnpm 缓存与 `TMPDIR`/`TEMP`/`TMP` 指向数据根。runtime 把 `snapshot.dir` 作为插件运行目录；共享 `cordis.patch.yml` 取 `$DSH_HOME/profiles/<name>`。应用内重启继承同一载荷。载荷缺失时按上游规则独立运行；载荷存在但无效时报错退出。
 

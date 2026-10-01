@@ -177,3 +177,37 @@
   - ubuntu-24.04、macos-15、windows-2022 全部通过。
   - 父会话本机独立复验：Zig 44/44；dsh-manager Bun 113 pass / 0 skip；dsh-bun-build 96 pass；x86_64-windows-gnu、aarch64-macos、aarch64-linux、x86_64-linux-musl 交叉编译通过。
   - 3.2 仍未勾选：HTTPS_PROXY 目前 fail closed，安全的 TLS-over-CONNECT 尚未实现。
+
+## 4.1 RB-COMPLETION、SC-VERSIONS（sol）
+
+- 本轮仅实现 4.1–4.3；所有新增代码及测试由本 worker 编写。定位真实 `work/app/lib/bin.js` 的 Commander `parseDshArgs`：根命令 literal option/version 声明，以及条件声明的固定 `plugin` 命令。构建器静态读取部署文件，不 import 应用、不加载 profile/plugin、不执行 help 来生成描述；不能识别的 command/option 声明使构建失败，不发布不完整词典。
+- **red → green**：`cd dsh-bun-build && timeout 120 bun test ./test/unit/assemble-bundle.test.ts -t RB-COMPLETION` 初次 **0 pass / 1 fail**：bundle.json.requiredPaths 没有 completion.json。实现后 fixture（顶层 throw，若 import 必失败）仍可装配；导出 `{schemaVersion:1,commands:[{name,options:[{names,takesValue}]}]}`，固定文件位于归档根并列入 requiredPaths。fixture 的变更声明产生不同选项；动态 command 反例首次 **1 pass / 1 fail**（未抛异常而返回部分描述），补齐 declaration-count 门禁后通过。
+- **真实归档一致性**：复用 real-runtime.test.ts 的本机真实 local-build ZIP，经 manager ZIP extractor 安装；真实应用 `--help` 的全部根 option names 与 completion.json 精确相等、takesValue 与 help 的参数占位符一致，固定 plugin 命令出现在真实 Usage/Examples。受控 mutation 把导出改成 `--wrong-cli` 后，`cd dsh-manager && timeout 900 bun test ./test/real-runtime.test.ts -t RB-COMPLETION` **0 pass / 1 fail**（实际 1 个错误选项，期望真实 8 个根 flag）；恢复 exporter 后实际执行并通过。plugin 没有独立只读 --help（上游要求 --profile），其固定声明由不执行应用的 fixture 和 Usage 检查覆盖，不运行插件探测。
+- **缺输入明确跳过**：临时移走 work/app，同一真实检查 **0 pass / 1 skip / 0 fail**，测试名完整说明 `requires local dsh-bun-build/work/app (absent on CI; real archive not tested)`；随后原样恢复。CI fixture 导出始终运行。RL-RUNTIME-BUILD 用仅 runtime/scripts/package.json 的隔离 checkout、空 PATH、绝对 Bun 产出含 completion.json 的真实 ZIP；manager 最小独立 Zig 构建场景保持通过，不导入 builder 或 CLI 数据。
+
+## 4.2 SC-COLD、SC-LOCAL、SC-VERSIONS（sol）
+
+- 隐藏入口沿用 D10：`dsh manager __complete --shell bash|zsh -- <words...>`。words 不含 executable，最后一词是光标前缀（可为空）；只输出逐行候选。管理器候选、本地 runtime ID/tag/latest、snapshot 目录和 addon:name/version 查询；runtime CLI 使用现有 select.resolve 的 --use → --snapshot → selection/channel 优先级，描述不支持/缺失时只有安全本地管理候选。
+- **red → green**：`timeout 180 bun test ./test/completion.test.ts` 初次 SC-COLD **0 pass / 1 fail**：__complete 未路由，退出 1。最小路由后空安装 **1 pass**，Bun.serve 记录 **零请求**，数据根不存在且 HOME/out 无新文件。随后 `-t 'SC-VERSIONS|SC-LOCAL'` **0 pass / 2 fail**：缺旧运行包 CLI 与本地 --use 候选；实现读取描述/目录后通过。补充 profile 值恰为 plugin 的反例先 **0 pass / 1 fail**（错误切到 plugin CLI），限定第一命令词匹配后通过。
+- 两个 release 描述 `--old-cli` / `--new-cli`、一个 live 描述 `--live-cli`：固定默认、显式 --use（含 tag）、snapshot 版本和 latest/channel 均读取正确版本；missing/unknown schema 不回退应用探测，管理候选不变。fake-native 设置退出 91，若启动会写 marker；全程 out 为空。维护锁/runtime 锁由独立 probe 独占持有，query 仍返回，不获取阻塞锁。快照目录增加/删除后立即反映；文件树、入口字节不变，实际 home/profile 凭据探针不输出。
+
+## 4.3 SC-SHELLS、SC-IDEMPOTENT、SC-COLLISION、SC-CURRENT（Bash/Zsh，sol）
+
+- `manager completion script|install|uninstall <bash|zsh>`，install/uninstall 也接受 --shell。Bash 用户 .bashrc、Zsh `${ZDOTDIR:-$HOME}/.zshrc` 标记块；script 只输出。模板只调用原生 query，数组/逐行读数据，不 eval 候选。注册使用同目录原子文件，保留现有字节与 mode；标记记录 rc 原存在/新建，uninstall 还原原字节或删除仅由注册创建的空 rc。修改过的块、已有 user completion/标准位置 dsh completion 文件拒绝并保持内容，当前 shell 提示 source / complete -r / compdef -d。
+- **Bash red → green**：`timeout 180 bun test ./test/completion.test.ts -t 'SC-SHELLS|SC-IDEMPOTENT|SC-COLLISION'` 首次 **0 pass / 3 fail / 3 skip**：completion 尚不可用，无脚本/冲突诊断。实现后真实 Bash **5.3.20** 加载注册，COMP_WORDS 调用补全函数得到 install/info/release；重复 install 与 source 无重复，uninstall 对无末尾换行的原 rc 字节相等。新增“foreign 函数恰好同名”和“用户改开头标记”反例先 **1 pass / 2 fail**，修复后 foreign 函数不被重定义，改写块不报成功移除。
+- **Zsh 真正执行，不把 skip 当通过**：宿主 PATH 无 Zsh，普通 suite 明确 **4 skip**。本轮在 `/tmp/dsh-section4-zsh-o94gVp` 克隆 zsh-users/zsh 的 zsh-5.9、使用隔离 prefix 构建；第一次 build 因当前 ncurses 的 boolcodes 声明冲突失败，临时构建禁用 termcap 模块（未修改仓库/用户 shell），保留真实 compinit/compdef/compadd 完成系统，得到 **Zsh 5.9**。临时 PATH 加该 bin 后真实 shell 测试实际执行。
+- **真实 Zsh 发现**：stock Zsh 自带另一个 Distributed Shell 的 `_dsh`，首次 clean harness **9 pass / 2 fail**，模板正确保留其 foreign mapping；没有削弱产品冲突检查。clean fixture 在已经 compinit 的测试会话中显式 unset 该映射；另用真实 compinit/compaudit/compdump/compinstall 的私有 fpath 验证未初始化路径。foreign fixture 则保留用户 compdef，断言不覆盖。非 ZLE harness 只替换最终 compadd 输出，真实 compinit/compdef 注册与 query 函数执行均保留。
+- Zsh 旧路由反事实：临时让 completion 返回本轮前 not available，`PATH=/tmp/dsh-section4-zsh-o94gVp/install/bin:$PATH timeout 240 bun test ./test/completion.test.ts -t zsh` **0 pass / 4 fail**（缺 script/install/collision 能力，非解析错误）；恢复后整个 completion suite **11 pass / 0 skip / 0 fail**、**189** 断言，Bash/Zsh 各四个 shell 场景实际运行：生成/加载/候选、注册与重复/撤销、foreign 同名碰撞、改写保护、新建 rc 删除、标准 completion 文件碰撞、compinit 不重跑。
+- CI Ubuntu 增加 apt 安装 zsh，macOS 显式验证 preinstalled zsh；Windows Bash/Zsh 名称带 `Windows shell harness not supported` 原因跳过。跨平台真实 CI 尚待父会话发起，本机 Zsh 已实际执行，所以按用户标准勾选 4.3。生成脚本遇到 stock `_dsh` 会保持它并提示 collision；需要用户显式处理既有 completion，不能偷偷接管。
+
+### 第 4 节最终验证、提交与边界
+
+- 绿色中间提交 **f20fece**（feat(completion): export runtime CLI and query offline Bash and Zsh candidates）：Zig **44/44**，manager **120 pass / 3 skip / 0 fail**、1174 断言；builder/runtime **97 pass / 0 fail**、370 断言，三个指定目标交叉编译成功。没有等所有 shell 证据才留下绿色提交。
+- 后续 **55ae1b9**（fix(completion): preserve foreign hooks and reject partial CLI descriptions）与 **26deb9e**（test(completion): exercise real Zsh without adopting stock dsh hook），未 push。
+- 最终命令（临时 PATH 加 isolated Zsh bin）：`cd dsh-manager && timeout 300 zig build test --summary all && timeout 1500 bun test ./test`：Zig **44/44**；Bun **125 pass / 0 skip / 0 fail**、**1251** 断言、9 文件，五个真实 archive 场景均实际运行。`cd dsh-bun-build && timeout 900 bun test ./test/unit ./test/runtime`：**99 pass / 0 skip / 0 fail**、**375** 断言、25 文件。合计 Bun **224 pass**、**1626** 断言；新增 manager **12** 场景（11 completion + 1 real archive）、builder **3** 场景。
+- 无临时 Zsh PATH 的 full manager suite：**121 pass / 4 skip / 0 fail**、**1195** 断言；只跳过四项明确缺 zsh 的 shell 检查，其余真实 archive 和 Bash 均实际执行。
+- `timeout 300 zig build -Dtarget=<target> --prefix /tmp/dsh-section4-final-<target>`：**x86_64-windows-gnu、aarch64-macos、x86_64-linux-musl 全成功**。`timeout 60 zig fmt --check src/completion.zig src/manager.zig`、`timeout 15 git diff --check` 成功。交叉编译不是 Windows/macOS 运行证据。
+- 勾选 **4.1、4.2、4.3**；3.2 HTTPS_PROXY 缺口保持不变。
+- TODO 4.4：Fish/PowerShell 留下一切未实现；不生成其他 shell 冒充支持。
+- TODO 4.5：稳定 PATH/搬迁、完整空格引号非 ASCII 与元字符门禁仍未做；本轮仅固定绝对入口与安全 literal 词，不宣称全部 quoting/relocation 场景完成。
+- 未触碰 `openspec/changes/add-config-snapshots-and-paths/`；其既有 untracked 目录未 stage/commit，无用户安装、包注册或远程 push 操作。
