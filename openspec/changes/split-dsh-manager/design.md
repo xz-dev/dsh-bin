@@ -114,6 +114,8 @@ dsh-bin/
 
 运行包和 addon 更新使用同卷暂存与原子激活；选择与渠道状态原子写入，失败不先切换。创建快照完成后再发布其元数据，编号计数不能因删除而回退。重装已存在版本不重置已有快照，管理器不运行 pnpm 自动修复它们。清理仅针对本工具可识别且可独占的残留与缓存，不自动删除有效用户数据。
 
+HTTPS 下载支持 `HTTPS_PROXY/https_proxy`（以及 `ALL_PROXY/all_proxy`）指向 HTTP 代理：先发送 `CONNECT <origin-host>:<port> HTTP/1.1`，有 URL userinfo 时仅在 CONNECT 中携带解码后的 Basic 代理认证；只有 2xx 才在同一 socket 上用 Zig 标准 TLS Client 验证 origin 的证书链、主机名与 SNI，再发送 GET。`NO_PROXY/no_proxy` 按逗号列表、域名边界后缀、`*` 和可选端口匹配（无端口时匹配全部端口，支持 localhost）；每个手动重定向重新判断。CONNECT 前即设置读写 inactivity timeout，Windows 同步 socket adapter 覆盖 CONNECT、隧道 TLS 握手和 body。403/407 为不重试的代理拒绝，认证/证书错误不会退回直连；`https://` 代理 URL（TLS 到代理自身）仍明确拒绝，不静默直连。Zig 0.15.2 的 `Connection.Tls` 不公开且 CONNECT 不升级 TLS，因此内部连接复制其两个字段及分配布局，交由标准 HTTP Request/TLS 负责读写和销毁；编译期锁定 0.15.2，工具链升级必须复核布局。此 inactivity 约束不是 DNS/TCP 建连或直连 TLS 的总 deadline。
+
 管理器自更新走独立索引，按自身版本比较，而不是仅按启动协议号决定是否换文件。POSIX 使用校验后的同卷替换；Windows 使用同一 Zig 程序的一次性临时 helper 等待旧进程释放映像后替换，helper 带原安装上下文，不能按自身临时位置建立另一个数据根。交接不等于升级成功；只有替换完成才报告成功。临时 helper 不成为第二个分发产品，所有残留可在数据根内恢复/清理。若目标文件系统无法保证完整入口则停止，不使用先删除入口再复制的降级方案。
 
 ### D6. 补全是本地查询，注册是外部集成
@@ -164,7 +166,7 @@ CI 分开筛选 manager 与 build/runtime 变更。组合测试显式选已验�
 
 **`DSH_MANAGER_LAUNCH`**：JSON `{protocol:1, runtime, dataRoot, home, snapshot:{id,dir}, addons:{office?:{version,dir}}, cache, tmp, manager}`。管理器同时导出 `DSH_HOME=<home>`，并将 Bun/pnpm 缓存与 `TMPDIR`/`TEMP`/`TMP` 指向数据根。runtime 把 `snapshot.dir` 作为插件运行目录；共享 `cordis.patch.yml` 取 `$DSH_HOME/profiles/<name>`。应用内重启继承同一载荷。载荷缺失时按上游规则独立运行；载荷存在但无效时报错退出。
 
-**发布身份**：运行包 tag 为 `runtime-v<upstream>-b<run>.<attempt>.g<sha8>`（release）和 `runtime-live-<sha7>-b<run>.<attempt>.g<sha8>`（live）；运行包 ID 去掉 `runtime-v`/`runtime-` 前缀。addon tag 为 `addon-office-v<kit>-b<run>.<attempt>.g<sha8>`，管理器 tag 为 `manager-v<semver>`。新 tag 家族与旧 `dsh-v*`/`dsh-live-*`/`dsh-addon-*` 不重叠，旧 Git 标签得以保留。索引位于 `releases` 分支：`runtime-index.json`（`{schema:1, channels:{release,live}, addons:{office}}`）和 `manager-index.json`（`{schema:1, versions:[{version,tag,launchProtocols,assets}]}`）。受控测试源仅在 `DSH_MANAGER_TEST=1` 与 `DSH_MANAGER_TEST_ORIGIN` 同时存在时生效，沿用旧 updater 的约束。
+**发布身份**：运行包 tag 为 `runtime-v<upstream>-b<run>.<attempt>.g<sha8>`（release）和 `runtime-live-<sha7>-b<run>.<attempt>.g<sha8>`（live）；运行包 ID 去掉 `runtime-v`/`runtime-` 前缀。addon tag 为 `addon-office-v<kit>-b<run>.<attempt>.g<sha8>`，管理器 tag 为 `manager-v<semver>`。新 tag 家族与旧 `dsh-v*`/`dsh-live-*`/`dsh-addon-*` 不重叠，旧 Git 标签得以保留。索引位于 `releases` 分支：`runtime-index.json`（`{schema:1, channels:{release,live}, addons:{office}}`）和 `manager-index.json`（`{schema:1, versions:[{version,tag,launchProtocols,assets}]}`）。受控测试源仅在 `DSH_MANAGER_TEST=1` 与 `DSH_MANAGER_TEST_ORIGIN` 同时存在时生效，沿用旧 updater 的约束。`DSH_MANAGER_TEST_CA_FILE` 仅在 `DSH_MANAGER_TEST=1` 时把指定 PEM CA 加入本 client 已扫描的系统根，用于本地 HTTPS/CONNECT fixture；生产忽略此变量，始终验证系统 CA 与 origin 主机名，不提供跳过证书校验选项。
 
 **管理器目标**：管理器是不链接 libc 的静态 Zig 程序，发布 `linux-x64`、`linux-arm64`、`darwin-x64`、`darwin-arm64`、`windows-x64`、`windows-arm64` 六个资产。运行包 target（glibc/musl、baseline/modern）由管理器在运行时检测，不由管理器资产名决定。
 

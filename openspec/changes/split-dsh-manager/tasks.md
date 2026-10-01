@@ -16,7 +16,7 @@
 ## 3. 原生安装最小闭环
 
 - [x] 3.1 实现独立 runtime 索引读取、主机 target 检测及 release/live 候选筛选，不从已安装 bundle 推导主机身份；受控源同时发布 manager/runtime 候选时确认仅选择对应运行包，旧格式和不兼容 target 不进入安装（FB-EMPTY、RB-LEGACY）。
-- [ ] 3.2 用 Zig 实现下载、大小/SHA-256 验证及受限重试/断点恢复；本地 HTTP fixture 覆盖断连、Range 不一致、Retry-After、超时和坏哈希，并验证真实 HTTPS 下载，不依赖 curl、Node 或 Bun 完成被测操作（DL-CORRUPT、FB-RETRY）。
+- [x] 3.2 用 Zig 实现下载、大小/SHA-256 验证及受限重试/断点恢复；本地 HTTP fixture 覆盖断连、Range 不一致、Retry-After、超时和坏哈希，并验证真实 HTTPS 下载，不依赖 curl、Node 或 Bun 完成被测操作（DL-CORRUPT、FB-RETRY）。
 - [x] 3.3 实现安全解包、required paths/协议验证、同卷暂存和原子激活；对绝对路径、穿越、越界链接、错误入口和激活中断做故障注入，确认外部文件及原可用版本不变（DL-ESCAPE、DL-CORRUPT）。
 - [x] 3.4 将最小 `manager install` 接入锁、安装元数据和初始快照准备，从只有管理器的空目录完成显式安装并启动真实运行包；损坏入口的显式强制重装也能独立完成（MC-EMPTY、MC-BROKEN）。
 

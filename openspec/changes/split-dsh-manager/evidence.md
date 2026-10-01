@@ -216,3 +216,26 @@
   - 真实 zsh 测试在 ubuntu（apt 安装的 zsh）和 macos（系统自带 zsh）上实际执行并通过，真实 bash 测试在两个平台上同样通过；4.3 的勾选以此为依据。本机没有 zsh，这 4 项在本机明确标记为跳过。
   - windows 上 bash/zsh 的注册测试明确标记为跳过，原因已写明。
   - 父会话本机复验：Zig 44/44；dsh-manager 121 pass / 4 skip（均为 zsh）；dsh-bun-build 99 pass。
+
+## 3.2 HTTPS 代理（TLS-over-CONNECT）
+
+- **范围与根因**：只关闭 3.2 的 HTTP 代理承载 HTTPS 缺口，全部新增实现和测试由本 worker（gpt-6.1-sol）编写；不修改安装激活、zip、runtime、shell 或其他 change。Zig 0.15.2 `connectProxied` 在 CONNECT 后仍返回 proxy protocol 的连接，没有 origin TLS；禁止调用其 HTTPS fallback。本实现用标准 HTTP Request 发送 CONNECT，用 `std.crypto.tls.Client.init` 验证同一 socket 上的 origin，并仍用标准 HTTP Request 发送 GET/读取 body。`Connection.Tls` 私有，内部两字段与分配布局按 0.15.2 精确匹配；编译期版本锁阻止未经复核的工具链升级，没有自行实现 TLS/HTTP parser。
+- **安全边界**：HTTPS_PROXY/https_proxy/ALL_PROXY/all_proxy 的 HTTP URL 支持 Basic userinfo；userinfo 先用 std.Uri 解码，凭据只进入 CONNECT、不进入 origin GET 或错误日志。只有 2xx 建立隧道（fixture 使用 201），SNI 与 hostname 为 origin，CA 使用系统 Bundle；附加 `DSH_MANAGER_TEST_CA_FILE` 仅在 `DSH_MANAGER_TEST=1` 生效。不可信 CA、hostname mismatch、生产模式下该变量均 fail-closed，origin 零 HTTP 请求、无 `.part` body、原 destination 保留；403/407 各 API 只发一次 CONNECT，不重试、不直连，407 提示检查代理凭据。`https://` 代理传输仍明确 UnsupportedProxy，proxy 零请求；这是 TLS 到代理自身的独立边界，不再把普通 HTTP CONNECT 代理称为不支持。
+- **代理策略与超时**：NO_PROXY/no_proxy 覆盖逗号列表、域名边界后缀、`*`、无端口匹配、指定端口和 localhost；部分 label/错误 port 反例仍走代理。手动 redirect 在 proxied → NO_PROXY → proxied 三跳重算，Range 保留，只有两次 CONNECT，origin 没有 Proxy-Authorization。CONNECT 前设置 RCVTIMEO/SNDTIMEO，Windows 同步 adapter 从 CONNECT 到 TLS 握手/body 都复用；CONNECT 后不发 ServerHello 的 fixture 两 API 均在 3 秒内停止、各五次尝试，每条隧道首字节 `16 03`，没有明文 GET。DNS/TCP 和直连 TLS 无严格总 deadline 的原边界未扩大。
+
+### red / green（真实进程与 socket）
+
+- 首个纵向 red：`cd dsh-manager && timeout 180 bun test ./test/download.test.ts -t 'verified HTTPS download uses authenticated CONNECT'`：**0 pass / 1 fail**；期望下载成功退出 0，旧实现为 UnsupportedProxy/退出 1。实现后 **1 pass / 0 fail**、11 断言，实际 SHA-256、destination/part 和 CONNECT 认证/TLS 首字节均检查。
+- 旧实现反事实基线：暂时恢复本轮前 http.zig（之后原样恢复），`timeout 300 bun test ./test/download.test.ts ./test/install.test.ts -t 'CONNECT|NO_PROXY|wrong hostname|https:// proxy transport|HTTPS redirect'`：**1 pass / 1 skip / 11 fail**。失败是旧实现拒绝所有 HTTPS 代理，包含 install 成功、证书验证、403/407、策略/redirect、timeout；https:// 代理场景原有拒绝能力不算新 red，额外失败仅为新清晰诊断断言。保留原 HTTP→HTTPS redirect 拒绝场景通过的事实，不把它冒充新功能证据。
+- **实测追加反例**：userinfo `private%40user:s%3Ae%40cret` 经 std 原 Basic helper 得到 escaped 文本的 base64，而不是 `private@user:s:e@cret`。`timeout 180 bun test ./test/download.test.ts -t 'percent-encoded proxy userinfo'`：**0 pass / 1 fail**；改为 std.Uri 解码后通过。排查实现时一次 `.empty` 类型推断编译错误，已改显式 Component.empty；不将编译错误算行为 red。
+- **证书断言强度**：分别临时关闭 CA 与 hostname 验证，`timeout 180 bun test ./test/download.test.ts -t 'untrusted CA, wrong hostname'` 各 **0 pass / 1 fail**，应拒绝却退出 0；所有 mutation 已移除。最终定向命令 `timeout 240 bun test ./test/download.test.ts ./test/install.test.ts -t 'CONNECT|NO_PROXY|wrong hostname|https:// proxy transport|HTTPS redirect'`：**13 pass / 1 skip / 0 fail**、**189** 断言。唯一 skip 名称明确为 `DSH_MANAGER_REAL_PROXY not set; real proxy not tested`；CI 不要求真实外网代理。
+- **安装级闭环**：复用 install.test.ts 的 ZIP/index/fake-native fixture，从只有 manager 的新目录，通过本地 TLS origin 和带认证的 CONNECT relay 下载 runtime-index 与精确 archive，验证文件、初始化 snapshot 后激活；两次 CONNECT、两次 TLS ClientHello，安装过程不执行 runtime。停止 origin/proxy 后从该安装离线启动 recording runtime。它是安装级代理验收，不冒充通过代理下载真实上游制品。
+
+### 最终验证、提交与边界
+
+- `cd dsh-manager && timeout 300 zig build test --summary all && timeout 1500 bun test ./test`：Zig **44/44**；Bun **131 pass / 5 skip / 0 fail**、**1328** 断言、9 文件。5 skip = 既有本机缺 zsh 四项 + 新可选真实代理一项；既有 pinned Zig 0.15.2 LICENSE 真实系统根 HTTPS 下载、五个本机真实 archive 场景均实际执行。
+- `cd dsh-bun-build && timeout 900 bun test ./test/unit ./test/runtime`：**99 pass / 0 fail**、**375** 断言、25 文件。两项目 Bun 合计 **230 pass / 5 skip / 0 fail**、**1703** 断言。
+- 所有命令使用 timeout：`timeout 300 zig build -Dtarget=<target> --prefix <isolated-prefix>` 对 **x86_64-windows-gnu、aarch64-macos、aarch64-linux、x86_64-linux-musl 全成功**；`timeout 300 zig build-exe -target <target> -fsingle-threaded --dep http -Mroot=<download-driver.zig> -Mhttp=<src/http.zig> -femit-bin=<output>` 对 **x86_64-windows-gnu、aarch64-macos** 下载驱动全成功，避免 main-only 漏 http。`timeout 60 zig fmt --check src/http.zig`、`timeout 15 git diff --check` 成功。
+- 第二次 full suite 的日志写入曾遇到 `/tmp` zram 的 ENOSPC（未获得有效完整结果，不计通过）；保持产品不变，将测试驱动 TMPDIR/TMP/TEMP 与日志放入 `/home/xz/.cache/dsh-proxy-validation` 后重新执行上述最终全部命令，均成功。最终日志在该目录的 logs/；red 初次记录在 /tmp/dsh-proxy-*.log。
+- 绿色中间提交 **e0da27a**（feat(manager): verify origin TLS over HTTP proxy CONNECT）：Zig 44/44、manager 130 pass / 5 skip、runtime 99 pass，四目标与两个 driver 成功后提交；后续修正 **ae380ee**（fix(manager): decode HTTP proxy authentication userinfo）。无 push。
+- **3.2 已勾选**，只关闭此授权 gap；Windows/macOS 本轮 CONNECT 运行仍待父会话真实 CI，交叉编译不充当运行证据。`https://` 代理传输、严格总 deadline 和工具链升级 layout 复核为明确残余边界；可选真实代理因未配置未执行。不触碰 add-config-snapshots-and-paths 或其他既有 untracked change，不操作用户真实安装/凭据。
