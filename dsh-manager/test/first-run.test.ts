@@ -9,6 +9,7 @@ const python = Bun.which("python3");
 const bash = Bun.which("bash");
 const fish = Bun.which("fish");
 const reason = WIN ? "real Windows console/ConPTY harness not available" : !python ? "Python stdlib PTY unavailable" : !bash ? "real Bash unavailable" : !hasZig ? "Zig unavailable" : "";
+const crossShellReason = reason || (!fish ? "real Fish unavailable for per-shell choice verification" : "");
 afterEach(cleanup);
 const statePath = (i: Install) => join(i.data, "state/completion.json");
 const state = (i: Install) => JSON.parse(readFileSync(statePath(i), "utf8"));
@@ -41,7 +42,7 @@ for (const fixture of ["empty", "installed", "broken"] as const) {
 		let requests = 0;
 		const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { requests++; return new Response("unexpected", { status: 500 }); } });
 		try {
-			const t = terminal(i, "bash", { DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: server.url.origin });
+			const t = terminal(i, "bash", { DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: server.url.origin, ...(process.platform === "linux" ? { SHELL: fish ?? "/bin/fish" } : {}) });
 			await t.wait("Register bash completion at ");
 			expect(t.output).toContain(join(i.home, ".bashrc")); expect(t.output).toContain("[Y/n/o]");
 			expect(started(i)).toBe(false); expect(requests).toBe(0); expect(existsSync(statePath(i))).toBe(false); expect(existsSync(join(i.data, "snapshots"))).toBe(false);
@@ -57,7 +58,13 @@ for (const fixture of ["empty", "installed", "broken"] as const) {
 	}, 120_000);
 }
 
-test.skipIf(!!reason)(`FB-DECLINE: decline retains profile, launches app and asks again in a different real shell${reason ? ` — SKIP: ${reason}` : ""}`, async () => {
+test.skipIf(!!reason)(`FB-ORDER: runtime installed while prompt waits is discovered only after consent${reason ? ` — SKIP: ${reason}` : ""}`, async () => {
+	const i = newInstall(); const t = terminal(i); await t.wait("[Y/n/o]");
+	// If launch cached the available runtimes before consent it would still diagnose an empty install.
+	addRuntime(i.data, "1.0.0"); t.answer("n\n"); expect(await t.done).toBe(0); expect(started(i)).toBe(true);
+}, 120_000);
+
+test.skipIf(!!crossShellReason)(`FB-DECLINE: decline retains profile, launches app and asks again in a different real shell${crossShellReason ? ` — SKIP: ${crossShellReason}` : ""}`, async () => {
 	const i = newInstall(); addRuntime(i.data, "1.0.0"); writeFileSync(join(i.home, ".bashrc"), "# keep\n");
 	const t = terminal(i); await t.wait("[Y/n/o]"); t.answer("n\n"); expect(await t.done).toBe(0);
 	expect(state(i).shells.bash.result).toBe("declined"); expect(readFileSync(join(i.home, ".bashrc"), "utf8")).toBe("# keep\n");
@@ -88,7 +95,7 @@ test.skipIf(!!reason)(`FB-ORDER: undetected menu lists targets, choice consents 
 	const skipAgain = terminal(j, "unknown"); expect(await skipAgain.done).toBe(1); expect(skipAgain.output).not.toContain("Choose completion");
 }, 120_000);
 
-test.skipIf(!!reason)(`FB-ORDER: other opens target menu; EOF records nothing and next interactive launch asks${reason ? ` — SKIP: ${reason}` : ""}`, async () => {
+test.skipIf(!!crossShellReason)(`FB-ORDER: other opens target menu; EOF records nothing and next interactive launch asks${crossShellReason ? ` — SKIP: ${crossShellReason}` : ""}`, async () => {
 	const i = newInstall(); const t = terminal(i); await t.wait("[Y/n/o]"); t.answer("o\n"); await t.wait("Choose completion shell"); t.answer("skip\n"); expect(await t.done).toBe(1);
 	const skipAgain = terminal(i); expect(await skipAgain.done).toBe(1); expect(skipAgain.output).not.toContain("Register bash");
 	if (fish) {
@@ -97,7 +104,14 @@ test.skipIf(!!reason)(`FB-ORDER: other opens target menu; EOF records nothing an
 		const nextBash = terminal(k); expect(await nextBash.done).toBe(1); expect(nextBash.output).not.toContain("Register bash");
 	}
 	const j = newInstall(); const eof = terminal(j); await eof.wait("[Y/n/o]"); eof.answer("\x04"); expect(await eof.done).toBe(1); expect(existsSync(statePath(j))).toBe(false);
+	const menuEof = terminal(j, "unknown"); await menuEof.wait("Choose completion shell"); menuEof.answer("\x04"); expect(await menuEof.done).toBe(1); expect(existsSync(statePath(j))).toBe(false);
 	const again = terminal(j); await again.wait("[Y/n/o]"); again.answer("n\n"); expect(await again.done).toBe(1);
+}, 120_000);
+
+test.skipIf(!!reason)(`FB-ORDER: completion answer never buffers away subsequent terminal input${reason ? ` — SKIP: ${reason}` : ""}`, async () => {
+	const i = newInstall(); addRuntime(i.data, "1.0.0"); const t = terminal(i, "bash", { FAKE_STDIN: "1" });
+	await t.wait("[Y/n/o]"); t.answer("n\napplication input\n\x04"); expect(await t.done).toBe(0);
+	expect(readFileSync(join(i.out, "1.stdin"), "utf8")).toBe("application input\n");
 }, 120_000);
 
 test.skipIf(!!reason)(`FB-ORDER: invalid completion state refuses before app; noninteractive launch leaves stdin intact${reason ? ` — SKIP: ${reason}` : ""}`, async () => {

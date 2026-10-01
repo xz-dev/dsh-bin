@@ -192,7 +192,7 @@ fn menu(ctx: *Ctx) ?Choice {
         prompt("  {s}: {s}\n", .{ @tagName(shell), path });
     }
     while (true) {
-        prompt("Shell [bash/zsh/fish/pwsh/powershell/skip; Enter skips]: ", .{});
+        prompt("Shell name [Enter or skip declines]: ", .{});
         const value = answer() orelse return null;
         if (value.len == 0 or std.mem.eql(u8, value, "skip")) return .{ .shell = null, .register = false };
         if (std.meta.stringToEnum(Shell, value)) |shell| {
