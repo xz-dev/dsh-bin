@@ -51,8 +51,9 @@ pub fn request(raw: []const u8) !?[]const u8 {
 }
 pub fn option(opts: []const []const u8) !?[]const u8 {
     if (opts.len == 0) return null;
-    if (opts.len != 1) return error.RepeatedAddon;
-    return (try request(opts[0])) orelse return error.AddonVersionRequired;
+    var chosen: ?[]const u8 = null;
+    for (opts) |raw| chosen = (try request(raw)) orelse return error.AddonVersionRequired;
+    return chosen;
 }
 fn remote(ctx: *const Ctx, bytes: []const u8) ![]Release {
     const I = struct { schema: u32, channels: struct { release: []std.json.Value, live: []std.json.Value }, addons: struct { office: []std.json.Value } };
