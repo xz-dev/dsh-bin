@@ -22,14 +22,20 @@ Register-ArgumentCompleter -Native -CommandName dsh,dsh.exe -ScriptBlock {
     foreach ($word in $words) {
         if ($word.IndexOf([char]0) -ge 0 -or $word.IndexOf($separator) -ge 0) { return }
     }
-    $manager = Get-Command -Name @DSH@ -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -eq $manager) { return }
+    $managerPath = @DSH@
+    if ([System.IO.Path]::IsPathRooted($managerPath)) {
+        if (-not [System.IO.File]::Exists($managerPath)) { return }
+    } else {
+        $manager = Get-Command -Name $managerPath -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -eq $manager) { return }
+        $managerPath = $manager.Source
+    }
     $oldWords = [Environment]::GetEnvironmentVariable('DSH_COMPLETE_WORDS', 'Process')
     $oldEncoding = [Console]::OutputEncoding
     try {
         [Environment]::SetEnvironmentVariable('DSH_COMPLETE_WORDS', [string]::Join($separator.ToString(), $words.ToArray()), 'Process')
         [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-        foreach ($candidate in (& $manager.Source manager __complete --shell pwsh --words-env 2>$null)) {
+        foreach ($candidate in (& $managerPath manager __complete --shell pwsh --words-env 2>$null)) {
             $insert = if ($candidate -cmatch '^[A-Za-z0-9_.+@:-]+$') { $candidate } else { "'" + $candidate.Replace("'", "''") + "'" }
             [System.Management.Automation.CompletionResult]::new($insert, $candidate, 'ParameterValue', $candidate)
         }

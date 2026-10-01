@@ -59,10 +59,10 @@ for (const shell of ["bash", "zsh", "fish", "pwsh", "powershell"] as const) {
  }, 180_000);
  test.skipIf(!!reason)(`SC-QUOTING: ${shell} special path and candidate insertion remain literal${reason ? ` — SKIP: ${reason}` : ""}`, () => {
   let i = newInstall(); i = move(i, WIN ? "space ' é $(x) &" : "space ' \" é $(x) &");
-  const name = ps ? "1.0.0@space $(New-Item CANARY) ` ; * é '" : "1.0.0@space $(touch CANARY) ` ; * é '";
+  const name = ps ? "1.0.0@space $(New-Item CANARY) ` ; * | & [x] é '" : "1.0.0@space $(touch CANARY) ` ; * | & [x] é '";
   snapshot(i, name);
   const generated = join(i.home, ps ? "generated.ps1" : "generated");
-  const script = run(i, ["manager", "completion", "script", shell]); expect(script.status).toBe(0); writeFileSync(generated, script.stdout);
+  const script = run(i, ["manager", "completion", "script", shell]); expect(script.status).toBe(0); writeFileSync(generated, (ps ? "\ufeff" : "") + script.stdout);
   const result = invoke(i, `${i.dir}${delimiter}${process.env.PATH}`, load(generated) + query(["--snapshot", "1.0.0@"], i.exe));
   expect(result.status).toBe(0); expect(result.stdout).toContain("CANARY"); expect(existsSync(join(i.home, "CANARY"))).toBe(false);
   let accept: string;
@@ -79,7 +79,7 @@ for (const shell of ["bash", "zsh", "fish", "pwsh", "powershell"] as const) {
   }
   const accepted = invoke(i, `${i.dir}${delimiter}${process.env.PATH}`, load(generated) + accept);
   expect(accepted.status).toBe(0); expect(accepted.stdout.trim()).toBe(name); expect(existsSync(join(i.home, "CANARY"))).toBe(false);
-  const input = invoke(i, `${i.dir}${delimiter}${process.env.PATH}`, load(generated) + query(["--use", "$(touch CANARY) ` ; * é", "manager", "in"], i.exe));
+  const input = invoke(i, `${i.dir}${delimiter}${process.env.PATH}`, load(generated) + query(["--use", "$(touch CANARY) ` ; * | & [x] é", "manager", "in"], i.exe));
   expect(input.status).toBe(0); expect(input.stdout).toContain("install"); expect(existsSync(join(i.home, "CANARY"))).toBe(false);
  }, 180_000);
 }
