@@ -2,13 +2,13 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeZip, type ZipInput } from "../../dsh-bun-build/runtime/zip.ts";
 import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
 import { acquireClaim } from "./claim-probe.ts";
 import { connectProxy, TEST_CA_FILE, TEST_TLS } from "./proxy-fixture.ts";
-import { addRuntime, argvOf, baseEnv, build, bundleMeta, cleanup, EXE, hasZig, launchOf, MANAGER_DIR, newInstall, run, started, tempDir, tree, type Install } from "./harness.ts";
+import { addRuntime, argvOf, baseEnv, build, bundleMeta, cleanup, EXE, hasZig, launchOf, MANAGER_DIR, newInstall, run, started, tempDir, tree, WIN, type Install } from "./harness.ts";
 
 const TARGET = hostTargetId();
 const ID = "0.1.7-b1.1.gdeadbeef";
@@ -639,3 +639,29 @@ test.skipIf(!hasZig)("FB-MISSING review: damaged runtime storage never bootstrap
 		expect(s.requests).toEqual([]);
 	} finally { await s.stop(); }
 });
+
+test.skipIf(!hasZig)("DL-CORRUPT review: force runtime install retains destination and staging handles across ancestor swaps", async () => {
+	const i = newInstall(), a = archive(), e = entry(ID, a.bytes), bundles = join(i.data, "bundles"), tmp = join(i.data, "tmp");
+	const external = join(i.home, "external"), externalTmp = join(i.home, "external-tmp"), sentinel = join(external, ID, "unrelated-user-file");
+	let armed = false, swapped = false;
+	const s = source([e], new Map([[assetPath(e), a.bytes]]), (req, bytes) => {
+		if (armed && !swapped) {
+			renameSync(bundles, `${bundles}-original`); symlinkSync(external, bundles, WIN ? "junction" : "dir");
+			renameSync(tmp, `${tmp}-original`); symlinkSync(externalTmp, tmp, WIN ? "junction" : "dir"); swapped = true;
+		}
+		return ranged(req, bytes);
+	});
+	try {
+		expect((await install(i, s.origin)).status).toBe(0);
+		const snapshot = join(i.data, "snapshots", `${ID}@1`, "profiles/keep"); writeFileSync(snapshot, "plugin stays");
+		mkdirSync(join(external, ID), { recursive: true }); writeFileSync(sentinel, "KEEP");
+		mkdirSync(externalTmp); writeFileSync(join(externalTmp, "keep"), "KEEP TMP");
+		rmSync(join(i.data, "cache/downloads"), { recursive: true }); armed = true;
+		const r = await install(i, s.origin, [ID, "--force"]);
+		expect(swapped).toBe(true); expect(existsSync(sentinel)).toBe(true); expect(readFileSync(sentinel, "utf8")).toBe("KEEP");
+		expect(tree(external)).toEqual([ID, `${ID}/unrelated-user-file`]); expect(tree(externalTmp)).toEqual(["keep"]);
+		expect(r.status).toBe(0); expect(existsSync(join(`${bundles}-original`, ID, "bundle.json"))).toBe(true);
+		expect(tree(`${tmp}-original`).filter(p => p.startsWith(".install-") || p.startsWith(".previous-"))).toEqual([]);
+		expect(readFileSync(snapshot, "utf8")).toBe("plugin stays"); expect(started(i)).toBe(false);
+	} finally { s.stop(); }
+}, 30_000);

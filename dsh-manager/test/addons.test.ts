@@ -14,7 +14,7 @@ const V = "1.0.0-b1.1.gdeadbeef", W = "2.0.0-b2.1.gdeadbeef";
 const A = "0.1.1-b1.1.gdeadbeef", B = "0.1.1-b2.1.gdeadbeef", C = "0.2.0-b3.1.gdeadbeef";
 const slot = { commit: "a".repeat(40), kitVersion: "0.1.1" }, other = { commit: "b".repeat(40), kitVersion: "0.2.0" };
 const platform = process.platform === "linux" ? "linux" : `${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`;
-function source(i: Install) {
+function source(i: Install, beforeDownload?: () => void) {
 	const requests: string[] = [], assets = new Map<string, Buffer>();
 	const entries = [A, B, C].map((version, n) => {
 		const tag = `addon-office-v${version}`, s = n === 2 ? other : slot;
@@ -33,6 +33,7 @@ function source(i: Install) {
 	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
 		const p = new URL(req.url).pathname; requests.push(p);
 		if (p === "/runtime-index.json") return Response.json({ schema: 1, channels: { release: [{ kind: "dsh-manager", version: "99" }], live: [] }, addons: { office: entries } });
+		if (assets.has(p)) beforeDownload?.();
 		return assets.has(p) ? new Response(assets.get(p)) : new Response(null, { status: 404 });
 	} });
 	return { entries, assets, requests, origin: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
@@ -139,5 +140,23 @@ test.skipIf(!hasZig)("MC-ADDON review: uninstall through a replaced ancestor pre
 			expect(existsSync(sentinel)).toBe(true); expect(readFileSync(sentinel, "utf8")).toBe("KEEP");
 			expect(code).toBe(0); expect(existsSync(join(original, "office", A))).toBe(false); expect(started(i)).toBe(false);
 		} finally { clearTimeout(watchdog); if (p.exitCode === null) { p.kill("SIGKILL"); await done; } }
+	} finally { s.stop(); }
+}, 30_000);
+
+test.skipIf(!hasZig)("MC-ADDON review: force install through a download-time ancestor swap preserves external files", async () => {
+	const i = newInstall(), addons = join(i.data, "addons"), original = `${addons}-original`, external = join(i.home, "external"), target = join(external, "office", A), sentinel = join(target, "unrelated-user-file");
+	let armed = false, swapped = false;
+	const s = source(i, () => { if (armed && !swapped) { renameSync(addons, original); symlinkSync(external, addons, WIN ? "junction" : "dir"); swapped = true; } });
+	try {
+		expect((await install(i, s, `office:${A}`)).status).toBe(0);
+		const marker = join(addons, "office", A, "node_modules/old"); writeFileSync(marker, "old generation");
+		mkdirSync(target, { recursive: true }); writeFileSync(sentinel, "KEEP");
+		rmSync(join(i.data, "cache/downloads"), { recursive: true }); armed = true;
+		const r = await command(i, s, ["--use", V, "manager", "install", "--addon", `office:${A}`, "--force"]);
+		expect(swapped).toBe(true); expect(existsSync(sentinel)).toBe(true); expect(readFileSync(sentinel, "utf8")).toBe("KEEP");
+		expect(existsSync(join(target, "addon.json"))).toBe(false); expect(existsSync(join(target, "node_modules"))).toBe(false);
+		expect(r.status).toBe(0); expect(existsSync(join(original, "office", A, "node_modules/old"))).toBe(false);
+		expect(existsSync(join(original, "office", A, "addon.json"))).toBe(true); expect(started(i)).toBe(false);
+		expect(tree(join(i.data, "tmp")).filter(p => p.startsWith(".install-") || p.startsWith(".previous-"))).toEqual([]);
 	} finally { s.stop(); }
 }, 30_000);

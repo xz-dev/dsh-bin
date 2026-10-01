@@ -135,6 +135,14 @@ fn checkExtra(reader: *std.Io.Reader, len: u16) Error!void {
 /// from redirecting subsequent relative writes.
 pub fn extract(a: std.mem.Allocator, archive_path: []const u8, dest_path: []const u8) Error!void {
     if (!std.fs.path.isAbsolute(dest_path)) return error.UnsafeEntryName;
+    std.fs.cwd().makeDir(dest_path) catch |e| if (e != error.PathAlreadyExists) return ioErr(e);
+    var dest = std.fs.cwd().openDir(dest_path, .{ .iterate = true, .no_follow = true }) catch |e| return ioErr(e);
+    defer dest.close();
+    return extractIn(a, archive_path, dest);
+}
+
+/// Same extractor, retaining the caller's validated staging handle through all writes.
+pub fn extractIn(a: std.mem.Allocator, archive_path: []const u8, dest: std.fs.Dir) Error!void {
     const file = std.fs.cwd().openFile(archive_path, .{}) catch |e| return ioErr(e);
     defer file.close();
     var central_buf: [8192]u8 = undefined;
@@ -149,9 +157,6 @@ pub fn extract(a: std.mem.Allocator, archive_path: []const u8, dest_path: []cons
     if (cd_start + end.central_directory_size != cd_end) return error.BadArchive;
     central.seekTo(cd_start) catch return error.BadArchive;
 
-    std.fs.cwd().makeDir(dest_path) catch |e| if (e != error.PathAlreadyExists) return ioErr(e);
-    var dest = std.fs.cwd().openDir(dest_path, .{ .iterate = true, .no_follow = true }) catch |e| return ioErr(e);
-    defer dest.close();
     // Windows no_follow opens the reparse point itself; reject that handle before using it.
     if ((dest.stat() catch |e| return ioErr(e)).kind != .directory) return error.UnsafeEntryName;
     var contents = dest.iterate();

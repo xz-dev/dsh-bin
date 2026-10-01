@@ -97,9 +97,6 @@ fn platform(ctx: *const Ctx) ![]const u8 {
     var parts = std.mem.splitScalar(u8, host, '-');
     return std.fmt.allocPrint(ctx.a, "{s}-{s}", .{ parts.next().?, parts.next().? });
 }
-fn read(ctx: *const Ctx, path: []const u8, version: []const u8) !Meta {
-    return readIn(ctx, std.fs.cwd(), path, version);
-}
 fn readIn(ctx: *const Ctx, parent: std.fs.Dir, path: []const u8, version: []const u8) !Meta {
     var d = try parent.openDir(path, .{ .iterate = true, .no_follow = true });
     defer d.close();
@@ -195,26 +192,30 @@ fn perform(ctx: *Ctx, t: Table, query: ?[]const u8, force: bool) !void {
     _ = try std.fmt.hexToBytes(&digest, asset.sha256);
     var parent = ctx.ensureDir(&.{ "addons", "office" });
     defer parent.close();
-    const dest = ctx.path(&.{ "addons", "office", c.version });
-    const backup = ctx.path(&.{ "tmp", try std.fmt.allocPrint(ctx.a, ".previous-addon-office-{s}", .{c.version}) });
-    const exists = util.exists(dest);
-    if (exists) _ = try read(ctx, dest, c.version);
-    if (util.exists(backup)) _ = try read(ctx, backup, c.version);
+    var tmp = ctx.ensureDir(&.{"tmp"});
+    defer tmp.close();
+    const installer = @import("install.zig");
+    const backup = try std.fmt.allocPrint(ctx.a, ".previous-addon-office-{s}", .{c.version});
+    const exists = installer.existsIn(parent, c.version);
+    if (exists) _ = try readIn(ctx, parent, c.version, c.version);
+    if (installer.existsIn(tmp, backup)) _ = try readIn(ctx, tmp, backup, c.version);
     if (exists and !force) {
-        var modules = try std.fs.cwd().openDir(ctx.path(&.{ "addons", "office", c.version, "node_modules" }), .{ .no_follow = true });
+        var current = try parent.openDir(c.version, .{ .no_follow = true });
+        defer current.close();
+        var modules = try current.openDir("node_modules", .{ .no_follow = true });
         modules.close();
         util.print("The office addon {s} is already installed.\n", .{c.version});
         return;
     }
-    const staging = try @import("install.zig").fetchTree(ctx, asset, c.tag);
-    defer std.fs.cwd().deleteTree(staging) catch {};
-    const m = try read(ctx, staging, c.version);
-    var modules = try std.fs.cwd().openDir(util.join(ctx.a, &.{ staging, "node_modules" }), .{ .no_follow = true });
-    modules.close();
-    if (!eq(u8, m.tag, c.tag) or !eq(u8, m.slot.commit, c.slot.commit) or !eq(u8, m.kitVersion, c.slot.kitVersion)) return error.AddonMetadataMismatch;
-    var d = try std.fs.cwd().openDir(staging, .{ .iterate = true });
+    const staging = try installer.fetchTree(ctx, tmp, asset, c.tag);
+    defer tmp.deleteTree(staging) catch {};
+    const m = try readIn(ctx, tmp, staging, c.version);
+    var d = try tmp.openDir(staging, .{ .iterate = true, .no_follow = true });
     var d_open = true;
     defer if (d_open) d.close();
+    var modules = try d.openDir("node_modules", .{ .no_follow = true });
+    modules.close();
+    if (!eq(u8, m.tag, c.tag) or !eq(u8, m.slot.commit, c.slot.commit) or !eq(u8, m.kitVersion, c.slot.kitVersion)) return error.AddonMetadataMismatch;
     var it = d.iterate();
     while (try it.next()) |e| if (!eq(u8, e.name, "addon.json") and !eq(u8, e.name, "node_modules")) {
         return error.UnexpectedAddonRoot;
@@ -225,7 +226,7 @@ fn perform(ctx: *Ctx, t: Table, query: ?[]const u8, force: bool) !void {
     try d.writeFile(.{ .sub_path = runtimes.guard_name, .data = "" });
     d.close();
     d_open = false;
-    try @import("install.zig").activate(ctx, staging, dest, backup, exists);
+    try installer.activate(ctx, tmp, staging, parent, c.version, backup, exists);
     util.print("Installed the office addon {s}; selection unchanged.\n", .{c.version});
 }
 pub fn storedChoice(s: ?select.Selection) !?[]const u8 {

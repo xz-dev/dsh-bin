@@ -131,15 +131,15 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
     defer bundles.close();
     var tmp = ctx.ensureDir(&.{"tmp"});
     defer tmp.close();
-    const backup = ctx.path(&.{ "tmp", try std.fmt.allocPrint(ctx.a, ".previous-{s}", .{e.id}) });
+    const backup = try std.fmt.allocPrint(ctx.a, ".previous-{s}", .{e.id});
     // Windows cannot atomically replace a nonempty directory. Restore an interrupted retirement
     // on the next explicit install, under the maintenance lock; never delete the only generation.
-    if (!util.exists(dest) and util.exists(backup)) {
-        try recognized(ctx, backup, e.id);
-        try std.fs.cwd().rename(backup, dest);
+    if (!existsIn(bundles, e.id) and existsIn(tmp, backup)) {
+        try recognized(ctx, tmp, backup, e.id);
+        try std.fs.rename(tmp, backup, bundles, e.id);
     }
-    const exists = util.exists(dest);
-    if (exists) try recognized(ctx, dest, e.id);
+    const exists = existsIn(bundles, e.id);
+    if (exists) try recognized(ctx, bundles, e.id, e.id);
     if (exists and !force) {
         _ = validate(ctx, dest, e, host) catch return error.IncompleteRuntimeUseForce;
         _ = try snapshot.ensure(ctx, e.id, e.bundle().meta.?, "install");
@@ -147,20 +147,20 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
         if (automatic) util.warn("dsh {s} is already installed", .{e.id}) else util.print("dsh {s} is already installed.\n", .{e.id});
         return e.id;
     }
-    const staging = try fetchTree(ctx, candidate.asset, e.tag);
-    defer std.fs.cwd().deleteTree(staging) catch {};
-    const meta = try validate(ctx, staging, e, host);
-    var dir = try std.fs.cwd().openDir(staging, .{});
+    const staging = try fetchTree(ctx, tmp, candidate.asset, e.tag);
+    defer tmp.deleteTree(staging) catch {};
+    var dir = try tmp.openDir(staging, .{ .no_follow = true });
     var dir_open = true;
     defer if (dir_open) dir.close();
+    const meta = try validateIn(ctx, dir, e, host);
     const installed_meta = try std.json.Stringify.valueAlloc(ctx.a, .{ .kind = "dsh-runtime-install", .schema = @as(u32, 1), .id = e.id, .target = host, .tag = e.tag, .asset = candidate.asset, .seq = e.seq }, .{});
     try dir.writeFile(.{ .sub_path = ".dsh-install.json", .data = installed_meta });
     try dir.writeFile(.{ .sub_path = runtimes.guard_name, .data = "" });
     dir.close(); // No open directory/file handles at Windows activation.
     dir_open = false;
     crashPoint(ctx, "before-activation");
-    if (util.exists(backup)) try recognized(ctx, backup, e.id);
-    try activate(ctx, staging, dest, backup, exists);
+    if (existsIn(tmp, backup)) try recognized(ctx, tmp, backup, e.id);
+    try activate(ctx, tmp, staging, bundles, e.id, backup, exists);
     crashPoint(ctx, "after-activation");
     _ = try snapshot.ensure(ctx, e.id, meta, "install");
     try state.write(ctx, "channel", try std.fmt.allocPrint(ctx.a, "{s}\n", .{channel}));
@@ -168,27 +168,32 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
     return e.id;
 }
 
-pub fn fetchTree(ctx: *const Ctx, asset: index.Asset, tag: []const u8) ![]const u8 {
+pub fn fetchTree(ctx: *const Ctx, tmp: std.fs.Dir, asset: index.Asset, tag: []const u8) ![]const u8 {
     const endpoints = http.endpoints(ctx.a, &ctx.env);
     defer endpoints.deinit(ctx.a);
     var cache = ctx.ensureDir(&.{ "cache", "downloads" });
     defer cache.close();
-    var tmp = ctx.ensureDir(&.{"tmp"});
-    defer tmp.close();
     const archive = ctx.path(&.{ "cache", "downloads", try std.fmt.allocPrint(ctx.a, "{s}.zip", .{asset.sha256}) });
     const url = try std.fmt.allocPrint(ctx.a, "{s}/{s}/{s}", .{ endpoints.download_base, tag, asset.name });
     var digest: [32]u8 = undefined;
     _ = try std.fmt.hexToBytes(&digest, asset.sha256);
     try http.download(ctx.a, &ctx.env, url, archive, .{ .size = asset.size, .sha256 = digest }, null);
-    const staging = ctx.path(&.{ "tmp", try std.fmt.allocPrint(ctx.a, ".install-{x}", .{std.crypto.random.int(u64)}) });
-    try std.fs.cwd().makeDir(staging);
-    errdefer std.fs.cwd().deleteTree(staging) catch {};
-    try zip.extract(ctx.a, archive, staging);
+    const staging = try std.fmt.allocPrint(ctx.a, ".install-{x}", .{std.crypto.random.int(u64)});
+    try tmp.makeDir(staging);
+    errdefer tmp.deleteTree(staging) catch {};
+    var dir = try tmp.openDir(staging, .{ .iterate = true, .no_follow = true });
+    defer dir.close();
+    try zip.extractIn(ctx.a, archive, dir);
     return staging;
 }
 
-fn recognized(ctx: *const Ctx, path: []const u8, id: []const u8) !void {
-    var dir = std.fs.cwd().openDir(path, .{ .no_follow = true }) catch return error.RuntimeDirectoryConflict;
+pub fn existsIn(dir: std.fs.Dir, name: []const u8) bool {
+    dir.access(name, .{}) catch return false;
+    return true;
+}
+
+fn recognized(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, id: []const u8) !void {
+    var dir = parent.openDir(name, .{ .no_follow = true }) catch return error.RuntimeDirectoryConflict;
     defer dir.close();
     if ((try dir.stat()).kind != .directory) return error.RuntimeDirectoryConflict;
     const bytes = dir.readFileAlloc(ctx.a, "bundle.json", 1 << 20) catch return error.RuntimeDirectoryConflict;
@@ -217,8 +222,12 @@ fn safeRelative(path: []const u8) bool {
 fn validate(ctx: *const Ctx, staging: []const u8, e: index.Entry, host: []const u8) !select.Meta {
     var dir = try std.fs.cwd().openDir(staging, .{});
     defer dir.close();
+    return validateIn(ctx, dir, e, host);
+}
+
+fn validateIn(ctx: *const Ctx, dir: std.fs.Dir, e: index.Entry, host: []const u8) !select.Meta {
     // Old outer install trees and coupled protocol fields are never adopted.
-    if (util.exists(util.join(ctx.a, &.{ staging, "bundles" }))) return error.LegacyBundle;
+    if (existsIn(dir, "bundles")) return error.LegacyBundle;
     const bytes = try dir.readFileAlloc(ctx.a, "bundle.json", 1 << 20);
     const meta = select.parseMeta(ctx.a, bytes) orelse return error.InvalidBundle;
     const root = try std.json.parseFromSliceLeaky(std.json.Value, ctx.a, bytes, .{});
@@ -252,12 +261,15 @@ fn validate(ctx: *const Ctx, staging: []const u8, e: index.Entry, host: []const 
     return meta;
 }
 
-// POSIX exchange keeps a force reinstall continuously visible; Windows uses validated
-// retirement + rename, with rollback on error and the backup recovery above on process death.
-pub fn activate(ctx: *const Ctx, staging: []const u8, dest: []const u8, backup: []const u8, exists: bool) !void {
-    if (!exists) return std.fs.cwd().rename(staging, dest);
-    const guard = util.join(ctx.a, &.{ dest, runtimes.guard_name });
-    var claim: ?lock.Lock = lock.tryAcquire(guard, .exclusive, false) catch |err| switch (err) {
+// Retain validated parent handles through activation, replacement and cleanup. POSIX exchange
+// keeps force reinstall visible; Windows retains the existing retirement/rollback protocol.
+pub fn activate(ctx: *const Ctx, tmp: std.fs.Dir, staging: []const u8, parent: std.fs.Dir, dest: []const u8, backup: []const u8, exists: bool) !void {
+    if (!exists) return std.fs.rename(tmp, staging, parent, dest);
+    var current = try parent.openDir(dest, .{ .no_follow = true });
+    var current_open = true;
+    defer if (current_open) current.close();
+    if ((try current.stat()).kind != .directory) return error.RuntimeDirectoryConflict;
+    var claim: ?lock.Lock = lock.tryAcquireIn(current, runtimes.guard_name, .exclusive, false) catch |err| switch (err) {
         error.Missing => null,
         else => return error.RuntimeInUse,
     };
@@ -265,28 +277,28 @@ pub fn activate(ctx: *const Ctx, staging: []const u8, dest: []const u8, backup: 
     if (builtin.os.tag == .linux) {
         const src_z = try ctx.a.dupeZ(u8, staging);
         const dst_z = try ctx.a.dupeZ(u8, dest);
-        const result = std.os.linux.renameat2(std.posix.AT.FDCWD, src_z, std.posix.AT.FDCWD, dst_z, 2);
+        const result = std.os.linux.renameat2(tmp.fd, src_z, parent.fd, dst_z, 2);
         if (std.posix.errno(result) != .SUCCESS) return error.AtomicReplacementFailed;
         return;
     }
     if (builtin.os.tag == .macos) {
         const src_z = try ctx.a.dupeZ(u8, staging);
         const dst_z = try ctx.a.dupeZ(u8, dest);
-        if (renamex_np(src_z, dst_z, 2) != 0) return error.AtomicReplacementFailed;
+        if (renameatx_np(tmp.fd, src_z, parent.fd, dst_z, 2) != 0) return error.AtomicReplacementFailed;
         return;
     }
     if (claim) |l| {
         l.release();
         claim = null;
     } // Windows rename refuses our own guard handle too.
-    if (util.exists(backup)) {
-        try std.fs.cwd().deleteTree(backup);
-    }
-    try std.fs.cwd().rename(dest, backup);
-    std.fs.cwd().rename(staging, dest) catch |err| {
-        std.fs.cwd().rename(backup, dest) catch return error.RestoreFailed;
+    current.close();
+    current_open = false;
+    if (existsIn(tmp, backup)) try tmp.deleteTree(backup);
+    try std.fs.rename(parent, dest, tmp, backup);
+    std.fs.rename(tmp, staging, parent, dest) catch |err| {
+        std.fs.rename(tmp, backup, parent, dest) catch return error.RestoreFailed;
         return err;
     };
-    std.fs.cwd().deleteTree(backup) catch {}; // Valid new generation is already active; clean is task 6.6.
+    tmp.deleteTree(backup) catch {}; // Valid new generation is active; clean is task 6.6.
 }
-extern "c" fn renamex_np([*:0]const u8, [*:0]const u8, c_uint) c_int;
+extern "c" fn renameatx_np(c_int, [*:0]const u8, c_int, [*:0]const u8, c_uint) c_int;

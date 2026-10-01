@@ -30,11 +30,16 @@ pub const Error = error{ Busy, Missing, Failed };
 
 /// Try once, without waiting. `Missing` when the lock file does not exist (and `create` is false).
 pub fn tryAcquire(path: []const u8, mode: Mode, create: bool) Error!Lock {
+    return tryAcquireIn(std.fs.cwd(), path, mode, create);
+}
+
+/// Same lock, rooted at an already validated directory rather than re-resolving ancestors.
+pub fn tryAcquireIn(dir: std.fs.Dir, path: []const u8, mode: Mode, create: bool) Error!Lock {
     if (is_windows) {
         const file = (if (create)
-            std.fs.cwd().createFile(path, .{ .truncate = false, .read = true })
+            dir.createFile(path, .{ .truncate = false, .read = true })
         else
-            std.fs.cwd().openFile(path, .{})) catch |err| return if (err == error.FileNotFound) error.Missing else error.Failed;
+            dir.openFile(path, .{})) catch |err| return if (err == error.FileNotFound) error.Missing else error.Failed;
         var ov = std.mem.zeroes(win.OVERLAPPED);
         const flags: win.DWORD = 1 | (if (mode == .exclusive) @as(win.DWORD, 2) else 0);
         if (LockFileEx(file.handle, flags, 0, 1, 0, &ov) == 0) {
@@ -44,7 +49,7 @@ pub fn tryAcquire(path: []const u8, mode: Mode, create: bool) Error!Lock {
         return .{ .handle = file.handle };
     }
     const flags: std.posix.O = .{ .ACCMODE = .RDONLY, .CREAT = create };
-    const fd = std.posix.open(path, flags, 0o644) catch |err| return if (err == error.FileNotFound) error.Missing else error.Failed;
+    const fd = std.posix.openat(dir.fd, path, flags, 0o644) catch |err| return if (err == error.FileNotFound) error.Missing else error.Failed;
     const op: i32 = @as(i32, if (mode == .shared) std.posix.LOCK.SH else std.posix.LOCK.EX) | std.posix.LOCK.NB;
     std.posix.flock(fd, op) catch |err| {
         std.posix.close(fd);
