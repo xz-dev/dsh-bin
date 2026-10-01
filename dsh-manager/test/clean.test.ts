@@ -96,8 +96,10 @@ test.skipIf(!hasZig)("MC-CLEAN: residue symlinks or junctions are unlinked, neve
 });
 
 test.skipIf(!hasZig)("MC-CLEAN: explicit application homes inside residue or cache are protected, even through a home alias", () => {
-	for (const p of ["cache/bun", "tmp/.install-a", "cache", "tmp/.install-a/profiles"]) {
-		const i = fixture(); residues(i); const before = bytes(i.data);
+	for (const p of ["cache/bun", "tmp/.install-a", "cache", "tmp/.install-a/profiles", "tmp/.install-aa", "tmp/.install-aa/profiles"]) {
+		const i = fixture(); residues(i);
+		if (p.includes(".install-aa")) symlinkSync(join(i.data, "home"), join(i.data, "tmp/.install-aa"), WIN ? "junction" : "dir");
+		const before = bytes(i.data);
 		const r = run(i, ["manager", "clean"], { env: { DSH_HOME: join(i.data, p) } });
 		expect(r.status).toBe(1); expect(r.stderr).toContain("DSH_HOME"); expect(r.stderr).toContain("nothing removed"); expect(bytes(i.data)).toEqual(before);
 	}

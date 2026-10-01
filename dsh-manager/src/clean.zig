@@ -152,7 +152,7 @@ fn protectHome(ctx: *const Ctx, items: []const Item) !void {
         const parent = try item.store.dir.realpathAlloc(ctx.a, ".");
         const path = try std.fs.path.join(ctx.a, &.{ parent, item.name });
         const resolved = if (item.kind == .sym_link) path else std.fs.cwd().realpathAlloc(ctx.a, path) catch path;
-        if (overlap(ctx.a, resolved, home) or overlap(ctx.a, home, resolved)) {
+        if (overlap(ctx.a, resolved, home) or overlap(ctx.a, home, resolved) or overlap(ctx.a, path, ctx.home()) or overlap(ctx.a, ctx.home(), path)) {
             util.warn("cannot clean {s}/{s}: overlaps DSH_HOME {s}; nothing removed; choose a separate application home before retry", .{ item.store.path, item.name, ctx.home() });
             return error.Reported;
         }
