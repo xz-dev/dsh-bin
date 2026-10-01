@@ -127,7 +127,7 @@ fn publicValid(ctx: *const Ctx, parent: ?Store, id: []const u8, addon: bool) boo
     }
     const bytes = dir.readFileAlloc(ctx.a, "bundle.json", 1 << 20) catch return false;
     const meta = select.parseMeta(ctx.a, bytes) orelse return false;
-    if (meta.format != .runtime_v1 or meta.protocol != select.protocol or meta.entry == null) return false;
+    if (!meta.ordered() or meta.protocol != select.protocol or meta.entry == null) return false;
     const Identity = struct { id: []const u8, requiredPaths: []const []const u8 };
     const m = std.json.parseFromSliceLeaky(Identity, ctx.a, bytes, .{ .ignore_unknown_fields = true }) catch return false;
     if (!eq(u8, m.id, id) or m.requiredPaths.len == 0) return false;

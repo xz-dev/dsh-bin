@@ -143,3 +143,19 @@ test.skipIf(!hasZig)("MC-CLEAN review: linked or non-file mutexes refuse without
 		else if (kind === "link") expect(readdirSync(external)).toEqual([]);
 	}
 });
+
+
+test.skipIf(!hasZig)("MC-CLEAN review: unordered public runtime keeps its healthy recovery generation", () => {
+	for (const field of ["run", "channel", "upstream.commitTime"]) {
+		const i = fixture(), runtime = join(i.data, "bundles", A), backup = join(i.data, "tmp", `.previous-${A}`);
+		cpSync(runtime, backup, { recursive: true });
+		const meta = JSON.parse(readFileSync(join(runtime, "bundle.json"), "utf8"));
+		if (field === "upstream.commitTime") delete meta.upstream.commitTime; else delete meta[field];
+		writeFileSync(join(runtime, "bundle.json"), JSON.stringify(meta));
+		const before = bytes(backup), launch = run(i, ["--use", "latest"]);
+		expect(launch.status).toBe(1); expect(launch.stderr).toContain("not a runtime this manager can order");
+		const r = run(i, ["manager", "clean"]);
+		expect(r.status).toBe(0); expect(existsSync(backup)).toBe(true);
+		expect(bytes(backup)).toEqual(before); expect(r.stderr).toContain(`dsh manager install ${A} --force`);
+	}
+});
