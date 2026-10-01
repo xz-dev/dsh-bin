@@ -482,3 +482,15 @@
 - **父会话追加授权的 Windows 测试修正**：父会话报告 CI 36860115905 在 Windows 的 snapshot ancestor 改名步骤抛出 EPERM（目录句柄仍打开，攻击本身被 OS 阻止）。本轮仅改测试，统一 `harness.replaceAncestor`：只有 Windows 且 rename 抛出 EPERM 时输出 `ancestor swap blocked by Windows EPERM for open validated directory`，返回未移动的根；其他异常继续抛出，POSIX 仍完整执行改名/替换。snapshot/addon 删除测试都会放行 barrier 并断言退出 0、原对象已删、外部 sentinel 完整；addon/runtime 下载期回归也使用同一 helper，必须尝试 swap，继续检查更新及外部树不变。四个 ancestor 场景仅按 hasZig gate，Windows 不 skip。独立 test-only commit，没有改变产品语义或把失败冒充 skip。
 - `TMPDIR=/var/tmp/dsh-fix63 bun test ./test/addons.test.ts ./test/install.test.ts ./test/snapshots.test.ts` → **55 pass / 0 fail / 803 assertions**（`windows-test-adjustment-green.log`）；本机实际执行 POSIX swaps，Windows EPERM 分支待父会话 windows-2022 原生 CI，不声称本机验证。
 - **测试修正后最终整套复跑**：`TMPDIR=/var/tmp/dsh-fix63 PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH bun test ./test` → **205 pass / 18 skip / 0 fail / 2657 assertions**（`suite-final.log`，182.57s）。四个 ancestor 回归和真实 RB-PLUGIN、office 启用/缺失都实际执行；committed diff 与 working diff 的 `git diff --check` 通过，staging 空，只有两个既有并行 change 未跟踪目录。
+
+### 6.2 / 6.3 复审修复的父会话验收
+
+- **6.2 复审（run d98d010f）BLOCK，两项数据丢失 P1**：链式相对软链接可以让复制出的快照写回源快照；删除时替换 `snapshots` 祖先目录可以删到数据根外的文件。修复 e09ba81（发布前在 staging 树内用 realpath 校验每个链接）、d67e4a2（通过已校验的目录句柄删除）。
+- **6.3 复审（run 197150d6）BLOCK，两项数据丢失 P1**：addon 卸载和 `--force` 安装在下载期间替换祖先目录时，会删除或写入数据根外的目录。修复 cebb807、f0d788f；运行包安装共用同一激活路径，一并改为相对已校验的句柄操作。
+- 136d3b6：Windows 上目录被打开时拒绝重命名（EPERM），祖先替换攻击本身无法成立；测试把它记为「无法替换」，并仍断言外部文件完好。CI 36860115905 曾在这里失败，属于测试问题而非产品问题。
+- **父会话复跑复审 probe**（当前工作区，ff824a1）：
+  - 6.2：链式链接复制被拒绝（"resolved target escapes profiles; nothing was published"），源文件保持 "SOURCE ORIGINAL"；删除时的祖先替换后外部文件仍在。
+  - 6.3：卸载和 `--force` 安装时的祖先替换后外部文件仍在，新 addon 没有写到外部，原 addon 保留。
+  - 真实应用测试由父会话在干净 worktree 跑过：RB-PLUGIN 1 pass / 24 断言（297e723），MC-ADDON 1 pass / 23 断言（a3a9369）。修复后 worker 又各复跑一次，都通过。
+- **CI 36865069757（ff824a1）三平台全绿**：ubuntu 204 pass、macOS 203 pass、windows 174 pass，均 0 fail。快照和 addon 的祖先替换回归在 Windows 也实际执行，不是 skip。软链接相关场景因 Windows 没有符号链接权限而 skip，在 ubuntu 和 macOS 上已实际通过。
+- 勾选 **6.2、6.3**。
