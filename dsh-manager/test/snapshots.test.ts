@@ -71,6 +71,21 @@ test.skipIf(!hasZig || WIN)("MC-SNAPSHOT: internal pnpm-style links copy indepen
 	}
 });
 
+test.skipIf(!hasZig || WIN)("MC-SNAPSHOT review: chained relative links cannot make a copy modify its source", () => {
+	const i = install(); expect(command(i, ["new", "--use", A, "--empty"]).status).toBe(0);
+	const source = join(dir(i, `${A}@1`), "profiles"), plugin = join(source, "probe/plugin");
+	mkdirSync(join(source, "probe")); writeFileSync(plugin, "source original");
+	mkdirSync(join(source, "dir")); symlinkSync(".", join(source, "dir/alias"));
+	symlinkSync(`dir/alias/alias/../../../${A}@1/profiles/probe`, join(source, "leak"));
+	const copied = command(i, ["new", "--use", B, "--target", `${A}@1`]);
+	if (copied.status === 0) writeFileSync(join(dir(i, `${B}@1`), "profiles/leak/plugin"), "changed through copy");
+	expect(readFileSync(plugin, "utf8")).toBe("source original");
+	expect(copied.status).toBe(1); expect(copied.stderr).toContain("leak"); expect(copied.stderr).toContain("nothing was published");
+	expect(rows(i).map((s: any) => s.id)).toEqual([`${A}@1`]);
+	expect(readdirSync(root(i)).some(p => p.startsWith(".staging-"))).toBe(false);
+	expect(JSON.parse(readFileSync(join(root(i), ".counters.json"), "utf8"))[B]).toBe(1);
+});
+
 test.skipIf(!hasZig)("MC-SNAPSHOT: concurrent starts reuse prepared snapshot without taking the busy store lock", async () => {
 	const i = install(); expect(command(i, ["new", "--use", A, "--empty"]).status).toBe(0);
 	const held = acquireClaim(join(root(i), ".lock"), "exclusive"); expect(held).not.toBe("busy");

@@ -190,9 +190,10 @@ fn create(ctx: *const Ctx, all: []const Meta, version: []const u8, order: Order,
         const src_path = ctx.path(&.{ "snapshots", s.id, "profiles" });
         var src = try std.fs.cwd().openDir(src_path, .{ .iterate = true, .no_follow = true });
         defer src.close();
-        var dest = try dir.openDir("profiles", .{});
+        var dest = try dir.openDir("profiles", .{ .iterate = true });
         defer dest.close();
         try copyProfiles(ctx, src, dest, src_path, "");
+        try validateCopiedLinks(ctx, dest, try dest.realpathAlloc(ctx.a, "."), "");
     }
     crashPoint(ctx, "snapshot-copied");
     try dir.writeFile(.{ .sub_path = ".usage.lock", .data = "" });
@@ -247,6 +248,33 @@ fn copyProfiles(ctx: *const Ctx, src: std.fs.Dir, dest: std.fs.Dir, base: []cons
                 try dest.symLink(target, entry.name, .{ .is_directory = stat.kind == .directory });
             },
             else => return error.UnsupportedSnapshotFile,
+        }
+    }
+}
+
+/// Resolve links only after the entire copy exists, so chained links are checked against staging, not the source.
+fn validateCopiedLinks(ctx: *const Ctx, dir: std.fs.Dir, base: []const u8, rel: []const u8) !void {
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        const child = try std.fs.path.join(ctx.a, &.{ rel, entry.name });
+        switch (entry.kind) {
+            .directory => {
+                var subdir = try dir.openDir(entry.name, .{ .iterate = true, .no_follow = true });
+                defer subdir.close();
+                try validateCopiedLinks(ctx, subdir, base, child);
+            },
+            .sym_link => {
+                const resolved = dir.realpathAlloc(ctx.a, entry.name) catch |err| {
+                    util.warn("cannot copy snapshot link {s}: cannot resolve target ({s}); nothing was published", .{ child, @errorName(err) });
+                    return error.UnsafeSnapshotLink;
+                };
+                const inside = try std.fs.path.relative(ctx.a, base, resolved);
+                if (std.fs.path.isAbsolute(inside) or std.mem.eql(u8, inside, "..") or std.mem.startsWith(u8, inside, "../") or std.mem.startsWith(u8, inside, "..\\")) {
+                    util.warn("cannot copy snapshot link {s}: resolved target escapes profiles; nothing was published", .{child});
+                    return error.UnsafeSnapshotLink;
+                }
+            },
+            else => {},
         }
     }
 }
