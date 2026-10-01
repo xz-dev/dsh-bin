@@ -136,7 +136,7 @@ test.skipIf(!hasZig)("MC-PIN: ambiguous/missing selectors refuse unchanged; --us
 		for (const id of [A, B]) expect((await manager(i, s, ["install", id])).status).toBe(0);
 		expect(run(i, ["manager", "select", "--use", A]).status).toBe(0);
 		const original = selection(i);
-		for (const [args, message] of [[["--use", "1.0.0"], "ambiguous"], [["--use", "missing"], "not installed"], [["--snapshot", `${A}@1`], "--use"], [["--use", B, "--snapshot", `${A}@999`], "snapshot"], [["--addon", "office:1"], "not available"]] as const) {
+		for (const [args, message] of [[["--use", "1.0.0"], "ambiguous"], [["--use", "missing"], "not installed"], [["--snapshot", `${A}@1`], "--use"], [["--use", B, "--snapshot", `${A}@999`], "snapshot"], [["--addon", "office:1"], "--use"]] as const) {
 			const bad = run(i, ["manager", "select", ...args]); expect(bad.status).toBe(1); expect(bad.stderr).toContain(message); expect(selection(i)).toBe(original); expect(started(i)).toBe(false);
 		}
 		const metadata = join(i.data, "snapshots", `${A}@1`, "snapshot.json");

@@ -104,11 +104,11 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
         .dataRoot = ctx.data,
         .home = ctx.home(),
         .snapshot = snap,
-        .addons = struct {}{},
+        .addons = @import("addons.zig").resolve(ctx, resolved.version, opts.addons, selection),
         .cache = ctx.path(&.{"cache"}),
         .tmp = ctx.path(&.{"tmp"}),
         .manager = options.version,
-    }, .{}) catch util.oom();
+    }, .{ .emit_null_optional_fields = false }) catch util.oom();
     return .{ .runtime = resolved.version, .entry = entry, .consumed = opts.consumed, .payload = payload, .snapshot = snap };
 }
 

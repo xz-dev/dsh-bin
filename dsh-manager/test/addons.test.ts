@@ -1,0 +1,101 @@
+// MC-ADDON: native manager operations and launch payload, no application needed.
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { writeZip } from "../../dsh-bun-build/runtime/zip.ts";
+import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
+import { addRuntime, baseEnv, build, cleanup, hasZig, launchOf, newInstall, run, started, tempDir, tree, type Install } from "./harness.ts";
+
+beforeAll(() => { if (hasZig) build(); }, 300_000);
+afterAll(cleanup);
+const V = "1.0.0-b1.1.gdeadbeef", W = "2.0.0-b2.1.gdeadbeef";
+const A = "0.1.1-b1.1.gdeadbeef", B = "0.1.1-b2.1.gdeadbeef", C = "0.2.0-b3.1.gdeadbeef";
+const slot = { commit: "a".repeat(40), kitVersion: "0.1.1" }, other = { commit: "b".repeat(40), kitVersion: "0.2.0" };
+const platform = process.platform === "linux" ? "linux" : `${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`;
+function source(i: Install) {
+	const requests: string[] = [], assets = new Map<string, Buffer>();
+	const entries = [A, B, C].map((version, n) => {
+		const tag = `addon-office-v${version}`, s = n === 2 ? other : slot;
+		const zip = join(tempDir("dsh-addon-zip-"), "addon.zip");
+		writeZip(zip, [
+			{ name: "addon.json", data: Buffer.from(JSON.stringify({ name: "office", version, tag, slot: s, kitVersion: s.kitVersion, platform, packages: ["@deepseek-ai/libreoffice-kit@" + s.kitVersion] })), mode: 0o644 },
+			{ name: "node_modules/@deepseek-ai/libreoffice-kit/package.json", data: Buffer.from('{"name":"@deepseek-ai/libreoffice-kit"}'), mode: 0o644 },
+		]);
+		const bytes = readFileSync(zip), name = `dsh-addon-office-${platform}.zip`;
+		assets.set(`/download/${tag}/${name}`, bytes);
+		return { version, tag, slot: s, seq: n + 1, assets: { [platform]: { name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") } } };
+	});
+	const table = { slot, pinned: A, known: [entries[0]] };
+	addRuntime(i.data, V, { patch: { target: hostTargetId(), addons: { office: table } } });
+	addRuntime(i.data, W, { run: 2, patch: { target: hostTargetId(), addons: { office: { slot: other, pinned: C, known: [] } } } });
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+		const p = new URL(req.url).pathname; requests.push(p);
+		if (p === "/runtime-index.json") return Response.json({ schema: 1, channels: { release: [{ kind: "dsh-manager", version: "99" }], live: [] }, addons: { office: entries } });
+		return assets.has(p) ? new Response(assets.get(p)) : new Response(null, { status: 404 });
+	} });
+	return { entries, assets, requests, origin: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
+}
+async function command(i: Install, s: ReturnType<typeof source>, args: string[]) {
+	rmSync(join(i.out, "1.argv"), { force: true });
+	const p = Bun.spawn([i.exe, ...args], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: s.origin, DSH_MANAGER_TEST_RETRY_MS: "1" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+	const timer = setTimeout(() => p.kill(), 30_000);
+	try { const [status, stdout, stderr] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]); return { status, stdout, stderr }; }
+	finally { clearTimeout(timer); }
+}
+const selection = (i: Install) => readFileSync(join(i.data, "state/selection.json"), "utf8");
+const install = (i: Install, s: ReturnType<typeof source>, v = "office") => command(i, s, ["--use", V, "manager", "install", "--addon", v]);
+
+test.skipIf(!hasZig)("MC-ADDON: install/select/list/uninstall are native; default uses newest in-slot; selected deletion refuses", async () => {
+	const i = newInstall(), s = source(i);
+	try {
+		const first = await install(i, s); expect(first.status).toBe(0); expect(first.stdout).toContain(B); expect(started(i)).toBe(false);
+		expect(existsSync(join(i.data, "addons/office", B, "node_modules"))).toBe(true);
+		expect(existsSync(join(i.data, "state/channel"))).toBe(false);
+		expect((await install(i, s, `office:${A}`)).status).toBe(0);
+		const list = run(i, ["manager", "list", "--json"]); expect(list.status).toBe(0); expect(JSON.parse(list.stdout).addons.office.map((e: any) => e.version).sort()).toEqual([A, B]); expect(started(i)).toBe(false);
+		const before = tree(i.data), count = s.requests.length;
+		expect(run(i, ["manager", "list"]).stdout).toContain(B); expect(tree(i.data)).toEqual(before); expect(s.requests.length).toBe(count);
+		expect(run(i, ["--use", V, "probe"]).status).toBe(0); expect(launchOf(i).addons.office.version).toBe(B);
+		expect(run(i, ["manager", "select", "--use", V, "--addon", `office:${A}`]).status).toBe(0); expect(started(i)).toBe(false);
+		expect(JSON.parse(selection(i)).addons).toEqual({ office: A });
+		expect(run(i, ["probe"]).status).toBe(0); expect(launchOf(i).addons.office.version).toBe(A);
+		const refused = run(i, ["manager", "uninstall", "--addon", "office"]); expect(refused.status).toBe(1); expect(refused.stderr).toContain("selection"); expect(existsSync(join(i.data, "addons/office", B))).toBe(true);
+		expect(run(i, ["--addon", "office:none", "probe"]).status).toBe(0); expect(launchOf(i).addons.office).toBeUndefined();
+		expect(run(i, ["manager", "select", "--use", V, "--addon", "office:none"]).status).toBe(0); expect(run(i, ["probe"]).status).toBe(0); expect(launchOf(i).addons.office).toBeUndefined();
+		expect(run(i, ["manager", "uninstall", "--addon", "office"]).status).toBe(0); expect(started(i)).toBe(false); expect(existsSync(join(i.data, "addons/office", A))).toBe(false);
+		expect(existsSync(join(i.data, "bundles", V))).toBe(true); expect(existsSync(join(i.data, "snapshots", `${V}@1`))).toBe(true);
+	} finally { s.stop(); }
+});
+
+test.skipIf(!hasZig)("MC-ADDON: slots never bypassed by force; missing/incompatible stored or explicit addon degrades offline", async () => {
+	const i = newInstall(), s = source(i);
+	try {
+		expect((await install(i, s, `office:${A}`)).status).toBe(0);
+		const bad = await command(i, s, ["--use", V, "manager", "install", "--addon", `office:${C}`, "--force"]);
+		expect(bad.status).toBe(1); expect(bad.stderr).toContain("slot"); expect(existsSync(join(i.data, "addons/office", C))).toBe(false); expect(started(i)).toBe(false);
+		expect(run(i, ["manager", "select", "--use", V, "--addon", `office:${A}`]).status).toBe(0);
+		const saved = selection(i), count = s.requests.length;
+		for (const args of [["--use", W, "probe"], ["--use", W, "--addon", `office:${A}`, "probe"], ["--use", V, "--addon", "office:missing", "probe"]]) {
+			const r = run(i, args); expect(r.status).toBe(0); expect(r.stderr).toMatch(/office addon .* (missing|incompatible)/); expect(launchOf(i).addons.office).toBeUndefined();
+		}
+		rmSync(join(i.data, "addons/office", A), { recursive: true });
+		const missing = run(i, ["probe"]); expect(missing.status).toBe(0); expect(missing.stderr).toContain("missing"); expect(launchOf(i).addons.office).toBeUndefined(); expect(selection(i)).toBe(saved); expect(s.requests.length).toBe(count);
+		for (const addon of ["../../bad", "office:../bad", "unknown:1", "office:"]) expect(run(i, ["--addon", addon, "probe"]).status).toBe(1);
+	} finally { s.stop(); }
+});
+
+test.skipIf(!hasZig)("MC-ADDON: digest/size/metadata failures publish nothing; force replaces only validated addon; available is in-slot", async () => {
+	const i = newInstall(), s = source(i);
+	try {
+		const asset = s.entries[1].assets[platform], hash = asset.sha256, size = asset.size;
+		asset.sha256 = "a".repeat(64); const corrupt = await install(i, s); expect(corrupt.status).toBe(1); expect(corrupt.stderr).toContain("HashMismatch"); expect(existsSync(join(i.data, "addons/office", B))).toBe(false); expect(started(i)).toBe(false);
+		asset.sha256 = hash; asset.size = size + 1; expect((await install(i, s)).status).toBe(1); expect(existsSync(join(i.data, "addons/office", B))).toBe(false); asset.size = size;
+		expect((await install(i, s)).status).toBe(0);
+		const marker = join(i.data, "addons/office", B, "node_modules/keep"); writeFileSync(marker, "old generation");
+		asset.sha256 = "b".repeat(64); expect((await command(i, s, ["--use", V, "manager", "install", "--addon", "office", "--force"])).status).toBe(1); expect(readFileSync(marker, "utf8")).toBe("old generation"); asset.sha256 = hash;
+		expect((await command(i, s, ["--use", V, "manager", "install", "--addon", "office", "--force"])).status).toBe(0); expect(existsSync(marker)).toBe(false); expect(started(i)).toBe(false);
+		const available = await command(i, s, ["--use", V, "manager", "list", "--available", "--json"]); expect(available.status).toBe(0); expect(JSON.parse(available.stdout).availableAddons.office.map((e: any) => e.version).sort()).toEqual([A, B]);
+		s.entries[0].assets[platform].sha256 = "c".repeat(64); const conflict = await install(i, s, `office:${A}`); expect(conflict.status).toBe(1); expect(conflict.stderr).toContain("Conflict");
+	} finally { s.stop(); }
+});

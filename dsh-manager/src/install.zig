@@ -13,18 +13,19 @@ const lock = @import("lock.zig");
 const runtimes = @import("runtimes.zig");
 const Ctx = @import("context.zig").Ctx;
 
-pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
-    return command(ctx, args, false);
+pub fn run(ctx: *Ctx, args: []const []const u8, opts: select.Options) u8 {
+    return command(ctx, args, false, opts);
 }
 
 pub fn update(ctx: *Ctx, args: []const []const u8) u8 {
-    return command(ctx, args, true);
+    return command(ctx, args, true, .{});
 }
 
-fn command(ctx: *Ctx, args: []const []const u8, updating: bool) u8 {
+fn command(ctx: *Ctx, args: []const []const u8, updating: bool, opts: select.Options) u8 {
     var query: ?[]const u8 = if (updating) "latest" else null;
     var channel: ?[]const u8 = null;
     var force = false;
+    var addon: ?[]const u8 = null;
     var n: usize = 0;
     while (n < args.len) : (n += 1) {
         const arg = args[n];
@@ -33,8 +34,13 @@ fn command(ctx: *Ctx, args: []const []const u8, updating: bool) u8 {
             return 0;
         }
         if (std.mem.eql(u8, arg, "--addon") or std.mem.startsWith(u8, arg, "--addon=")) {
-            util.warn("addon management is not available in this build yet", .{});
-            return 1;
+            if (updating or addon != null) return usage();
+            if (std.mem.eql(u8, arg, "--addon")) {
+                n += 1;
+                if (n == args.len) return usage();
+                addon = args[n];
+            } else addon = arg[8..];
+            continue;
         }
         if (std.mem.eql(u8, arg, "--force")) {
             force = true;
@@ -49,6 +55,10 @@ fn command(ctx: *Ctx, args: []const []const u8, updating: bool) u8 {
         } else if (!std.mem.startsWith(u8, arg, "-") and query == null) {
             query = arg;
         } else return usage();
+    }
+    if (addon) |a| {
+        if (query != null or channel != null) return usage();
+        return @import("addons.zig").install(ctx, a, force, opts);
     }
     if (query == null) return usage();
     ctx.ensureData();
@@ -137,17 +147,8 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
         if (automatic) util.warn("dsh {s} is already installed", .{e.id}) else util.print("dsh {s} is already installed.\n", .{e.id});
         return e.id;
     }
-    var cache = ctx.ensureDir(&.{ "cache", "downloads" });
-    defer cache.close();
-    const archive = ctx.path(&.{ "cache", "downloads", try std.fmt.allocPrint(ctx.a, "{s}.zip", .{candidate.asset.sha256}) });
-    const url = try std.fmt.allocPrint(ctx.a, "{s}/{s}/{s}", .{ endpoints.download_base, e.tag, candidate.asset.name });
-    var digest: [32]u8 = undefined;
-    _ = try std.fmt.hexToBytes(&digest, candidate.asset.sha256);
-    try http.download(ctx.a, &ctx.env, url, archive, .{ .size = candidate.asset.size, .sha256 = digest }, null);
-    const staging = ctx.path(&.{ "tmp", try std.fmt.allocPrint(ctx.a, ".install-{x}", .{std.crypto.random.int(u64)}) });
-    try std.fs.cwd().makeDir(staging);
+    const staging = try fetchTree(ctx, candidate.asset, e.tag);
     defer std.fs.cwd().deleteTree(staging) catch {};
-    try zip.extract(ctx.a, archive, staging);
     const meta = try validate(ctx, staging, e, host);
     var dir = try std.fs.cwd().openDir(staging, .{});
     var dir_open = true;
@@ -158,12 +159,32 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
     dir.close(); // No open directory/file handles at Windows activation.
     dir_open = false;
     crashPoint(ctx, "before-activation");
+    if (util.exists(backup)) try recognized(ctx, backup, e.id);
     try activate(ctx, staging, dest, backup, exists);
     crashPoint(ctx, "after-activation");
     _ = try snapshot.ensure(ctx, e.id, meta, "install");
     try state.write(ctx, "channel", try std.fmt.allocPrint(ctx.a, "{s}\n", .{channel}));
     if (automatic) util.warn("installed dsh {s} ({s}); starting original command", .{ e.id, host }) else util.print("Installed dsh {s} ({s}); selection unchanged.\n", .{ e.id, host });
     return e.id;
+}
+
+pub fn fetchTree(ctx: *const Ctx, asset: index.Asset, tag: []const u8) ![]const u8 {
+    const endpoints = http.endpoints(ctx.a, &ctx.env);
+    defer endpoints.deinit(ctx.a);
+    var cache = ctx.ensureDir(&.{ "cache", "downloads" });
+    defer cache.close();
+    var tmp = ctx.ensureDir(&.{"tmp"});
+    defer tmp.close();
+    const archive = ctx.path(&.{ "cache", "downloads", try std.fmt.allocPrint(ctx.a, "{s}.zip", .{asset.sha256}) });
+    const url = try std.fmt.allocPrint(ctx.a, "{s}/{s}/{s}", .{ endpoints.download_base, tag, asset.name });
+    var digest: [32]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&digest, asset.sha256);
+    try http.download(ctx.a, &ctx.env, url, archive, .{ .size = asset.size, .sha256 = digest }, null);
+    const staging = ctx.path(&.{ "tmp", try std.fmt.allocPrint(ctx.a, ".install-{x}", .{std.crypto.random.int(u64)}) });
+    try std.fs.cwd().makeDir(staging);
+    errdefer std.fs.cwd().deleteTree(staging) catch {};
+    try zip.extract(ctx.a, archive, staging);
+    return staging;
 }
 
 fn recognized(ctx: *const Ctx, path: []const u8, id: []const u8) !void {
@@ -233,7 +254,7 @@ fn validate(ctx: *const Ctx, staging: []const u8, e: index.Entry, host: []const 
 
 // POSIX exchange keeps a force reinstall continuously visible; Windows uses validated
 // retirement + rename, with rollback on error and the backup recovery above on process death.
-fn activate(ctx: *const Ctx, staging: []const u8, dest: []const u8, backup: []const u8, exists: bool) !void {
+pub fn activate(ctx: *const Ctx, staging: []const u8, dest: []const u8, backup: []const u8, exists: bool) !void {
     if (!exists) return std.fs.cwd().rename(staging, dest);
     const guard = util.join(ctx.a, &.{ dest, runtimes.guard_name });
     var claim: ?lock.Lock = lock.tryAcquire(guard, .exclusive, false) catch |err| switch (err) {
@@ -259,7 +280,6 @@ fn activate(ctx: *const Ctx, staging: []const u8, dest: []const u8, backup: []co
         claim = null;
     } // Windows rename refuses our own guard handle too.
     if (util.exists(backup)) {
-        try recognized(ctx, backup, std.fs.path.basename(dest));
         try std.fs.cwd().deleteTree(backup);
     }
     try std.fs.cwd().rename(dest, backup);

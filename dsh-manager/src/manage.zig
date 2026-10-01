@@ -8,6 +8,7 @@ const snapshot = @import("snapshot.zig");
 const index = @import("index.zig");
 const http = @import("http.zig");
 const target = @import("target.zig");
+const addons = @import("addons.zig");
 const lock = @import("lock.zig");
 const Ctx = @import("context.zig").Ctx;
 
@@ -34,7 +35,7 @@ fn maintenance(ctx: *const Ctx) lock.Lock {
 
 pub fn selection(ctx: *Ctx, args: []const []const u8) u8 {
     const opts = @import("launch.zig").parseLeading(ctx.a, args);
-    if (opts.addons.len != 0) util.fatal("addon selection is not available in this build yet", .{});
+    const addon = addons.option(opts.addons) catch |err| util.fatal("invalid addon selection: {s}", .{@errorName(err)});
     if (opts.consumed != args.len) util.fatal("usage: dsh manager select [--use <version|latest>] [--snapshot <id>]", .{});
     if (args.len == 0) {
         const stored = selected(ctx);
@@ -49,7 +50,15 @@ pub fn selection(ctx: *Ctx, args: []const []const u8) u8 {
     const use = if (std.mem.eql(u8, query, "latest")) query else require(bundles, query);
     const snap: ?snapshot.Snapshot = if (opts.snapshot) |id| snapshot.existing(ctx, id) catch |err|
         util.fatal("cannot select snapshot {s}: {s}; run `dsh manager snapshot list`", .{ id, @errorName(err) }) else null;
-    const bytes = std.json.Stringify.valueAlloc(ctx.a, .{ .schema = @as(u32, 1), .use = use, .snapshot = if (snap) |s| s.id else null, .addons = struct {}{} }, .{}) catch util.oom();
+    if (addon != null) {
+        const version = addons.runtime(ctx, .{ .use = use }) catch |err| util.fatal("cannot select addon: {s}", .{@errorName(err)});
+        addons.validateChoice(ctx, version, addon) catch |err| util.fatal("cannot select addon: {s}", .{@errorName(err)});
+    }
+    const bytes = std.json.Stringify.valueAlloc(ctx.a, .{ .schema = @as(u32, 1), .use = use, .snapshot = if (snap) |s| s.id else null, .addons = if (addon) |v| blk: {
+        var map = std.json.ObjectMap.init(ctx.a);
+        map.put("office", .{ .string = v }) catch util.oom();
+        break :blk std.json.Value{ .object = map };
+    } else std.json.Value{ .object = std.json.ObjectMap.init(ctx.a) } }, .{}) catch util.oom();
     state.write(ctx, "selection.json", bytes) catch |err| util.fatal("cannot save selection: {s}", .{@errorName(err)});
     util.print("Selected --use {s}.\n", .{use});
     printSelection(ctx, use, if (snap) |s| s.id else null);
@@ -70,7 +79,7 @@ fn printSelection(ctx: *const Ctx, use: []const u8, snap: ?[]const u8) void {
     }
 }
 
-pub fn list(ctx: *Ctx, args: []const []const u8) u8 {
+pub fn list(ctx: *Ctx, args: []const []const u8, opts: select.Options) u8 {
     var available = false;
     var json = false;
     for (args) |arg| {
@@ -84,6 +93,8 @@ pub fn list(ctx: *Ctx, args: []const []const u8) u8 {
     const Row = struct { version: []const u8, channel: ?[]const u8, selected: bool, latest: bool, startable: bool, inUse: bool };
     const rows = ctx.a.alloc(Row, bundles.len) catch util.oom();
     for (bundles, rows) |b, *r| r.* = .{ .version = b.version, .channel = if (b.meta) |m| m.channel else null, .selected = stored != .invalid and resolved == .ok and std.mem.eql(u8, b.version, resolved.ok.version), .startable = runtimes.check(ctx, bundles, b.version) == .ok, .latest = latest == .ok and std.mem.eql(u8, b.version, latest.ok.version), .inUse = lock.inUse(ctx.path(&.{ "bundles", b.version, runtimes.guard_name })) };
+    const local_addons = addons.local(ctx) catch |err| util.fatal("cannot read addon storage: {s}", .{@errorName(err)});
+    var remote_addons: []const addons.Release = &.{};
     const Remote = struct { version: []const u8, channel: []const u8, installed: bool };
     var remote: std.ArrayList(Remote) = .empty;
     if (available) {
@@ -92,13 +103,17 @@ pub fn list(ctx: *Ctx, args: []const []const u8) u8 {
         const bytes = http.fetchSmall(ctx.a, &ctx.env, endpoints.runtime_index, 16 << 20) catch |err|
             util.fatal("cannot read runtime index: {s}; use `dsh manager list` for offline local state", .{@errorName(err)});
         const host = target.host() catch util.fatal("unsupported host target", .{});
+        if (addons.runtime(ctx, opts)) |v| {
+            const t = addons.table(ctx, v) catch |err| util.fatal("cannot read office addon table: {s}", .{@errorName(err)});
+            remote_addons = addons.available(ctx, t, bytes) catch |err| util.fatal("cannot read addon index: {s}", .{@errorName(err)});
+        } else |_| {}
         for ([_][]const u8{ "release", "live" }) |ch| {
             const candidates = index.candidates(ctx.a, bytes, ch, host) catch |err| util.fatal("cannot read runtime index: {s}", .{@errorName(err)});
             for (candidates) |c| remote.append(ctx.a, .{ .version = c.entry.id, .channel = ch, .installed = select.matchVersion(bundles, c.entry.id) == .found }) catch util.oom();
         }
     }
     if (json) {
-        const bytes = std.json.Stringify.valueAlloc(ctx.a, .{ .channel = state.channel(ctx), .selection = if (stored == .ok) stored.ok.value else @as(?std.json.Value, null), .selectionValid = stored != .invalid, .installed = rows, .available = remote.items }, .{}) catch util.oom();
+        const bytes = std.json.Stringify.valueAlloc(ctx.a, .{ .channel = state.channel(ctx), .selection = if (stored == .ok) stored.ok.value else @as(?std.json.Value, null), .selectionValid = stored != .invalid, .installed = rows, .available = remote.items, .addons = .{ .office = local_addons }, .availableAddons = .{ .office = remote_addons } }, .{}) catch util.oom();
         util.print("{s}\n", .{bytes});
     } else {
         if (stored == .invalid) util.print("Invalid selection ({s}); run `dsh manager select --use latest` to reset it.\n", .{stored.invalid});
@@ -106,7 +121,9 @@ pub fn list(ctx: *Ctx, args: []const []const u8) u8 {
             util.print("Installed dsh runtimes (channel {s}):\n", .{state.channel(ctx)});
             for (rows) |r| util.print("  {s}  {s}{s}{s}{s}{s}\n", .{ r.version, r.channel orelse "?", if (r.selected) "  (selected)" else "", if (r.latest) "  (latest)" else "", if (r.inUse) "  (in use)" else "", if (r.startable) "" else "  (not startable)" });
         }
+        for (local_addons) |m| util.print("  office:{s} (installed addon, slot {s})\n", .{ m.version, m.slot.commit });
         if (available) {
+            for (remote_addons) |m| util.print("  office:{s} (available addon)\n", .{m.version});
             util.print("Available host-compatible runtimes:\n", .{});
             for (remote.items) |r| util.print("  {s}  {s}{s}\n", .{ r.version, r.channel, if (r.installed) "  (installed)" else "" });
         }
@@ -116,6 +133,14 @@ pub fn list(ctx: *Ctx, args: []const []const u8) u8 {
 
 pub fn uninstall(ctx: *Ctx, args: []const []const u8) u8 {
     if (args.len == 0) util.fatal("usage: dsh manager uninstall <version>...", .{});
+    if (std.mem.eql(u8, args[0], "--addon")) {
+        if (args.len != 2) util.fatal("usage: dsh manager uninstall --addon office[:version]", .{});
+        return addons.uninstall(ctx, args[1]);
+    }
+    if (std.mem.startsWith(u8, args[0], "--addon=")) {
+        if (args.len != 1) util.fatal("usage: dsh manager uninstall --addon office[:version]", .{});
+        return addons.uninstall(ctx, args[0][8..]);
+    }
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--addon") or std.mem.startsWith(u8, arg, "--addon=")) util.fatal("addon management is not available in this build yet", .{});
         if (std.mem.startsWith(u8, arg, "-")) util.fatal("usage: dsh manager uninstall <version>...", .{});

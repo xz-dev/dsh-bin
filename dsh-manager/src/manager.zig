@@ -49,11 +49,11 @@ pub fn run(ctx: *Ctx, opts: select.Options, args: []const []const u8) u8 {
         util.print("{s}", .{help_text});
         return 0;
     }
-    if (std.mem.eql(u8, cmd, "install")) return install.run(ctx, args[1..]);
+    if (std.mem.eql(u8, cmd, "install")) return install.run(ctx, args[1..], opts);
     if (std.mem.eql(u8, cmd, "update")) return install.update(ctx, args[1..]);
     if (std.mem.eql(u8, cmd, "select")) return manage.selection(ctx, args[1..]);
     if (std.mem.eql(u8, cmd, "uninstall")) return manage.uninstall(ctx, args[1..]);
-    if (std.mem.eql(u8, cmd, "list")) return manage.list(ctx, args[1..]);
+    if (std.mem.eql(u8, cmd, "list")) return manage.list(ctx, args[1..], opts);
     if (std.mem.eql(u8, cmd, "snapshot")) return @import("snapshot.zig").run(ctx, args[1..]);
     if (std.mem.eql(u8, cmd, "info")) {
         util.print("Install mode: {s}\nData root: {s}\nApp home: {s}\n", .{ @tagName(ctx.mode), ctx.data, ctx.home() });
