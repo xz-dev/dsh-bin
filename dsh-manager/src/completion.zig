@@ -216,6 +216,8 @@ fn binding(ctx: *Ctx) []const u8 {
     var paths = std.mem.splitScalar(u8, ctx.env.get("PATH") orelse "", if (win) ';' else ':');
     while (paths.next()) |p| {
         const dir = if (p.len == 0) "." else if (win) std.mem.trim(u8, p, "\"") else p;
+        // Cwd-dependent entries could shadow a later absolute hit after registration.
+        if (!std.fs.path.isAbsolute(dir)) break;
         var extensions = std.mem.splitScalar(u8, if (win) ctx.env.get("PATHEXT") orelse ".COM;.EXE;.BAT;.CMD" else "", ';');
         while (extensions.next()) |ext| {
             const name = std.fmt.allocPrint(ctx.a, "dsh{s}", .{ext}) catch util.oom();
@@ -282,7 +284,9 @@ fn foreign(ctx: *Ctx, bytes: []const u8, shell: Shell) bool {
     // ponytail: conservative file-level PS scan covers multiline CommandName arrays;
     // use a parser if false-positive refusals become a real problem.
     const lower = std.ascii.allocLowerString(ctx.a, ps.items) catch util.oom();
-    return std.mem.indexOf(u8, lower, "register-argumentcompleter") != null and (std.mem.indexOf(u8, lower, "dsh") != null or std.mem.indexOfScalar(u8, lower, '`') != null or std.mem.indexOfScalar(u8, lower, '$') != null or std.mem.indexOfScalar(u8, lower, '(') != null);
+    // Normalize escaped identifier letters before matching; ambiguous escaped registrations refuse.
+    const identifiers = std.mem.replaceOwned(u8, ctx.a, lower, "`", "") catch util.oom();
+    return std.mem.indexOf(u8, identifiers, "register-argumentcompleter") != null and (std.mem.indexOf(u8, identifiers, "dsh") != null or std.mem.indexOfScalar(u8, lower, '`') != null or std.mem.indexOfScalar(u8, lower, '$') != null or std.mem.indexOfScalar(u8, lower, '(') != null);
 }
 
 fn standardCollision(ctx: *Ctx, shell: Shell, home: []const u8) bool {

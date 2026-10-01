@@ -218,9 +218,15 @@ for (const shell of ["powershell", "pwsh"] as const) {
 
 	test.skipIf(!!reason)(`SC-COLLISION review: real ${shell} preserves backtick-escaped foreign command names${reason ? ` — SKIP: ${reason}` : ""}`, () => {
 		const i = newInstall(); const path = profile(i); mkdirSync(join(path, ".."), { recursive: true });
-		const original = 'Register-ArgumentCompleter -Native -CommandName "d`sh" -ScriptBlock { "foreign" }\n'; writeFileSync(path, original);
-		const foreign = psRun(i, `. ${psQuote(path)}; ${tabs("dsh f")}`); expect(foreign.status).toBe(0); expect(words(foreign.stdout)).toContain("foreign");
-		const result = run(i, args(i, "install")); expect(result.status).toBe(1); expect(readFileSync(path, "utf8")).toBe(original);
+		for (const original of [
+			'Register-ArgumentCompleter -Native -CommandName "d`sh" -ScriptBlock { "foreign" }\n',
+			'Re`gister-ArgumentCompleter -Native -CommandName dsh -ScriptBlock { "foreign" }\n',
+			'Register-Argument`Completer -Native -CommandName dsh -ScriptBlock { "foreign" }\n',
+		]) {
+			writeFileSync(path, original);
+			const foreign = psRun(i, `. ${psQuote(path)}; ${tabs("dsh f")}`); expect(foreign.status).toBe(0); expect(words(foreign.stdout)).toContain("foreign");
+			const result = run(i, args(i, "install")); expect(result.status).toBe(1); expect(readFileSync(path, "utf8")).toBe(original);
+		}
 	}, 120_000);
 
 	test.skipIf(!!reason)(`SC-CURRENT review: ${shell} custom profile hint does not promise autoload${reason ? ` — SKIP: ${reason}` : ""}`, () => {
