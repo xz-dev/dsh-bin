@@ -36,10 +36,17 @@ pub fn tryAcquire(path: []const u8, mode: Mode, create: bool) Error!Lock {
 /// Same lock, rooted at an already validated directory rather than re-resolving ancestors.
 pub fn tryAcquireIn(dir: std.fs.Dir, path: []const u8, mode: Mode, create: bool) Error!Lock {
     if (is_windows) {
-        const file = (if (create)
-            dir.createFile(path, .{ .truncate = false, .read = true })
-        else
-            dir.openFile(path, .{})) catch |err| return if (err == error.FileNotFound) error.Missing else error.Failed;
+        const path_w = win.sliceToPrefixedFileW(dir.fd, path) catch return error.Failed;
+        const file = std.fs.File{ .handle = win.OpenFile(path_w.span(), .{
+            .dir = dir.fd,
+            .access_mask = win.SYNCHRONIZE | win.GENERIC_READ | (if (create) @as(u32, win.GENERIC_WRITE) else 0),
+            .creation = if (create) win.FILE_OPEN_IF else win.FILE_OPEN,
+            .follow_symlinks = false,
+        }) catch |err| return if (err == error.FileNotFound) error.Missing else error.Failed };
+        if (!regular(file)) {
+            file.close();
+            return error.Failed;
+        }
         testPause(path, mode);
         var ov = std.mem.zeroes(win.OVERLAPPED);
         const flags: win.DWORD = 1 | (if (mode == .exclusive) @as(win.DWORD, 2) else 0);
@@ -49,8 +56,12 @@ pub fn tryAcquireIn(dir: std.fs.Dir, path: []const u8, mode: Mode, create: bool)
         }
         return checked(dir, path, .{ .handle = file.handle });
     }
-    const flags: std.posix.O = .{ .ACCMODE = .RDONLY, .CREAT = create };
+    const flags: std.posix.O = .{ .ACCMODE = .RDONLY, .CREAT = create, .NOFOLLOW = true, .NONBLOCK = true };
     const fd = std.posix.openat(dir.fd, path, flags, 0o644) catch |err| return if (err == error.FileNotFound) error.Missing else error.Failed;
+    if (!regular(.{ .handle = fd })) {
+        std.posix.close(fd);
+        return error.Failed;
+    }
     testPause(path, mode);
     const op: i32 = @as(i32, if (mode == .shared) std.posix.LOCK.SH else std.posix.LOCK.EX) | std.posix.LOCK.NB;
     std.posix.flock(fd, op) catch |err| {
@@ -58,6 +69,11 @@ pub fn tryAcquireIn(dir: std.fs.Dir, path: []const u8, mode: Mode, create: bool)
         return if (err == error.WouldBlock) error.Busy else error.Failed;
     };
     return checked(dir, path, .{ .handle = fd });
+}
+
+/// Mutexes and usage guards must be ordinary files, never links or special files.
+fn regular(file: std.fs.File) bool {
+    return (file.stat() catch return false).kind == .file;
 }
 
 /// The opened inode may have been retired before we took the lock. Never protect one generation and run another.

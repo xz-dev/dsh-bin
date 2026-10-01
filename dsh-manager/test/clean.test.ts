@@ -127,3 +127,19 @@ test.skipIf(!hasZig)("MC-CLEAN: validated parent handles keep deletion inside th
 		p.stdin.end("continue"); expect(await done).toBe(0); expect(readFileSync(join(external, ".install-f/credential"), "utf8")).toBe("KEEP"); expect(existsSync(join(original, ".install-f"))).toBe(false);
 	} finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await done; } }
 }, 30_000);
+
+
+test.skipIf(!hasZig)("MC-CLEAN review: linked or non-file mutexes refuse without external writes or residue deletion", () => {
+	for (const name of ["state/manager.lock", "snapshots/.lock"]) for (const kind of ["link", "directory"]) {
+		const i = newInstall(); addRuntime(i.data, A); put(i, "tmp/.install-a/item");
+		const mutex = join(i.data, name), external = join(i.home, "external-lock");
+		mkdirSync(join(mutex, ".."), { recursive: true });
+		if (kind === "directory") mkdirSync(mutex);
+		else { if (WIN) mkdirSync(external); symlinkSync(external, mutex, WIN ? "junction" : "file"); }
+		const r = run(i, ["manager", "clean"]);
+		expect(r.status).toBe(1); expect(r.stderr).toContain(name);
+		expect(existsSync(join(i.data, "tmp/.install-a/item"))).toBe(true);
+		if (!WIN) expect(existsSync(external)).toBe(false);
+		else if (kind === "link") expect(readdirSync(external)).toEqual([]);
+	}
+});
