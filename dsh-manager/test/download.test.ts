@@ -444,6 +444,16 @@ describe("http.zig (black-box, real sockets)", () => {
 		} finally { origin.stop(true); await proxy.stop(); }
 	});
 
+	test("FB-RETRY: CONNECT Basic credentials decode percent-encoded proxy userinfo", async () => {
+		const origin = Bun.serve({ hostname: "127.0.0.1", port: 0, tls: TEST_TLS, fetch() { return new Response(BODY); } });
+		const proxy = await connectProxy();
+		try {
+			success(await runDriver(["fetch", `https://127.0.0.1:${origin.port}/index`, String(SIZE)], { HTTPS_PROXY: proxy.url.replace("://", "://private%40user:s%3Ae%40cret@"), DSH_MANAGER_TEST_CA_FILE: TEST_CA_FILE }));
+			expect(proxy.requests).toHaveLength(1);
+			expect(proxy.requests[0]!.authorization).toBe(`Basic ${Buffer.from("private@user:s:e@cret").toString("base64")}`);
+		} finally { origin.stop(true); await proxy.stop(); }
+	});
+
 	test("DL-CORRUPT: untrusted CA, wrong hostname and ungated test CA fail before any body", async () => {
 		let originRequests = 0;
 		const origin = Bun.serve({ hostname: "127.0.0.1", port: 0, tls: TEST_TLS, fetch() { originRequests++; return new Response(BODY); } });
@@ -604,8 +614,11 @@ describe("http.zig (black-box, real sockets)", () => {
 	test.skipIf(!process.env.DSH_MANAGER_REAL_PROXY)(`real HTTPS CONNECT: pinned Zig LICENSE${process.env.DSH_MANAGER_REAL_PROXY ? "" : " — SKIP: DSH_MANAGER_REAL_PROXY not set; real proxy not tested"}`, async () => {
 		const path = dest("zig-license-real-proxy");
 		const hash = "5c537d6853e005298a285d508cff9ac7192cea23576c840d485b2b586a7ff177";
-		success(await runDriver(["download", "https://raw.githubusercontent.com/ziglang/zig/0.15.2/LICENSE", path, "1080", hash], { DSH_MANAGER_TEST: "", HTTPS_PROXY: process.env.DSH_MANAGER_REAL_PROXY! }, 60_000), path, Buffer.from(readFileSync(path)));
+		const res = await runDriver(["download", "https://raw.githubusercontent.com/ziglang/zig/0.15.2/LICENSE", path, "1080", hash], { DSH_MANAGER_TEST: "", HTTPS_PROXY: process.env.DSH_MANAGER_REAL_PROXY! }, 60_000);
+		success(res);
+		expect(statSync(path).size).toBe(1080);
 		expect(sha(readFileSync(path))).toBe(hash);
+		expect(existsSync(path + ".part")).toBe(false);
 	}, 65_000);
 
 	test.skipIf(process.env.DSH_MANAGER_OFFLINE === "1")("real HTTPS: pinned Zig 0.15.2 LICENSE, verified size and SHA-256", async () => {

@@ -184,12 +184,36 @@ fn loadRoots(c: *std.http.Client, env: *const std.process.EnvMap) Error!void {
     c.next_https_rescan_certs = false;
 }
 
-fn client(a: std.mem.Allocator, proxy_arena: std.mem.Allocator) Error!std.http.Client {
+fn proxyFromEnv(arena: std.mem.Allocator, env: *const std.process.EnvMap, names: []const []const u8) Error!?*std.http.Client.Proxy {
+    for (names) |name| {
+        const value = env.get(name) orelse continue;
+        if (value.len == 0) continue;
+        const uri = std.Uri.parse(value) catch std.Uri.parseAfterScheme("http", value) catch return Error.UnsupportedProxy;
+        const protocol = std.http.Client.Protocol.fromUri(uri) orelse {
+            std.debug.print("{s}: unsupported proxy scheme; use an http:// CONNECT proxy\n", .{name});
+            return Error.UnsupportedProxy;
+        };
+        const host = uri.getHostAlloc(arena) catch |e| return networkError(e);
+        // std's Basic helper base64-encodes escaped userinfo, and uses a fixed 511-byte
+        // buffer. Decode with Uri instead; credentials stay only in the CONNECT header.
+        const authorization = if (uri.user != null or uri.password != null) auth: {
+            const user = (uri.user orelse std.Uri.Component.empty).toRawMaybeAlloc(arena) catch util.oom();
+            const password = (uri.password orelse std.Uri.Component.empty).toRawMaybeAlloc(arena) catch util.oom();
+            const credentials = std.fmt.allocPrint(arena, "{s}:{s}", .{ user, password }) catch util.oom();
+            break :auth std.fmt.allocPrint(arena, "Basic {b64}", .{credentials}) catch util.oom();
+        } else null;
+        const proxy = arena.create(std.http.Client.Proxy) catch util.oom();
+        proxy.* = .{ .host = host, .port = uri.port orelse @as(u16, if (protocol == .tls) 443 else 80), .protocol = protocol, .authorization = authorization, .supports_connect = false };
+        return proxy;
+    }
+    return null;
+}
+
+fn client(a: std.mem.Allocator, env: *const std.process.EnvMap, proxy_arena: std.mem.Allocator) Error!std.http.Client {
     var c: std.http.Client = .{ .allocator = a };
     errdefer c.deinit();
-    c.initDefaultProxies(proxy_arena) catch |e| return networkError(e);
-    // Plain HTTP proxy requests need no CONNECT tunnel, nor its unbounded setup I/O.
-    if (c.http_proxy) |p| p.supports_connect = false;
+    c.http_proxy = try proxyFromEnv(proxy_arena, env, &.{ "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY" });
+    c.https_proxy = try proxyFromEnv(proxy_arena, env, &.{ "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY" });
     return c;
 }
 
@@ -446,7 +470,7 @@ fn readAll(a: std.mem.Allocator, head: Head, max: usize) Error![]u8 {
 pub fn fetchSmall(a: std.mem.Allocator, env: *const std.process.EnvMap, url: []const u8, max_bytes: usize) Error![]u8 {
     var proxy_arena = std.heap.ArenaAllocator.init(a);
     defer proxy_arena.deinit();
-    var c = try client(a, proxy_arena.allocator());
+    var c = try client(a, env, proxy_arena.allocator());
     defer c.deinit();
     const idle = tuningMs(env, "DSH_MANAGER_TEST_INACTIVITY_MS", 30_000);
     const base = tuningMs(env, "DSH_MANAGER_TEST_RETRY_MS", 1000);
@@ -525,7 +549,7 @@ pub fn download(a: std.mem.Allocator, env: *const std.process.EnvMap, url: []con
     defer a.free(part);
     var proxy_arena = std.heap.ArenaAllocator.init(a);
     defer proxy_arena.deinit();
-    var c = try client(a, proxy_arena.allocator());
+    var c = try client(a, env, proxy_arena.allocator());
     defer c.deinit();
     const idle = tuningMs(env, "DSH_MANAGER_TEST_INACTIVITY_MS", 30_000);
     const base = tuningMs(env, "DSH_MANAGER_TEST_RETRY_MS", 1000);
