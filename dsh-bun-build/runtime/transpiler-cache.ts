@@ -1,10 +1,8 @@
-// Prebuilt Bun transpiler cache (build: scripts/warm-transpiler-cache.mjs). The launcher points
-// BUN_RUNTIME_TRANSPILER_CACHE_PATH at dsh-bin's user cache (`$DSH_BUNDLE_CACHE/transpiler`); the bundle
-// ships the entries its own app tree produces, and the first start of each bundle version copies the
-// missing ones there, so a fresh install or update starts warm. Measured (see docs/IMPLEMENTATION-REPORT.md):
-// entries are content-keyed .pile files, valid across install paths and mtimes, and Bun ignores a cache it
-// cannot write. Seeding here (not at `dsh update` activation) also covers zip, Scoop and system-package
-// installs, which never run the updater. Best effort: any failure only costs one cold start.
+// Prebuilt Bun transpiler cache (build: scripts/warm-transpiler-cache.mjs). The manager points
+// BUN_RUNTIME_TRANSPILER_CACHE_PATH at the data root's cache/transpiler; the bundle ships entries from
+// its own app tree, and its first start copies missing entries there. Cache keys do not depend on
+// install paths or mtimes (see desc/IMPLEMENTATION-REPORT.md). Runtime seeding keeps cache policy out
+// of the manager's installation path. Best effort: any failure only costs one cold start.
 import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 

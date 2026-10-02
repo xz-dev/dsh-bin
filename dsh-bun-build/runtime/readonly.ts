@@ -1,7 +1,6 @@
-// Read-only runtime tree (launcher spec "Read-only runtime tree", design D6). Activated bundles and addon
-// versions are made non-writable for everyone; only the updater restores owner write, and only on staging
-// or quarantine paths it owns exclusively. dsh-tui's standalone self-updater fails against this without
-// any interception: it cannot create `.dsh-tui-new-<pid>` next to the executable or rename over it.
+// Build/test helper for read-only runtime trees. Production activation and retirement permissions
+// belong to the Zig manager; the application entry does not import this module. Tests use it to check
+// that upstream self-updaters cannot create a sibling executable or rename over the installed one.
 import { spawnSync } from "node:child_process";
 import { chmodSync, lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -40,7 +39,7 @@ export function makeReadOnly(dir: string, platform = process.platform): void {
 	strip(dir);
 }
 
-/** Restore owner write on a tree the updater exclusively owns (staging or quarantine), so it can be removed. */
+/** Restore owner write on an exclusively owned fixture tree so tests can remove it. */
 export function makeWritable(dir: string, platform = process.platform): void {
 	if (platform === "win32") {
 		try {

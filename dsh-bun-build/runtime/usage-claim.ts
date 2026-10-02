@@ -1,9 +1,7 @@
-// Bundle usage claims (design D4). Every process running a bundle holds a shared lock on
-// `bundles/<v>/.usage.lock`; retirement (`--clean`, same-version `--force`) needs the exclusive lock, so it
-// can never delete a bundle in use. POSIX: flock(2), released by the kernel when the process dies, even on
-// SIGKILL. Windows: LockFileEx on a handle, released when the handle is closed at process exit.
-// The launcher takes the shared claim for launcher-started processes; the runtime takes it again for
-// directly started ones (flock/LockFileEx shared locks stack).
+// Runtime usage claims (runtime-bundles "重启保持当前运行上下文"). Managed runtime processes hold
+// shared locks on the resolved runtime, snapshot and addon guards; manager retirement needs exclusive
+// locks. POSIX flock(2) and Windows LockFileEx release claims when their handles close, including process
+// exit. The runtime reacquires shared claims on application restart; it does not choose or delete objects.
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import { closeSync, openSync } from "node:fs";
 

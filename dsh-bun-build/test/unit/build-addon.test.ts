@@ -15,7 +15,7 @@ const unzip = (zip: string) => {
 
 const KIT = "@deepseek-ai/libreoffice-kit";
 const slot = { commit: "e".repeat(40), kitVersion: "0.1.1" };
-const identity = { version: "0.1.1-xz.1.1.gdeadbeef", tag: "dsh-addon-office-v0.1.1-xz.1.1.gdeadbeef", slot };
+const identity = { version: "0.1.1-b1.1.gdeadbeef", tag: "addon-office-v0.1.1-b1.1.gdeadbeef", slot };
 
 async function tarball(name: string) {
 	const files = { "package/package.json": JSON.stringify({ name, version: "0.1.1" }), "package/engine.bin": `engine ${name}` };

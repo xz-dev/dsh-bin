@@ -62,24 +62,24 @@ const slotA = { commit: "a".repeat(40), kitVersion: "0.1.2" };
 const slotB = { commit: "b".repeat(40), kitVersion: "0.1.3" };
 const addon = (seq: number, version: string, slot: typeof slotA) => ({
 	seq,
-	tag: `dsh-addon-office-v${version}`,
+	tag: `addon-office-v${version}`,
 	version,
 	slot,
 	assets: { linux: { name: "dsh-addon-office-linux.zip", size: 1, sha256: "0".repeat(64) } },
 });
 const index = {
-	schemaVersion: 2,
+	schema: 1,
 	channels: { release: [], live: [] },
-	addons: { office: [addon(1, "0.1.2-xz.1.1.g11111111", slotA), addon(2, "0.1.3-xz.2.1.g22222222", slotB), addon(3, "0.1.2-xz.3.1.g33333333", slotA)] },
+	addons: { office: [addon(1, "0.1.2-b1.1.g11111111", slotA), addon(2, "0.1.3-b2.1.g22222222", slotB), addon(3, "0.1.2-b3.1.g33333333", slotA)] },
 };
 
 describe("office table (6.1)", () => {
 	test("known equals the index snapshot and pinned is the newest in-slot entry", () => {
 		const t = officeTable(slotA, index);
 		expect(t.known).toEqual(index.addons.office);
-		expect(t.pinned).toBe("0.1.2-xz.3.1.g33333333");
+		expect(t.pinned).toBe("0.1.2-b3.1.g33333333");
 		expect(t.slot).toEqual(slotA);
-		expect(officeTable(slotB, index).pinned).toBe("0.1.3-xz.2.1.g22222222");
+		expect(officeTable(slotB, index).pinned).toBe("0.1.3-b2.1.g22222222");
 	});
 
 	test("a slot with no addon pins nothing; no kit means no slot", () => {
@@ -131,7 +131,7 @@ describe("assemble (6.1)", () => {
 		expect(meta).toMatchObject({ kind: "dsh-runtime", schemaVersion: 1, id, channel: "release", target: "linux-x64-modern", run: 1, attempt: 1, launchProtocol: 1, entry: "dsh-native", builderCommit: "abcdef12".repeat(5) });
 		for (const legacy of ["launcherProtocol", "launcherCommit", "name", "version"]) expect(meta[legacy]).toBeUndefined();
 		expect(meta.upstream.commitTime).toBe("2026-09-24T13:39:59.000Z");
-		expect(meta.addons.office.pinned).toBe("0.1.2-xz.3.1.g33333333");
+		expect(meta.addons.office.pinned).toBe("0.1.2-b3.1.g33333333");
 		expect(meta.addons.office.known).toEqual(index.addons.office);
 		expect(readFileSync(join(r.bundle, "bin/pnpm"), "utf8")).toContain("pnpm/dist/pnpm.mjs");
 	}, 30_000);
