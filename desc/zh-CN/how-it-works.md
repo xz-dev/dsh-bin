@@ -39,7 +39,7 @@ installation/
 | Live 运行包 | `runtime-live-<sha7>-b<run>.<attempt>.g<sha8>` | `runtime-index.json` 的 live 渠道 |
 | Office addon | `addon-office-v<kit>-b<run>.<attempt>.g<sha8>` | `runtime-index.json` 的 office addons |
 
-管理器资产为 `manager-<os>-<arch>.zip`，仅含一个可执行文件。运行包资产为 `dsh-<target>.zip`，归档根含 `bundle.json`、`dsh-native`、`app/`、`pnpm/`、`bin/`、固定 `completion.json` 和声明的缓存内容，不含管理器或外层安装树。Manifest 记录上游/构建身份及启动协议，不要求匹配管理器发行版本。
+管理器资产为 `manager-<os>-<arch>.zip`，仅含一个可执行文件。运行包资产为 `runtime-<target>.zip`，归档根含 `bundle.json`、`dsh-native`、`app/`、`pnpm/`、`bin/`、固定 `completion.json` 和声明的缓存内容，不含管理器或外层安装树。Manifest 记录上游/构建身份及启动协议，不要求匹配管理器发行版本。
 
 [管理器发布 CI](../../.github/workflows/manager-release.yml)只构建管理器；[运行包发布 CI](../../.github/workflows/runtime-release.yml)只构建运行包。组合门禁消费固定的另一方制品，不重编它。Dry-run 不发布；[CI 入口](../../.github/workflows/ci.yml)提供手动 `release_dry_run` 调用，硬编码关闭发布。公开发布等待发布门禁，以及需要时兼容 addon 就绪。GitHub 全局 Latest 不是发现协议。
 

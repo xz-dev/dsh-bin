@@ -39,7 +39,7 @@ The manager's controlled application environment directs known caches and tempor
 | Live runtime | `runtime-live-<sha7>-b<run>.<attempt>.g<sha8>` | `runtime-index.json`, live channel |
 | Office addon | `addon-office-v<kit>-b<run>.<attempt>.g<sha8>` | `runtime-index.json`, office addons |
 
-Manager assets are `manager-<os>-<arch>.zip` and each contains one executable. Runtime assets are `dsh-<target>.zip`; their roots contain `bundle.json`, `dsh-native`, `app/`, `pnpm/`, `bin/`, a fixed `completion.json` and any declared cache content, not the manager or an outer installation tree. A runtime's manifest records upstream/build identity and launch protocol, not a matching manager release version.
+Manager assets are `manager-<os>-<arch>.zip` and each contains one executable. Runtime assets are `runtime-<target>.zip`; their roots contain `bundle.json`, `dsh-native`, `app/`, `pnpm/`, `bin/`, a fixed `completion.json` and any declared cache content, not the manager or an outer installation tree. A runtime's manifest records upstream/build identity and launch protocol, not a matching manager release version.
 
 [Manager release CI](../../.github/workflows/manager-release.yml) builds only the manager; [runtime release CI](../../.github/workflows/runtime-release.yml) builds only runtimes. Combination gates consume a pinned counterpart artifact instead of rebuilding it. Dry-run builds do not publish; the [CI entry](../../.github/workflows/ci.yml) exposes manual `release_dry_run` calls with publication hard-coded off. Public publication waits for the release gates and a compatible addon when required. Global GitHub Latest is not a discovery protocol.
 
