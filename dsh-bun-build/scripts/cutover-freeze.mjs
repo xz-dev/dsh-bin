@@ -93,9 +93,8 @@ if (import.meta.main) {
 		const [out, ...extra] = process.argv.slice(2);
 		if (!out || extra.length) throw new Error("usage: cutover-freeze.mjs <out.json>");
 		githubContext();
-		if (lstatSync(resolve(out), { throwIfNoEntry: false })) throw new Error(`output already exists: ${out}`);
 		const inventory = await freezeReleases();
-		// Create only after permission/inventory checks; O_EXCL refuses any name created during the wait.
+		// This is a new output: O_EXCL atomically creates/pins it after GETs; an existing name is untouched.
 		fd = openSync(resolve(out), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
 		assertFileIdentity(fd, resolve(out));
 		writeFileSync(fd, `${JSON.stringify(inventory, null, 2)}\n`);

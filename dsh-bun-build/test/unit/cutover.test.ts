@@ -186,6 +186,15 @@ test("DL-CUTOVER: CLI dry run prints exact plan/log, wrong hash refuses, existin
 	const log = readFileSync(`${path}.results.json`, "utf8"); expect(JSON.parse(log).notAttempted).toHaveLength(3);
 	const second = invoke(["--expect-sha256", inventory.sha256]); expect(second.status).toBe(1); expect(readFileSync(`${path}.results.json`, "utf8")).toBe(log);
 	writeFileSync(join(root, "user.json"), "KEEP");
-	const freeze = spawnSync(process.execPath, [resolve(import.meta.dir, "../../scripts/cutover-freeze.mjs"), join(root, "user.json")], { encoding: "utf8", timeout: 10_000, env: { ...process.env, ...env } });
-	expect(freeze.status).toBe(1); expect(readFileSync(join(root, "user.json"), "utf8")).toBe("KEEP");
+	const preload = join(root, "freeze-readonly.mjs");
+	writeFileSync(preload, `globalThis.fetch = async (url, options) => {
+		if (options.method !== "GET") throw new Error("only GET allowed");
+		const path = new URL(url).pathname;
+		if (path === "/repos/fixture/repo") return Response.json({permissions:{push:true}});
+		if (path === "/repos/fixture/repo/releases") return Response.json([]);
+		if (path.startsWith("/repos/fixture/repo/contents/")) return new Response(null,{status:404});
+		throw new Error("unexpected GET");
+	};`);
+	const freeze = spawnSync(process.execPath, ["--preload", preload, resolve(import.meta.dir, "../../scripts/cutover-freeze.mjs"), join(root, "user.json")], { encoding: "utf8", timeout: 10_000, env: { ...process.env, ...env } });
+	expect(freeze.status).toBe(1); expect(freeze.stderr).toContain("EEXIST"); expect(readFileSync(join(root, "user.json"), "utf8")).toBe("KEEP");
 });
