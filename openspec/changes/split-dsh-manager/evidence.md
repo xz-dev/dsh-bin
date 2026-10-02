@@ -1230,3 +1230,66 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
   6. Scoop：只更新 dsh.json；生成 Gentoo 文件。
   7. 真实验证：从已发布 release 首次下载并安装，跑一遍 Scoop 安装，用 Portage 校验 ebuild。
 - 每个 publish 都受门禁约束：只允许 main 上手动 dispatch、组合门禁必须成功、immutable release、逐资产哈希校验、attestation 校验、索引单次 fast-forward 追加。所有门禁都不放宽。
+
+### 9.3 父会话验收
+
+- **全部从 main 发布**（243621d），每个 release 都是 immutable、非 prerelease，并在进行下一步之前把每个资产的大小和 SHA256 与索引逐一核对：
+  1. addon `addon-office-v0.1.1-b2.1.g243621d7`（addon.yml run 37004812706）：5/5 相符，追加进 runtime-index.json。
+  2. runtime dry run（main，37004821604，0.1.7-rc.2-b2，runtime-index sha256 `e1f98c48…`）作为 manager 首发时的已验收 counterpart。
+  3. manager `manager-v1.0.0`（manager-release run 37007518364）：6 个原生平台组合检查全部通过；6/6 相符；manager-index.json sha256 `b3ba8ed070a877a0261468435f8da203a3d11d60f1ec9760b73e437539bcfb97`；Linux 二进制输出 `dsh manager 1.0.0 (launch protocol 1)`。
+  4. runtime `runtime-v0.1.7-rc.2-b3.1.g243621d7`（37008345541，28 个 job）：counterpart 是已发布 manager-index（sha256 固定）；12/12 相符。
+  5. runtime `runtime-v0.2.0-rc.2-b4.1.g243621d7`（37011989196）：输入同上；12/12 相符；现在是 GitHub Latest。
+  - 所有门禁都没有放宽：只允许 main 上的 `workflow_dispatch`、组合门禁必须成功、immutable、逐资产哈希、attestation 校验、索引单次 fast-forward 追加。
+- **Scoop**：`bucket/dsh.json` 切到 manager 1.0.0（scoop 分支提交 156b17d，只改这一个文件；推送前看过 diff）。没有使用 `publish-scoop-bucket.sh`，因为它会重建整个 bucket 并删除 dsh-live/dsh-office，而用户选择的是这两个文件留到 9.4。已有 Scoop 用户下次 `scoop update dsh` 时会得到只含管理器的新包，没有迁移，旧数据不动。
+- **真实验证**（published-check.yml，只读；新 workflow 只能从默认分支 dispatch，因此经 PR #2 和 #3 合入）：
+  - Scoop（run 37017913881，windows-2022）：真实 Scoop 克隆已发布的 bucket，`scoop install dsh-bin/dsh` 下载 manager-v1.0.0；install mode 为 scoop；`dsh manager update` 安装 0.2.0-rc.2-b4；`dsh manager self-update` 拒绝并提示改用 `scoop update dsh`；`scoop uninstall` 成功。
+  - 首次下载（同一次 run）：Linux x64 和 macOS arm64 从已发布 manager-index 取最新 manager，校验大小和哈希，首次运行应用命令后安装了 runtime-index 中最新的 0.2.0-rc.2-b4，`--use … --version` 通过。windows-x64 这个 job 在 Git Bash 步骤中没有任何输出就以 exit 1 结束，原因没有查明；同一 run 里真实 Windows 已经从已发布 bucket 下载 manager 1.0.0、安装最新 runtime 并运行成功，所以 Windows 的首次下载能力有证据覆盖，这个 job 记为检查脚本问题，未关闭。
+  - 本机 Linux 也做了同样的首次下载：manager 1.0.0 安装 0.2.0-rc.2-b4。
+  - Gentoo：从已发布 manager-index 生成 `dsh-bin-1.0.0.ebuild` 和 Manifest。Manifest 中的 DIST 大小和 SHA256 与已下载的已发布 zip 一致。在本机以 uid 1000 非 root 跑真实 Portage，`DSH_GENTOO_MANAGER_ZIP` 指向已发布的 manager-linux-x64.zip：install → upgrade → unmerge，6 pass / 0 fail，数据、凭据、会话保留。按用户选择，文件放在 `/var/tmp/dsh-bin-gentoo-1.0.0/app-misc/dsh-bin/`，由用户加入自己的 overlay。
+- 发布后的修正（都经 PR 和三平台 CI）：
+  - PR #2：发布后 MC-EMPTY 失败。原来的断言之所以能过，只是因为生产索引返回 404。05d152b 改为只检查本地 `list` 不发请求。只读扫描确认没有其他测试依赖生产环境为空（install.test.ts:248 只做本地检查）。另外 13543c5 给真实 git 索引发布测试设置显式超时（Windows runner 上耗时达到约 5 s）。
+  - PR #3：published-check 的首次下载步骤原来用裸 `dsh --version`，这个命令由 manager 自己回答，不会安装 runtime。改为执行应用命令后用 `--use` 读取版本。28c2387 删除 README 和 desc 中已经不成立的“尚未发布”说明，相对链接全部有效。
+- 勾选 **9.3**。
+
+### 9.2 父会话验收
+
+- 授权：用户选择由 agent 在第 8 节全绿后合并 PR，并在同一个 PR 中暂停旧发布（2026-10-02）。c920b31 删除 `upstream-poll.yml`、`build.yml`、`upstream-diff.mjs`，以及只被它们使用的旧索引写入、旧 tag 支持和旧 aggregate 字段；随 PR #1（243621d）合入 main。
+- 冻结之后不会再产生旧格式资产：main 上已经没有任何能生成 `dsh-v*`、`dsh-live-*`、`dsh-addon-*` 的 workflow；`publish-release.mjs` 拒绝旧 tag 家族；upstream-poll 最后一次运行（2026-10-02T05:54Z）早于合并。冻结后旧家族 release 数量仍为 7。
+- 冻结清单：`/var/tmp/dsh-92/frozen.json`，sha256 `398fa2a99317a79a46073fd2048c9e765016e93a1b6cf848a5f6754da97663aa`。ID、tag、数量和 URL 如下（每个资产的 id、name、size、download URL、digest 都在清单里）：
+  - 399716292 `dsh-addon-office-v0.1.1-xz.28.1.gd499269a`（6 个资产）
+  - 399716693 `dsh-v0.1.7-rc.2-xz.28.1.gd499269a`（14）
+  - 399728621 `dsh-v0.2.0-rc.1-xz.28.1.gd499269a`（14）
+  - 399774675 `dsh-live-639ed01-xz.29.1.g5cf33f29`（14）
+  - 399792727 `dsh-v0.2.0-rc.2-xz.30.1.g5cf33f29`（14）
+  - 399843429 `dsh-v0.2.0-rc.2-xz.34.1.g8a39d4f5`（14）
+  - 399868698 `dsh-live-639ed01-xz.34.1.g8a39d4f5`（14）
+  - 合计 90 个资产，9,453,669,026 bytes；新家族 0，未知 0。
+  - 旧下载入口：releases 分支上的旧 `index.json`、scoop 分支上的 `bucket/dsh-live.json` 和 `bucket/dsh-office.json`。README 已在 28c2387 改为只指向新制品；`install.sh` 已经不存在。
+- 勾选 **9.2**。
+
+### 9.4 父会话验收
+
+- 用户在看过冻结清单（7 个 release ID 和 tag、90 个资产、约 9.45 GB、sha256 `398fa2a9…`、旧 index.json、Scoop dsh-live/dsh-office）以及不可逆后果后，明确回复 “confirm”（2026-10-02）。
+- 先跑 dry run（`/var/tmp/dsh-94/plan.json`）：摘要校验通过，计划恰好是这 7 个 ID，零 API 调用。
+- 正式删除：`bun dsh-bun-build/scripts/cutover-delete.mjs /var/tmp/dsh-94/frozen.json --expect-sha256 398fa2a9… --confirm`，exit 0。结果文件 `/var/tmp/dsh-94/frozen.json.results.json`：**done 7（399716292、399716693、399728621、399774675、399792727、399843429、399868698），failed 0，not-attempted 0**。每删一项前都按 ID 重新读取并核对 tag；整个过程没有重新列举 release；没有删除 Git tag。
+- 移除旧下载入口：releases 分支删除旧 `index.json`（a6f0685）；scoop 分支删除 `bucket/dsh-live.json` 和 `bucket/dsh-office.json`（deafd2f）。README 和 desc 此前已在 28c2387 只指向新制品；`install.sh` 早已不存在。
+- 没有动的东西：7 个旧 `dsh-*` Git tag 仍然存在（`git ls-remote` 显示 7 个），Git 历史不变；4 个新 release（manager-v1.0.0、runtime-v0.1.7-rc.2-b3、runtime-v0.2.0-rc.2-b4、addon-office-v0.1.1-b2）都在，immutable，资产数量不变；用户本地数据没有被触碰。
+- 勾选 **9.4**。
+
+### 9.5 父会话验收
+
+- 旧资产：冻结清单中 90 个旧资产的精确下载 URL 全部返回 **404**（`/var/tmp/dsh-94/old-url-status.txt`）。旧 `index.json`、`bucket/dsh-live.json`、`bucket/dsh-office.json`、`install.sh` 也都返回 404。
+- 新入口只提供新制品：runtime-index、manager-index 和 Scoop dsh.json 引用的 35 个资产 URL 全部返回 **200**（`/var/tmp/dsh-94/new-status.txt`），每一个都位于新 tag 家族（`runtime-v*`、`manager-v*`、`addon-office-v*`）下。runtime-index 中出现的 `dsh-v0.1.7-rc.2` / `dsh-v0.2.0-rc.2` 是 upstream 源码 tag（`upstream.tag` 字段），`dsh-addon-office-*.zip` 是 addon 资产文件名，都不指向已删除的 release。Scoop dsh.json 指向 manager-v1.0.0；GitHub Latest 是 runtime-v0.2.0-rc.2-b4。
+- 删除之后新安装和更新仍然可用（published-check run 37019461210）：
+  - Scoop（windows-2022）：从已发布 bucket install → `manager update` 安装 0.2.0-rc.2-b4 → 运行 → self-update 拒绝并提示 scoop → uninstall，通过；
+  - 首次下载：Linux x64 和 macOS arm64 通过；
+  - windows-x64 首次下载 job 与删除前一样，在 Git Bash 步骤中无输出就 exit 1（删除前的 run 37017913881 也是如此）。Windows 上的下载、安装和运行已由 Scoop job 证明，这一项作为检查脚本的遗留问题列入残余风险。
+- 没有项目被权限或不可变规则阻塞，冻结清单已经全部清空。
+- 勾选 **9.5**。
+
+### 9.6 交付与验收
+
+- 交付报告（2026-10-02）已逐项给出：实现范围；各切片 red/green 证据的位置（本文件）；跨平台 CI、原生组合、shell 矩阵、组合 E2E、真实 Portage、真实 Scoop 和首次下载的记录；新发布地址（manager-v1.0.0、runtime-v0.1.7-rc.2-b3、runtime-v0.2.0-rc.2-b4、addon-office-v0.1.1-b2、releases 分支两份索引、scoop 分支 dsh.json、Gentoo 文件路径）；旧发布清理结果（7 个删除，90 个 URL 返回 404）。
+- 报告中明确列出的残余风险和未执行检查：windows-x64 首次下载 job 无输出失败（检查脚本问题，Windows 能力由 Scoop job 覆盖）；ARM64 Portage 和 Scoop、Windows ConPTY 交互、addon 的 PDF 转换、TUI 交互重启都没有执行；深度 E2E 只覆盖 Linux 和 Windows x64；此前接受的残余风险（最终身份检查到 unlink 之间的窗口、浅层原生 header 检查、断电持久性、初始化残留需手动恢复）；macOS 快照并发修复没有在实机上复现根因；schedule 尚未在真实 cron 下运行。
+- 用户回复 “ok”，确认验收（2026-10-02）。Gentoo ebuild 由用户自行加入 overlay。
+- 勾选 **9.6**。
