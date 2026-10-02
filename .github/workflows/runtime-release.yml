@@ -1,0 +1,241 @@
+name: runtime-release
+
+# Independent runtime path; the old coupled publisher is retired by the 9.2 cutover.
+# No manager source is compiled here; combination downloads an explicitly accepted manager.
+on:
+  schedule:
+    - cron: "17 0,6,12,18 * * *"
+  push:
+    branches: [main]
+    paths: ["dsh-bun-build/**", ".github/workflows/runtime-release.yml"]
+  workflow_dispatch:
+    inputs:
+      channel: { type: choice, options: [release, live], default: release }
+      upstream: { description: "dsh-v* tag for release, commit/master for live", type: string, required: true }
+      prerelease: { type: boolean, default: true }
+      publish: { type: boolean, default: false }
+      accepted_index: { description: "Accepted manager-index.json HTTPS URL (or artifact inputs)", type: string }
+      accepted_sha256: { description: "SHA256 of accepted manager-index.json", type: string }
+      accepted_run: { description: "Accepted dry-run workflow run ID", type: string }
+      accepted_artifact: { description: "Accepted manager release artifact name", type: string }
+  workflow_call:
+    inputs:
+      channel: { type: string, default: release }
+      upstream: { description: "dsh-v* tag for release, commit/master for live", type: string, required: true }
+      prerelease: { type: boolean, default: true }
+      publish: { type: boolean, default: false }
+      accepted_index: { description: "Accepted manager-index.json HTTPS URL (or artifact inputs)", type: string }
+      accepted_sha256: { description: "SHA256 of accepted manager-index.json", type: string }
+      accepted_run: { description: "Accepted dry-run workflow run ID", type: string }
+      accepted_artifact: { description: "Accepted manager release artifact name", type: string }
+permissions: { contents: read, actions: read }
+env:
+  BUN_VERSION: "1.4.2"
+  DSH_BUILDER_COMMIT: ${{ github.sha }}
+  # Automatic path-filter and schedule runs are dry-run only, never publication.
+defaults:
+  run: { working-directory: dsh-bun-build, shell: bash }
+jobs:
+  detect:
+    permissions: { contents: read, actions: read }
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ github.event_name != 'schedule' || steps.poll.outputs.build == 'true' }}
+      channel: ${{ steps.poll.outputs.channel || inputs.channel || 'live' }}
+      upstream: ${{ steps.poll.outputs.upstream || inputs.upstream || 'master' }}
+      index: ${{ steps.poll.outputs.index || inputs.accepted_index }}
+      digest: ${{ steps.poll.outputs.digest || inputs.accepted_sha256 }}
+    steps:
+      - name: Use explicit or path-filtered runtime request
+        if: github.event_name != 'schedule'
+        working-directory: .
+        run: echo 'Explicit or path-filtered runtime request; upstream polling skipped.'
+      - uses: actions/checkout@v4
+        if: github.event_name == 'schedule'
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        if: github.event_name == 'schedule'
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - name: Check newest upstream release (build only, humans publish)
+        if: github.event_name == 'schedule'
+        id: poll
+        run: bun scripts/upstream-check.mjs
+  prepare:
+    permissions: { contents: read, actions: read }
+    needs: detect
+    if: needs.detect.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.p.outputs.matrix }}
+      commit: ${{ steps.p.outputs.commit }}
+      channel: ${{ needs.detect.outputs.channel }}
+      upstream: ${{ needs.detect.outputs.upstream }}
+      index: ${{ needs.detect.outputs.index }}
+      digest: ${{ needs.detect.outputs.digest }}
+    env:
+      CHANNEL: ${{ needs.detect.outputs.channel }}
+      UPSTREAM: ${{ needs.detect.outputs.upstream }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - id: p
+        env:
+          PUBLISH: ${{ inputs.publish || false }}
+          INDEX: ${{ needs.detect.outputs.index }}
+          RUN: ${{ inputs.accepted_run }}
+          ARTIFACT: ${{ inputs.accepted_artifact }}
+          DIGEST: ${{ needs.detect.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$INDEX$RUN$ARTIFACT$DIGEST" ]]; then
+            if [[ ! "$DIGEST" =~ ^[0-9a-f]{64}$ ]]; then echo 'invalid accepted counterpart digest' >&2; exit 1; fi
+            if [[ "$INDEX" == https://* && -z "$RUN$ARTIFACT" ]]; then :
+            elif [[ -z "$INDEX" && "$RUN" =~ ^[1-9][0-9]*$ && -n "$ARTIFACT" ]]; then :
+            else echo 'invalid accepted counterpart inputs' >&2; exit 1; fi
+          elif [[ "$PUBLISH" == true ]]; then
+            echo 'publish refused: accepted manager counterpart is required' >&2; exit 1
+          else
+            echo 'combination gate skipped: no accepted counterpart (bootstrap)'
+          fi
+          [[ "$UPSTREAM" =~ ^[0-9A-Za-z._/-]+$ ]] || { echo 'invalid upstream ref' >&2; exit 1; }
+          [[ "$CHANNEL" != release || "$UPSTREAM" == dsh-v* ]] || { echo 'release requires dsh-v* tag' >&2; exit 1; }
+          if [[ "$UPSTREAM" =~ ^[0-9a-f]{40}$ ]]; then commit=$UPSTREAM; else commit=$(bun scripts/fetch-upstream.mjs "$UPSTREAM" | jq -r .commit); fi
+          slot=$(bun scripts/addon-slot.mjs "$RUNNER_TEMP/upstream.git" "$commit")
+          code=$(curl -sS -L -w '%{http_code}' "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/releases/runtime-index.json" -o "$RUNNER_TEMP/runtime-index.json")
+          case "$code" in 200) ;; 404) printf '{"schema":1,"channels":{"release":[],"live":[]},"addons":{"office":[]}}\n' > "$RUNNER_TEMP/runtime-index.json" ;; *) echo "runtime index HTTP $code" >&2; exit 1 ;; esac
+          bun scripts/index.mjs check "$RUNNER_TEMP/runtime-index.json"
+          if [[ "$PUBLISH" == true && "$slot" != null ]]; then
+            jq -e --argjson s "$slot" 'any(.addons.office[]; .slot.commit == $s.commit and (.tag | startswith("addon-office-v")))' "$RUNNER_TEMP/runtime-index.json" >/dev/null || { echo 'publish refused: office slot needs a new-format addon; fix addon release path and publish addon first' >&2; exit 1; }
+          fi
+          { echo "matrix=$(bun scripts/targets.mjs --matrix)"; echo "commit=$commit"; } >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with: { name: runtime-index-snapshot, path: "${{ runner.temp }}/runtime-index.json", if-no-files-found: error }
+  build:
+    permissions: { contents: read, actions: read }
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "24" }
+      - uses: actions/download-artifact@v4
+        with: { name: runtime-index-snapshot, path: "${{ runner.temp }}/index" }
+      - name: Build runtime only, using frozen addon index
+        env:
+          IMAGE: ${{ matrix.containerImage }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+          UPSTREAM: ${{ needs.prepare.outputs.upstream }}
+        run: |
+          set -euo pipefail
+          ref=$COMMIT; [[ "$CHANNEL" == release ]] && ref=$UPSTREAM
+          args=('${{ matrix.id }}' "$CHANNEL" "$ref" "$RUNNER_TEMP/out" --expected-commit "$COMMIT" --run "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT" --index "$RUNNER_TEMP/index/runtime-index.json" --work "$RUNNER_TEMP/work" --git-dir "$RUNNER_TEMP/upstream.git")
+          if [[ -z "$IMAGE" ]]; then
+            bun scripts/build-target.mjs "${args[@]}"
+          else
+            docker run --rm -v "$PWD:$PWD" -v "$RUNNER_TEMP:$RUNNER_TEMP" -w "$PWD" -e DSH_BUILDER_COMMIT -e GH_TOKEN -e RUNNER_TEMP -e OWNER="$(id -u):$(id -g)" "$IMAGE" sh -euc 'apk add --no-cache bash git curl nodejs nodejs-dev npm python3 build-base cmake linux-headers github-cli >/dev/null; ln -sf /usr/bin/gcc /usr/local/bin/musl-gcc; bun scripts/build-target.mjs "$@"; chown -R "$OWNER" "$RUNNER_TEMP"' sh "${args[@]}"
+          fi
+          rm -rf "$RUNNER_TEMP/out/addon-tree" "$RUNNER_TEMP/out"/.scratch-*
+      - uses: actions/upload-artifact@v4
+        with: { name: "runtime-target-${{ matrix.id }}", path: "${{ runner.temp }}/out/", if-no-files-found: error }
+  aggregate:
+    permissions: { contents: read, actions: read }
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - uses: actions/download-artifact@v4
+        with: { pattern: runtime-target-*, merge-multiple: true, path: "${{ runner.temp }}/release" }
+      - uses: actions/download-artifact@v4
+        with: { name: runtime-index-snapshot, path: "${{ runner.temp }}/release" }
+      - name: Verify all targets and generate runtime index only
+        run: |
+          set -euo pipefail
+          bun scripts/aggregate-release.mjs "$RUNNER_TEMP/release" --expect-targets 12
+          bun scripts/index.mjs append-bundle "$RUNNER_TEMP/release/runtime-index.json" "$RUNNER_TEMP/release/release-manifest.json"
+      - uses: actions/upload-artifact@v4
+        with: { name: runtime-release, path: "${{ runner.temp }}/release/", if-no-files-found: error }
+  combination:
+    permissions: { contents: read, actions: read }
+    needs: [prepare, aggregate]
+    if: needs.prepare.outputs.index != '' || inputs.accepted_run != ''
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: runtime-release, path: "${{ runner.temp }}/candidate" }
+      - uses: actions/download-artifact@v4
+        if: inputs.accepted_run != ''
+        with:
+          name: ${{ inputs.accepted_artifact }}
+          run-id: ${{ inputs.accepted_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/accepted
+      - name: Candidate runtime + accepted manager (no manager compilation)
+        env:
+          SOURCE: ${{ needs.prepare.outputs.index }}
+          DIGEST: ${{ needs.prepare.outputs.digest }}
+          TARGET: ${{ matrix.id }}
+          IMAGE: ${{ matrix.containerImage }}
+        run: |
+          set -euo pipefail
+          source=${SOURCE:-$RUNNER_TEMP/accepted}
+          if [[ -z "$IMAGE" ]]; then
+            bun scripts/artifact-e2e.mjs runtime "$RUNNER_TEMP/candidate" "$source" "$DIGEST" "$TARGET"
+          else
+            docker run --rm -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE:ro" -v "$RUNNER_TEMP:$RUNNER_TEMP" -w "$PWD" -e GITHUB_REPOSITORY "$IMAGE" bun scripts/artifact-e2e.mjs runtime "$RUNNER_TEMP/candidate" "$source" "$DIGEST" "$TARGET"
+          fi
+  publish:
+    needs: [aggregate, combination]
+    # Publish only from main by an explicit manual dispatch (workflow_call from ci.yml hard-codes publish: false).
+    if: inputs.publish && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.combination.result == 'success'
+    runs-on: ubuntu-24.04
+    concurrency: { group: releases-index, cancel-in-progress: false }
+    permissions: { contents: write, id-token: write, attestations: write }
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: runtime-release, path: "${{ runner.temp }}/release" }
+      - name: Reverify release manifest and asset bytes
+        run: bun scripts/aggregate-release.mjs "$RUNNER_TEMP/release" --expect-targets 12
+      - id: attest
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release/*.zip
+            ${{ runner.temp }}/release/release-manifest.json
+            ${{ runner.temp }}/release/SHA256SUMS
+      - name: Verify provenance, publish immutable runtime, append only runtime index
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DSH_RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/empty-gh"
+          for f in "$RUNNER_TEMP"/release/*.zip "$RUNNER_TEMP/release/release-manifest.json" "$RUNNER_TEMP/release/SHA256SUMS"; do
+            GH_CONFIG_DIR="$RUNNER_TEMP/empty-gh" GH_TOKEN='' GITHUB_TOKEN='' gh attestation verify "$f" --bundle "$BUNDLE" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/runtime-release.yml" --deny-self-hosted-runners
+          done
+          bun scripts/publish-release.mjs "$RUNNER_TEMP/release/release-manifest.json"
+          bash scripts/publish-index.sh runtime "$RUNNER_TEMP/release/release-manifest.json"

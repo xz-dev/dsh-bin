@@ -1,0 +1,164 @@
+name: manager-release
+
+# Manager-only changes never build runtime sources. Manual dispatch is also dry-run by default.
+on:
+  push:
+    branches: [main]
+    paths: ["dsh-manager/**", ".github/workflows/manager-release.yml"]
+  workflow_dispatch:
+    inputs:
+      version: { description: "Strict manager SemVer", required: true, type: string }
+      prerelease: { type: boolean, default: true }
+      publish: { type: boolean, default: false }
+      accepted_index: { description: "Accepted runtime-index.json HTTPS URL (or use artifact inputs)", type: string }
+      accepted_sha256: { description: "SHA256 of accepted runtime-index.json", type: string }
+      accepted_run: { description: "Accepted dry-run workflow run ID", type: string }
+      accepted_artifact: { description: "Accepted runtime release artifact name", type: string }
+  workflow_call:
+    inputs:
+      version: { description: "Strict manager SemVer", required: true, type: string }
+      prerelease: { type: boolean, default: true }
+      publish: { type: boolean, default: false }
+      accepted_index: { description: "Accepted runtime-index.json HTTPS URL (or use artifact inputs)", type: string }
+      accepted_sha256: { description: "SHA256 of accepted runtime-index.json", type: string }
+      accepted_run: { description: "Accepted dry-run workflow run ID", type: string }
+      accepted_artifact: { description: "Accepted runtime release artifact name", type: string }
+permissions: { contents: read, actions: read }
+env:
+  BUN_VERSION: "1.4.2"
+  ZIG_VERSION: "0.15.2"
+jobs:
+  build:
+    permissions: { contents: read, actions: read }
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG_VERSION }}" }
+      - id: identity
+        env:
+          VERSION: ${{ inputs.version || format('0.0.0-ci.{0}', github.run_number) }}
+          PUBLISH: ${{ inputs.publish || false }}
+          INDEX: ${{ inputs.accepted_index }}
+          RUN: ${{ inputs.accepted_run }}
+          ARTIFACT: ${{ inputs.accepted_artifact }}
+          DIGEST: ${{ inputs.accepted_sha256 }}
+        run: |
+          set -euo pipefail
+          bun dsh-manager/scripts/release.mjs version "$VERSION"
+          if [[ -n "$INDEX$RUN$ARTIFACT$DIGEST" ]]; then
+            if [[ ! "$DIGEST" =~ ^[0-9a-f]{64}$ ]]; then echo 'invalid accepted counterpart digest' >&2; exit 1; fi
+            if [[ "$INDEX" == https://* && -z "$RUN$ARTIFACT" ]]; then :
+            elif [[ -z "$INDEX" && "$RUN" =~ ^[1-9][0-9]*$ && -n "$ARTIFACT" ]]; then :
+            else echo 'invalid accepted counterpart inputs' >&2; exit 1; fi
+          elif [[ "$PUBLISH" == true ]]; then
+            echo 'publish refused: accepted runtime counterpart is required' >&2; exit 1
+          else
+            echo 'combination gate skipped: no accepted counterpart (bootstrap)'
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Build and verify all six manager ZIPs (no Bun/runtime build)
+        working-directory: dsh-manager
+        env: { VERSION: "${{ steps.identity.outputs.version }}" }
+        run: |
+          set -euo pipefail
+          for item in linux-x64:x86_64-linux linux-arm64:aarch64-linux darwin-x64:x86_64-macos darwin-arm64:aarch64-macos windows-x64:x86_64-windows windows-arm64:aarch64-windows; do
+            target=${item%%:*}; zig_target=${item#*:}
+            zig build -Dversion="$VERSION" -Dtarget="$zig_target" --prefix "$RUNNER_TEMP/build-$target"
+            exe=dsh; [[ "$target" == windows-* ]] && exe=dsh.exe
+            bun scripts/release.mjs package "$RUNNER_TEMP/build-$target/bin/$exe" "$target" "$VERSION" "$RUNNER_TEMP/release"
+          done
+          bun scripts/release.mjs aggregate "$RUNNER_TEMP/release" "$VERSION"
+      - uses: actions/upload-artifact@v4
+        with: { name: manager-release, path: "${{ runner.temp }}/release/", if-no-files-found: error }
+  combination:
+    permissions: { contents: read, actions: read }
+    needs: build
+    if: inputs.accepted_index != '' || inputs.accepted_run != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, target: linux-x64-baseline }
+          - { runner: ubuntu-24.04-arm, target: linux-arm64 }
+          - { runner: macos-15-intel, target: darwin-x64-baseline }
+          - { runner: macos-15, target: darwin-arm64 }
+          - { runner: windows-2022, target: windows-x64-baseline }
+          - { runner: windows-11-arm, target: windows-arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: manager-release, path: "${{ runner.temp }}/candidate" }
+      - uses: actions/download-artifact@v4
+        if: inputs.accepted_run != ''
+        with:
+          name: ${{ inputs.accepted_artifact }}
+          run-id: ${{ inputs.accepted_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/accepted
+      - name: Install POSIX shell acceptance tools
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends zsh fish
+          else
+            brew install zsh fish
+          fi
+      - name: Candidate manager + accepted runtime through public process entry
+        shell: bash
+        env:
+          SOURCE: ${{ inputs.accepted_index }}
+          DIGEST: ${{ inputs.accepted_sha256 }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          bun dsh-bun-build/scripts/artifact-e2e.mjs manager "$RUNNER_TEMP/candidate" "${SOURCE:-$RUNNER_TEMP/accepted}" "$DIGEST" "$TARGET"
+  publish:
+    needs: [build, combination]
+    # Publish only from main by an explicit manual dispatch (workflow_call from ci.yml hard-codes publish: false).
+    if: inputs.publish && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.combination.result == 'success'
+    runs-on: ubuntu-24.04
+    concurrency: { group: releases-index, cancel-in-progress: false }
+    permissions: { contents: write, id-token: write, attestations: write }
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - uses: actions/download-artifact@v4
+        with: { name: manager-release, path: "${{ runner.temp }}/release" }
+      - name: Reverify before attestation
+        env: { VERSION: "${{ needs.build.outputs.version }}" }
+        run: bun dsh-manager/scripts/release.mjs aggregate "$RUNNER_TEMP/release" "$VERSION"
+      - id: attest
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            ${{ runner.temp }}/release/*.zip
+            ${{ runner.temp }}/release/manager-manifest.json
+            ${{ runner.temp }}/release/SHA256SUMS
+      - name: Verify provenance, publish immutable manager release, then append only manager index
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DSH_RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/empty-gh"
+          for f in "$RUNNER_TEMP"/release/*.zip "$RUNNER_TEMP/release/manager-manifest.json" "$RUNNER_TEMP/release/SHA256SUMS"; do
+            GH_CONFIG_DIR="$RUNNER_TEMP/empty-gh" GH_TOKEN='' GITHUB_TOKEN='' gh attestation verify "$f" --bundle "$BUNDLE" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/manager-release.yml" --deny-self-hosted-runners
+          done
+          bun dsh-bun-build/scripts/publish-release.mjs "$RUNNER_TEMP/release/manager-manifest.json"
+          bash dsh-bun-build/scripts/publish-index.sh manager "$RUNNER_TEMP/release/manager-manifest.json"

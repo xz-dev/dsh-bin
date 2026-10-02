@@ -1,0 +1,42 @@
+# Copyright 2026 Gentoo Authors
+# Distributed under the terms of the GNU General Public License v2
+# Filled from manager-index.json by scripts/gentoo-ebuild.mjs; never packages runtime/addon data.
+
+EAPI=8
+
+DESCRIPTION="Independent dsh manager"
+HOMEPAGE="https://github.com/xz-dev/dsh-bin"
+MY_TAG="@TAG@"
+SRC_URI="
+	amd64? ( https://github.com/xz-dev/dsh-bin/releases/download/${MY_TAG}/@AMD64_ASSET@ -> ${MY_TAG}-linux-x64.zip )
+	arm64? ( https://github.com/xz-dev/dsh-bin/releases/download/${MY_TAG}/@ARM64_ASSET@ -> ${MY_TAG}-linux-arm64.zip )
+"
+S="${WORKDIR}"
+
+LICENSE="MIT"
+SLOT="0"
+KEYWORDS="~amd64 ~arm64"
+RESTRICT="strip"
+QA_PREBUILT="usr/lib/dsh-bin/dsh"
+BDEPEND="app-arch/unzip"
+
+src_unpack() {
+	local target
+	case ${ARCH} in
+		amd64) target=linux-x64 ;;
+		arm64) target=linux-arm64 ;;
+		*) die "unsupported ARCH ${ARCH}" ;;
+	esac
+	mkdir root || die
+	unzip -q "${DISTDIR}/${MY_TAG}-${target}.zip" -d root || die
+	[[ -f root/dsh && ! -L root/dsh ]] || die "manager archive lacks a regular dsh entry"
+}
+
+src_install() {
+	exeinto /usr/lib/dsh-bin
+	doexe root/dsh
+	printf '%s\n' '{"schema":1,"owner":"portage"}' > .dsh-manager-install.json || die
+	insinto /usr/lib/dsh-bin
+	doins .dsh-manager-install.json
+	dosym -r /usr/lib/dsh-bin/dsh /usr/bin/dsh
+}

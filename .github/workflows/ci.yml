@@ -5,10 +5,104 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_dry_run: { description: "Build both release artifacts without publishing", type: boolean, default: false }
+      manager_version: { type: string, default: "1.0.0-rc.1" }
+      runtime_upstream: { type: string, default: "dsh-v0.1.7-rc.2" }
+      accepted_manager_run: { description: "Accepted manager dry-run workflow run ID", type: string }
+      accepted_manager_artifact: { description: "Accepted manager artifact name (manager-release)", type: string }
+      accepted_manager_sha256: { description: "SHA256 of accepted manager-index.json", type: string }
+      accepted_runtime_run: { description: "Accepted runtime dry-run workflow run ID", type: string }
+      accepted_runtime_artifact: { description: "Accepted runtime artifact name (runtime-release)", type: string }
+      accepted_runtime_sha256: { description: "SHA256 of accepted runtime-index.json", type: string }
+      e2e_runs: { description: 'Verified dry-run IDs as JSON {"a":"...","b":"...","addon":"..."}', type: string }
 
 permissions: { contents: read }
 
 jobs:
+  # Only manual dry runs can call these workflows; publish is always false here.
+  # Caller grants cover the skipped publish jobs; every build/verify job explicitly stays read-only.
+  # Write permissions belong only to these two calls, never ordinary CI or pull requests.
+  manager-release-dry-run:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run
+    permissions: { contents: write, actions: read, id-token: write, attestations: write }
+    uses: ./.github/workflows/manager-release.yml
+    with:
+      version: ${{ inputs.manager_version }}
+      prerelease: true
+      publish: false
+      accepted_run: ${{ inputs.accepted_runtime_run }}
+      accepted_artifact: ${{ inputs.accepted_runtime_artifact }}
+      accepted_sha256: ${{ inputs.accepted_runtime_sha256 }}
+  runtime-release-dry-run:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run
+    permissions: { contents: write, actions: read, id-token: write, attestations: write }
+    uses: ./.github/workflows/runtime-release.yml
+    with:
+      channel: release
+      upstream: ${{ inputs.runtime_upstream }}
+      prerelease: true
+      publish: false
+      accepted_run: ${{ inputs.accepted_manager_run }}
+      accepted_artifact: ${{ inputs.accepted_manager_artifact }}
+      accepted_sha256: ${{ inputs.accepted_manager_sha256 }}
+  combined-artifact-e2e:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run && inputs.e2e_runs != ''
+    permissions: { contents: read, actions: read }
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "1.4.2" }
+      - name: Validate exact artifact run IDs
+        env: { E2E_RUNS: "${{ inputs.e2e_runs }}" }
+        run: >-
+          bun -e 'try { const r = JSON.parse(process.env.E2E_RUNS); if (!["a", "b", "addon"].every(k => typeof r[k] === "string" && /^[0-9]+$/.test(r[k]))) throw new Error(); } catch { console.error("e2e_runs must contain decimal run-ID strings for a, b and addon"); process.exit(1); }'
+      - uses: actions/download-artifact@v4
+        with:
+          name: manager-release
+          run-id: ${{ fromJSON(inputs.e2e_runs).a }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/combined-artifacts/a/manager
+      - uses: actions/download-artifact@v4
+        with:
+          name: runtime-release
+          run-id: ${{ fromJSON(inputs.e2e_runs).a }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/combined-artifacts/a/runtime
+      - uses: actions/download-artifact@v4
+        with:
+          name: manager-release
+          run-id: ${{ fromJSON(inputs.e2e_runs).b }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/combined-artifacts/b/manager
+      - uses: actions/download-artifact@v4
+        with:
+          name: runtime-release
+          run-id: ${{ fromJSON(inputs.e2e_runs).b }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/combined-artifacts/b/runtime
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: addon-office-*
+          merge-multiple: true
+          run-id: ${{ fromJSON(inputs.e2e_runs).addon }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/combined-artifacts/addon
+      - name: Two-version combined acceptance (CI artifacts only)
+        env:
+          DSH_COMBINED_ARTIFACTS: ${{ runner.temp }}/combined-artifacts
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: bun test ./dsh-manager/test/artifact-e2e-combined.test.ts
+  scoop:
+    uses: ./.github/workflows/scoop-check.yml
   test:
     strategy:
       fail-fast: false
@@ -22,6 +116,25 @@ jobs:
         with: { bun-version: "1.4.2" }
       - uses: mlugg/setup-zig@v2
         with: { version: "0.15.2" }
-      # Unit, runtime, launcher and the golden update contract (runs against the compiled entry).
+      - name: Install Zsh and Fish (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh fish
+      - name: Install Fish (macOS)
+        if: runner.os == 'macOS'
+        run: brew install fish
+      - name: Verify preinstalled Zsh (macOS)
+        if: runner.os == 'macOS'
+        run: zsh --version
+      - name: Verify Windows PowerShell and pwsh
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          pwsh.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+      - name: dsh-manager
+        working-directory: dsh-manager
+        run: zig build test && bun test ./test
       # Runtime cases that need a built upstream app skip themselves when work/app is absent.
-      - run: bun test ./test/unit ./test/runtime ./test/launcher ./test/update-contract
+      - name: dsh-bun-build
+        working-directory: dsh-bun-build
+        run: bun test ./test/unit ./test/runtime

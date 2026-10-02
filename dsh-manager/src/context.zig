@@ -1,0 +1,183 @@
+//! Install context (D2): resolve real executable, explicit package ownership, data root and app home once.
+//! Reads create nothing. First write may claim only an absent/empty data root (D10).
+const std = @import("std");
+const builtin = @import("builtin");
+const util = @import("util.zig");
+const marker_bytes = "{\"kind\":\"dsh-manager-data\",\"schema\":1}\n";
+
+pub const is_windows = builtin.os.tag == .windows;
+pub const data_dir_name = "dsh-bin";
+pub const data_marker = ".dsh-bin-data.json";
+pub const install_marker = ".dsh-manager-install.json";
+pub const Mode = enum { portable, portage, scoop };
+
+/// Shared read-only ownership predicate; callers decide whether an absent root may be initialized.
+pub fn validDataMarker(a: std.mem.Allocator, bytes: []const u8) bool {
+    const Marker = struct { kind: []const u8, schema: u32 };
+    const parsed = std.json.parseFromSlice(Marker, a, bytes, .{}) catch return false;
+    defer parsed.deinit();
+    return parsed.value.schema == 1 and std.mem.eql(u8, parsed.value.kind, "dsh-manager-data");
+}
+
+pub const ExeIdentity = struct { device: u64, inode: u64 };
+pub const Ctx = struct {
+    a: std.mem.Allocator,
+    env: std.process.EnvMap,
+    exe: []const u8,
+    dir: []const u8,
+    mode: Mode,
+    data: []const u8,
+    app_home: []const u8,
+    exe_identity: ?ExeIdentity,
+
+    pub fn path(self: *const Ctx, parts: []const []const u8) []u8 {
+        var all: std.ArrayList([]const u8) = .empty;
+        all.append(self.a, self.data) catch util.oom();
+        all.appendSlice(self.a, parts) catch util.oom();
+        return util.join(self.a, all.items);
+    }
+
+    pub fn home(self: *const Ctx) []const u8 {
+        return self.app_home;
+    }
+
+    /// Check ownership before any stateful operation. Never infer managed mode from a failed write.
+    pub fn ensureData(self: *const Ctx) void {
+        var dir = std.fs.cwd().openDir(self.data, .{ .iterate = true, .no_follow = true }) catch |err| blk: {
+            if (err == error.FileNotFound) {
+                std.fs.cwd().makePath(self.data) catch |e| self.writeError(e);
+                break :blk std.fs.cwd().openDir(self.data, .{ .iterate = true, .no_follow = true }) catch |e| self.writeError(e);
+            }
+            if (err == error.NotDir or err == error.SymLinkLoop) self.conflict();
+            self.writeError(err);
+        };
+        defer dir.close();
+        if ((dir.stat() catch |err| self.writeError(err)).kind != .directory) self.conflict();
+        const bytes = dir.readFileAlloc(self.a, data_marker, 4096) catch |err| switch (err) {
+            error.FileNotFound => null,
+            else => self.conflict(),
+        };
+        if (bytes) |b| {
+            const partial = std.mem.trim(u8, b, " \t\r\n");
+            const complete = std.mem.trim(u8, marker_bytes, " \t\r\n");
+            if (partial.len < complete.len and std.mem.startsWith(u8, complete, partial)) self.initializing();
+            if (!validDataMarker(self.a, b)) self.conflict();
+        } else {
+            var it = dir.iterate();
+            if (it.next() catch |err| self.writeError(err)) |entry| {
+                // Another first writer may have published its marker since our read, or left
+                // its initialization temp behind. Do not adopt or write into either case.
+                if (std.mem.eql(u8, entry.name, data_marker) or (entry.kind == .file and initializationTemp(entry.name))) self.initializing();
+                dir.access(data_marker, .{}) catch self.conflict();
+                self.initializing();
+            }
+        }
+        // A real exclusive write catches Windows ACLs too; POSIX mode bits alone are insufficient.
+        const temp = std.fmt.allocPrint(self.a, ".dsh-data-{x}.tmp", .{std.crypto.random.int(u64)}) catch util.oom();
+        const file = dir.createFile(temp, .{ .exclusive = true, .mode = 0o600 }) catch |err| self.writeError(err);
+        defer dir.deleteFile(temp) catch {};
+        if (bytes == null) {
+            file.writeAll(marker_bytes) catch |err| self.writeError(err);
+            file.sync() catch |err| self.writeError(err);
+        }
+        file.close(); // Close before rename, including Windows.
+        if (bytes == null) dir.rename(temp, data_marker) catch |err| self.writeError(err);
+    }
+
+    /// Create manager-controlled descendants without following directory links out of the data root.
+    pub fn ensureDir(self: *const Ctx, parts: []const []const u8) std.fs.Dir {
+        var dir = std.fs.cwd().openDir(self.data, .{ .iterate = true, .no_follow = true }) catch |err| self.writeError(err);
+        for (parts) |part| {
+            dir.makeDir(part) catch |err| if (err != error.PathAlreadyExists) self.writeError(err);
+            const next = dir.openDir(part, .{ .iterate = true, .no_follow = true }) catch |err| self.writeError(err);
+            if ((next.stat() catch |err| self.writeError(err)).kind != .directory) self.conflict();
+            dir.close();
+            dir = next;
+        }
+        return dir;
+    }
+
+    fn initializing(self: *const Ctx) noreturn {
+        util.fatal("data root {s} is being initialized by another dsh process (or initialization was interrupted); retry. If this persists, inspect and remove only an empty/partial initialization root. Never remove a root containing user data", .{self.data});
+    }
+
+    fn conflict(self: *const Ctx) noreturn {
+        util.fatal("data root conflict at {s}: expected an empty directory or a valid {s}", .{ self.data, data_marker });
+    }
+
+    fn writeError(self: *const Ctx, err: anyerror) noreturn {
+        util.fatal("data root {s} is not writable: {s}; no fallback location is used", .{ self.data, @errorName(err) });
+    }
+};
+
+fn initializationTemp(name: []const u8) bool {
+    const prefix = ".dsh-data-";
+    const suffix = ".tmp";
+    if (!std.mem.startsWith(u8, name, prefix) or !std.mem.endsWith(u8, name, suffix)) return false;
+    const nonce = name[prefix.len .. name.len - suffix.len];
+    if (nonce.len == 0 or nonce.len > 16) return false;
+    for (nonce) |c| if (!std.ascii.isHex(c)) return false;
+    return true;
+}
+
+fn userHome(env: *const std.process.EnvMap) []const u8 {
+    const key = if (is_windows) "USERPROFILE" else "HOME";
+    const h = env.get(key) orelse util.fatal("{s} is required to resolve user data", .{key});
+    if (!std.fs.path.isAbsolute(h)) util.fatal("{s} must be an absolute path", .{key});
+    return h;
+}
+
+fn appHome(a: std.mem.Allocator, env: *const std.process.EnvMap, data: []const u8) []const u8 {
+    if (env.get("DSH_HOME")) |v| if (std.mem.trim(u8, v, " \t\r\n").len > 0) {
+        var p = v;
+        if (std.mem.eql(u8, v, "~") or std.mem.startsWith(u8, v, "~/") or std.mem.startsWith(u8, v, "~\\")) {
+            const h = userHome(env);
+            p = if (v.len == 1) h else util.join(a, &.{ h, v[2..] });
+        }
+        if (std.fs.path.isAbsolute(p)) return std.fs.path.resolve(a, &.{p}) catch util.oom();
+        const cwd = std.process.getCwdAlloc(a) catch |err| util.fatal("cannot resolve DSH_HOME={s}: {s}", .{ v, @errorName(err) });
+        return std.fs.path.resolve(a, &.{ cwd, p }) catch util.oom();
+    };
+    return util.join(a, &.{ data, "home" });
+}
+
+pub fn init(a: std.mem.Allocator) Ctx {
+    const raw = std.fs.selfExePathAlloc(a) catch |err| util.fatal("cannot resolve the manager's own path: {s}", .{@errorName(err)});
+    // realpath also handles Windows symlink/reparse-point entries.
+    const exe = std.fs.cwd().realpathAlloc(a, raw) catch |err| util.fatal("cannot resolve the manager's real path: {s}", .{@errorName(err)});
+    const dir = std.fs.path.dirname(exe) orelse util.fatal("cannot resolve the manager's directory", .{});
+    const identity: ExeIdentity = if (is_windows) blk: {
+        const file = std.fs.cwd().openFile(exe, .{}) catch |err| util.fatal("cannot inspect manager entry: {s}", .{@errorName(err)});
+        defer file.close();
+        const st = file.stat() catch |err| util.fatal("cannot inspect manager entry: {s}", .{@errorName(err)});
+        break :blk .{ .device = @as(u64, 0), .inode = @bitCast(st.inode) };
+    } else blk: {
+        const st = std.posix.fstatat(std.posix.AT.FDCWD, exe, 0) catch |err| util.fatal("cannot inspect the manager's real entry: {s}", .{@errorName(err)});
+        break :blk .{ .device = @as(u64, @intCast(st.dev)), .inode = @as(u64, @intCast(st.ino)) };
+    };
+    const env = std.process.getEnvMap(a) catch util.oom();
+    const marker = util.join(a, &.{ dir, install_marker });
+    const bytes = std.fs.cwd().readFileAlloc(a, marker, 4096) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => util.fatal("invalid install marker {s}: {s}", .{ marker, @errorName(err) }),
+    };
+    const mode: Mode = if (bytes) |b| blk: {
+        const Marker = struct { schema: u32, owner: enum { portage, scoop } };
+        const m = std.json.parseFromSliceLeaky(Marker, a, b, .{}) catch util.fatal("invalid install marker {s}: expected schema 1 and owner portage|scoop", .{marker});
+        if (m.schema != 1) util.fatal("unsupported install marker {s}: schema {d}", .{ marker, m.schema });
+        break :blk if (m.owner == .portage) .portage else .scoop;
+    } else .portable;
+    const data = switch (mode) {
+        .portable => util.join(a, &.{ dir, data_dir_name }),
+        .portage => blk: {
+            if (env.get("XDG_DATA_HOME")) |v| if (std.fs.path.isAbsolute(v)) break :blk util.join(a, &.{ v, data_dir_name });
+            break :blk util.join(a, &.{ userHome(&env), ".local", "share", data_dir_name });
+        },
+        .scoop => blk: {
+            const local = env.get("LOCALAPPDATA") orelse util.fatal("install marker {s} requires absolute LOCALAPPDATA", .{marker});
+            if (!std.fs.path.isAbsolute(local)) util.fatal("install marker {s} requires absolute LOCALAPPDATA", .{marker});
+            break :blk util.join(a, &.{ local, data_dir_name });
+        },
+    };
+    return .{ .a = a, .env = env, .exe = exe, .dir = dir, .mode = mode, .data = data, .app_home = appHome(a, &env, data), .exe_identity = identity };
+}

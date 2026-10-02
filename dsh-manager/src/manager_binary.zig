@@ -1,0 +1,213 @@
+//! Manager candidate identity: fixed build markers and native executable headers, never execute a download.
+const std = @import("std");
+const builtin = @import("builtin");
+const options = @import("build_options");
+const protocol = @import("select.zig").protocol;
+pub const version_marker = "DSH_MANAGER_VERSION=" ++ options.version ++ "\x00";
+pub const protocol_marker = "DSH_MANAGER_LAUNCH_PROTOCOL=" ++ std.fmt.comptimePrint("{d}", .{protocol}) ++ "\x00";
+pub const candidate_prefix = ".dsh-manager-candidate-";
+pub const executable = if (builtin.os.tag == .windows) "dsh.exe" else "dsh";
+
+pub fn host() ![]const u8 {
+    return switch (builtin.os.tag) {
+        .linux => switch (builtin.cpu.arch) {
+            .x86_64 => "linux-x64",
+            .aarch64 => "linux-arm64",
+            else => error.UnsupportedHost,
+        },
+        .macos => switch (builtin.cpu.arch) {
+            .x86_64 => "darwin-x64",
+            .aarch64 => "darwin-arm64",
+            else => error.UnsupportedHost,
+        },
+        .windows => switch (builtin.cpu.arch) {
+            .x86_64 => "windows-x64",
+            .aarch64 => "windows-arm64",
+            else => error.UnsupportedHost,
+        },
+        else => error.UnsupportedHost,
+    };
+}
+fn word(bytes: []const u8, at: usize) u16 {
+    return std.mem.readInt(u16, bytes[at..][0..2], .little);
+}
+fn dword(bytes: []const u8, at: usize) u32 {
+    return std.mem.readInt(u32, bytes[at..][0..4], .little);
+}
+fn native(bytes: []const u8) bool {
+    if (bytes.len < 64) return false;
+    switch (builtin.os.tag) {
+        .linux => return std.mem.eql(u8, bytes[0..4], "\x7fELF") and bytes[4] == 2 and bytes[5] == 1 and
+            (word(bytes, 16) == 2 or word(bytes, 16) == 3) and word(bytes, 18) == @as(u16, if (builtin.cpu.arch == .x86_64) 62 else 183),
+        .windows => {
+            if (!std.mem.eql(u8, bytes[0..2], "MZ")) return false;
+            const at: usize = dword(bytes, 60);
+            if (at > bytes.len - 26) return false;
+            return std.mem.eql(u8, bytes[at..][0..4], "PE\x00\x00") and word(bytes, at + 4) == @as(u16, if (builtin.cpu.arch == .x86_64) 0x8664 else 0xaa64) and word(bytes, at + 24) == 0x20b;
+        },
+        .macos => return dword(bytes, 0) == 0xfeedfacf and dword(bytes, 4) == @as(u32, if (builtin.cpu.arch == .x86_64) 0x01000007 else 0x0100000c) and dword(bytes, 12) == 2,
+        else => return false,
+    }
+}
+
+/// Open the final component itself, never a symlink/junction or a special file.
+pub fn openRegular(dir: std.fs.Dir, name: []const u8) !std.fs.File {
+    const file: std.fs.File = if (builtin.os.tag == .windows) blk: {
+        const win = std.os.windows;
+        const path = try win.sliceToPrefixedFileW(dir.fd, name);
+        break :blk .{ .handle = try win.OpenFile(path.span(), .{ .dir = dir.fd, .access_mask = win.GENERIC_READ, .creation = win.FILE_OPEN, .filter = .any, .follow_symlinks = false }) };
+    } else .{ .handle = try std.posix.openat(dir.fd, name, .{ .ACCMODE = .RDONLY, .NOFOLLOW = true, .NONBLOCK = true }, 0) };
+    errdefer file.close();
+    const stat = try file.stat();
+    if (stat.kind != .file) return error.InvalidManagerFile;
+    if (builtin.os.tag == .windows) {
+        // OpenFile(follow_symlinks=false) omits FILE_SYNCHRONOUS_IO_NONALERT.
+        // File.read passes no OVERLAPPED, so reopen synchronously and verify the same file index.
+        const readable = try dir.openFile(name, .{});
+        const current = readable.stat() catch |err| {
+            readable.close();
+            return err;
+        };
+        if (current.kind != .file or current.inode != stat.inode) {
+            readable.close();
+            return error.ManagerFileChanged;
+        }
+        file.close();
+        return readable;
+    }
+    return file;
+}
+pub fn validated(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, version: []const u8) !std.fs.File {
+    _ = std.SemanticVersion.parse(version) catch return error.InvalidManagerVersion;
+    var file = try openRegular(dir, name);
+    errdefer file.close();
+    try validateFile(a, file, version);
+    return file;
+}
+pub fn validate(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, version: []const u8) !void {
+    const file = try validated(a, dir, name, version);
+    file.close();
+}
+pub fn validateFile(a: std.mem.Allocator, file: std.fs.File, version: []const u8) !void {
+    try file.seekTo(0);
+    const st = try file.stat();
+    if (builtin.os.tag != .windows and st.mode & 0o111 == 0) return error.ManagerNotExecutable;
+    const bytes = try file.readToEndAlloc(a, 128 << 20);
+    defer a.free(bytes);
+    if (!native(bytes)) return error.WrongManagerTarget;
+    if (!uniqueMarker(bytes, version_marker[0..20], version)) return error.ManagerVersionMismatch;
+    if (!uniqueMarker(bytes, protocol_marker[0..28], protocol_marker[28 .. protocol_marker.len - 1])) return error.ManagerProtocolMismatch;
+}
+fn uniqueMarker(bytes: []const u8, prefix: []const u8, value: []const u8) bool {
+    const at = std.mem.indexOf(u8, bytes, prefix) orelse return false;
+    if (std.mem.indexOf(u8, bytes[at + prefix.len ..], prefix) != null) return false;
+    const record = bytes[at + prefix.len ..];
+    return record.len > value.len and std.mem.startsWith(u8, record, value) and record[value.len] == 0;
+}
+/// Deterministic race barrier; production ignores both variables.
+pub fn testPause(ctx: *const @import("context.zig").Ctx, stage: []const u8, name: []const u8) void {
+    if (!std.mem.eql(u8, ctx.env.get("DSH_MANAGER_TEST") orelse "", "1") or
+        !std.mem.eql(u8, ctx.env.get("DSH_MANAGER_TEST_PAUSE") orelse "", stage)) return;
+    @import("util.zig").warn("test pause: {s} {s}", .{ stage, name });
+    var byte: [1]u8 = undefined;
+    if ((std.fs.File.stdin().read(&byte) catch 0) == 0) std.process.exit(1);
+}
+
+pub fn candidateVersion(name: []const u8) ?[]const u8 {
+    if (!std.mem.startsWith(u8, name, candidate_prefix)) return null;
+    const version = name[candidate_prefix.len..];
+    if (name.len > 255) return null;
+    _ = std.SemanticVersion.parse(version) catch return null;
+    return version;
+}
+
+pub fn partialCandidate(name: []const u8) bool {
+    const at = std.mem.lastIndexOf(u8, name, ".part-") orelse return false;
+    if (candidateVersion(name[0..at]) == null) return false;
+    const nonce = name[at + 6 ..];
+    if (nonce.len == 0 or nonce.len > 16) return false;
+    for (nonce) |c| if (!std.ascii.isHex(c)) return false;
+    return true;
+}
+
+/// Only exact complete candidates or an exclusive-write partial name belong to self-update.
+pub fn reclaimable(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8) bool {
+    const file = reclaimableFile(a, dir, name) catch return false;
+    file.close();
+    return true;
+}
+pub fn reclaimableFile(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8) !std.fs.File {
+    if (@import("self_update_windows.zig").helperName(name)) {
+        const file = try openRegular(dir, name);
+        errdefer file.close();
+        if (builtin.os.tag == .windows) {
+            const win = std.os.windows;
+            var info: win.BY_HANDLE_FILE_INFORMATION = undefined;
+            if (GetFileInformationByHandle(file.handle, &info) == 0 or info.nNumberOfLinks != 1) return error.InvalidManagerFile;
+        } else if ((try std.posix.fstat(file.handle)).nlink != 1) return error.InvalidManagerFile;
+        const bytes = try file.readToEndAlloc(a, 128 << 20);
+        defer a.free(bytes);
+        const at = std.mem.indexOf(u8, bytes, version_marker[0..20]) orelse return error.InvalidManagerVersion;
+        const rest = bytes[at + 20 ..];
+        const end = std.mem.indexOfScalar(u8, rest, 0) orelse return error.InvalidManagerVersion;
+        try validateFile(a, file, rest[0..end]);
+        return file;
+    }
+    // A prerelease partial name is itself parseable SemVer (rc.1.part-ab12); classify it first.
+    if (partialCandidate(name)) return openRegular(dir, name);
+    const v = candidateVersion(name) orelse return error.InvalidManagerVersion;
+    return validated(a, dir, name, v);
+}
+
+extern "kernel32" fn GetFileInformationByHandle(std.os.windows.HANDLE, *std.os.windows.BY_HANDLE_FILE_INFORMATION) callconv(.winapi) std.os.windows.BOOL;
+
+pub fn sameFile(dir: std.fs.Dir, name: []const u8, file: std.fs.File) bool {
+    const opened = file.stat() catch return false;
+    if (builtin.os.tag == .windows) {
+        const current = openRegular(dir, name) catch return false;
+        defer current.close();
+        return (current.stat() catch return false).inode == opened.inode;
+    }
+    const current = std.posix.fstatat(dir.fd, name, std.posix.AT.SYMLINK_NOFOLLOW) catch return false;
+    return current.ino == opened.inode and current.mode & std.posix.S.IFMT == std.posix.S.IFREG;
+}
+
+pub fn deleteValidated(ctx: *const @import("context.zig").Ctx, dir: std.fs.Dir, name: []const u8, file: std.fs.File, stage: []const u8) bool {
+    testPause(ctx, stage, name);
+    if (!sameFile(dir, name, file)) {
+        @import("util.zig").warn("kept manager candidate {s}: identity changed; retry after inspecting it", .{name});
+        return false;
+    }
+    // ponytail: identity check -> unlink has a tiny same-user race; private directory ownership if stronger isolation is required.
+    dir.deleteFile(name) catch |err| {
+        @import("util.zig").warn("kept manager candidate {s}: {s}", .{ name, @errorName(err) });
+        return false;
+    };
+    return true;
+}
+
+pub fn digest(file: std.fs.File) ![32]u8 {
+    try file.seekTo(0);
+    var hash = std.crypto.hash.sha2.Sha256.init(.{});
+    var buf: [64 * 1024]u8 = undefined;
+    while (true) {
+        const n = try file.read(&buf);
+        if (n == 0) break;
+        hash.update(buf[0..n]);
+    }
+    return hash.finalResult();
+}
+
+test "MC-SELF-ONLY regular candidate handles support synchronous reads and refuse directories" {
+    const t = std.testing;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = "candidate", .data = "manager bytes" });
+    const file = try openRegular(tmp.dir, "candidate");
+    defer file.close();
+    const bytes = try file.readToEndAlloc(t.allocator, 64);
+    defer t.allocator.free(bytes);
+    try t.expectEqualStrings("manager bytes", bytes);
+    try tmp.dir.makeDir("directory");
+    try t.expectError(error.InvalidManagerFile, openRegular(tmp.dir, "directory"));
+}

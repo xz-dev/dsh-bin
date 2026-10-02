@@ -1,0 +1,10 @@
+{
+  "name": "dsh-bin",
+  "private": true,
+  "type": "module",
+  "description": "Standalone Bun runtime bundles for DeepSeek Harness (dsh); manager builds live in dsh-manager",
+  "license": "MIT",
+  "scripts": {
+    "test": "bun test ./test/unit ./test/runtime"
+  }
+}

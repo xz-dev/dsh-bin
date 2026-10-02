@@ -2,60 +2,47 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A standalone build of [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`). It needs no Node.js, keeps several dsh versions installed side by side, and saves your plugins in snapshots you can roll back to.
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`), with a standalone Zig manager and separate Bun runtime bundles. Neither management nor the installed application needs host Node.js or Bun.
 
-## Why
-
-dsh changes fast. A new release candidate comes out every few days, and a plugin that works on one version may not load on the next. The npm install gives you one version at a time, and every version uses the same plugin files. After a bad upgrade, getting back to a setup that worked means reinstalling and rebuilding your plugins by hand.
-
-dsh-bin makes an upgrade something you can undo:
-
-- **No Node.js.** Each version ships with its own Bun runtime and pnpm. `dsh plugin add` works on a machine with no JavaScript runtime.
-- **Versions side by side.** `dsh update` adds the new version and keeps the old ones. `dsh --use <version>` starts any installed version.
-- **Plugin snapshots.** Plugins are stored per version in numbered snapshots, and a new version starts from a copy of the last one. If a plugin change breaks something, remove the snapshot and you are back.
-- **Same dsh.** It is built from upstream source without changes. Your profiles, credentials and settings stay as they are.
-
-It borrows the container model (a read-only image with its own runtime, a separate writable layer, images kept side by side) without a container: one small launcher and a few directories. It also starts a little faster than the npm install: 304–321 ms against 361 ms for a warm profile boot on Linux x64.
+- **Independent updates.** `dsh manager update` installs a runtime; `dsh manager self-update` updates only the manager.
+- **Versions side by side.** Install a new runtime without replacing old ones. Choose an installed version for one launch or save a default.
+- **Plugin snapshots.** Keep plugin files per runtime in numbered snapshots. Shared configuration, credentials and sessions stay in the application home.
+- **Portable by default.** Keep the manager and its adjacent `dsh-bin/` directory together. Stop sessions before moving them to a compatible system.
 
 ## Install
 
-**Linux, macOS**
+**Release status:** the new manager/runtime release families and manager-only Gentoo/Scoop packages are not published yet. Existing releases and bucket manifests are not the new installation described here. Use the instructions below once the new assets are published.
+
+Download `manager-<target>.zip` from a **`manager-v<semver>`** [release](https://github.com/xz-dev/dsh-bin/releases), verify its size and SHA-256 against `manager-index.json`, then extract its single `dsh` file (`dsh.exe` on Windows) into a directory you own. Targets: `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, `windows-x64`, `windows-arm64`.
+
+Put that directory on PATH, or invoke the file directly. The manager chooses the runtime's libc/CPU target; do not download a runtime ZIP as the manager. See [installation, data locations and uninstall](desc/en/install.md).
+
+## Start and manage
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xz-dev/dsh-bin/main/install.sh | sh
+dsh                              # first ordinary launch installs a runtime if needed
+dsh manager --help               # native commands; no runtime needed
+dsh manager info                 # install mode, data root and application home
+dsh manager update               # install the current channel's newest runtime
+dsh manager snapshot new --name before-change
+dsh manager self-update          # portable manager only; runtimes and data stay
+dsh manager clean                # offline cache/residue cleanup, not data deletion
 ```
 
-The script picks the build for your system, checks its SHA-256, and runs the same steps as the [manual install](docs/en/install.md#manual-zip). On Alpine, run `apk add libstdc++ libgcc` first.
-
-**Windows (Scoop)**
-
-```powershell
-$scoopRoot = (Resolve-Path (Join-Path (scoop prefix scoop) '..\..\..')).Path
-git clone --branch scoop --single-branch https://github.com/xz-dev/dsh-bin.git (Join-Path $scoopRoot 'buckets\dsh-bin')
-scoop install dsh-bin/dsh
-```
-
-Manual ZIP, Gentoo, and moving from the npm install: see [Install](docs/en/install.md).
-
-## Quick start
-
-```sh
-dsh --profile tui          # start dsh
-dsh update                 # install the newest version next to the current one
-dsh snapshot new           # save your plugins before changing them
-dsh snapshot remove <id>   # the change broke something: go back to the previous snapshot
-dsh --use 0.1.7-rc.2       # run an older installed version
-```
+First interactive launch asks about shell completion **before** checking or downloading a runtime. Accepting or declining both continue startup. Noninteractive launches skip the question without consuming application stdin. A new empty installation defaults to the release channel; installed runtimes start offline without an implicit update.
 
 ## Documentation
 
-- [Install and uninstall](docs/en/install.md)
-- [Versions and updates](docs/en/versions.md)
-- [Plugin snapshots](docs/en/snapshots.md)
-- [Choosing what `dsh` starts](docs/en/select.md)
-- [Office addon](docs/en/office-addon.md)
-- [How it works](docs/en/how-it-works.md): channels, trust model, startup, limitations
+- [Install, data locations, managed packages and uninstall](desc/en/install.md)
+- [Versions and independent updates](desc/en/versions.md)
+- [Choosing a runtime, snapshot and addon](desc/en/select.md)
+- [Plugin snapshots](desc/en/snapshots.md)
+- [Office addon](desc/en/office-addon.md)
+- [Bash, Zsh, Fish and PowerShell completion](desc/en/completion.md)
+- [Layout, release identities, trust and development](desc/en/how-it-works.md)
+
+Code and scripts belong to [dsh-manager/](dsh-manager/) or [dsh-bun-build/](dsh-bun-build/). Shared documentation lives in [desc/](desc/); planning in [openspec/](openspec/).
 
 ## License
 
-The packaging (launcher, compat layer, scripts) is [MIT](LICENSE). The bundled DeepSeek Harness and its dependencies keep their own licenses; the office addon ships LibreOffice Kit under MPL-2.0.
+Manager, compatibility layer and packaging scripts use [MIT](LICENSE). DeepSeek Harness and bundled dependencies retain their own licenses; the office addon includes LibreOffice Kit under MPL-2.0.

@@ -1,31 +1,23 @@
 name: addon
 
-# Office addon candidate (8.8, 8.9): kit closure from the frozen upstream deploy, engine tarballs checked
-# against the lockfile sha512, 5 platform zips. This only builds and uploads the candidate; `build`
-# accepts it on every target and then publishes the addon before the bundle, so a broken addon never
-# becomes an immutable release. A manual dispatch builds the candidate and nothing else.
+# Office addon: frozen upstream kit closure, lockfile-authenticated engine bytes, five platform ZIPs.
+# Dry runs only build/upload. Publication is a separate main/manual job and precedes runtime publication.
 on:
   workflow_dispatch:
     inputs:
       commit: { description: "upstream commit whose slot needs an addon", required: true, type: string }
-  workflow_call:
-    inputs:
-      commit: { required: true, type: string }
-    outputs:
-      # The candidate's addon-manifest.json (compact) and the publishedAt its index entry will carry:
-      # build-target embeds it in bundle.json, accept installs it, publish appends the same entry.
-      manifest: { value: "${{ jobs.addon.outputs.manifest }}" }
-      published-at: { value: "${{ jobs.addon.outputs.published-at }}" }
+      publish: { type: boolean, default: false }
+      prerelease: { type: boolean, default: true }
 
 permissions: {}
+
+defaults:
+  run: { working-directory: dsh-bun-build, shell: bash }
 
 jobs:
   addon:
     runs-on: ubuntu-24.04
     permissions: { contents: read }
-    outputs:
-      manifest: ${{ steps.build.outputs.manifest }}
-      published-at: ${{ steps.build.outputs.published-at }}
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
@@ -37,16 +29,52 @@ jobs:
         with: { version: "0.15.2" }
       - name: Build the addon assets
         id: build
-        shell: bash
         env: { COMMIT: "${{ inputs.commit }}", GH_TOKEN: "${{ github.token }}" }
         run: |
           set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo 'upstream commit must be a 40-char SHA' >&2; exit 1; }
           t="$RUNNER_TEMP"
           bun scripts/build-target.mjs linux-x64-modern live "$COMMIT" "$t/bundle" --run "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT" --work "$t/work" --git-dir "$t/upstream.git"
           slot=$(bun scripts/addon-slot.mjs "$t/upstream.git" "$COMMIT")
           test "$slot" != null
-          identity=$(bun -e "import {addonDistribution} from './scripts/versioning.mjs'; const s=$slot; const d=addonDistribution({kitVersion:s.kitVersion,run:$GITHUB_RUN_NUMBER,attempt:$GITHUB_RUN_ATTEMPT,launcherCommit:'$GITHUB_SHA'}); console.log(JSON.stringify({version:d.version,tag:d.tag,slot:s}))")
+          identity=$(SLOT="$slot" bun -e "import {addonDistribution} from './scripts/versioning.mjs'; const slot=JSON.parse(process.env.SLOT); const build={run:Number(process.env.GITHUB_RUN_NUMBER),attempt:Number(process.env.GITHUB_RUN_ATTEMPT),builderCommit:process.env.GITHUB_SHA}; const d=addonDistribution({kitVersion:slot.kitVersion,...build}); console.log(JSON.stringify({...d,...build,slot}))")
           bun scripts/build-addon.mjs "$t/bundle/addon-tree" "$t/work/src" "$t/addon" "$identity"
-          { echo "manifest=$(jq -c . "$t/addon/addon-manifest.json")"; echo "published-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } >> "$GITHUB_OUTPUT"
+      - name: Verify candidate identity and index entry without publication
+        run: bun scripts/index.mjs append-addon "$RUNNER_TEMP/candidate-runtime-index.json" "$RUNNER_TEMP/addon/addon-manifest.json"
       - uses: actions/upload-artifact@v4
         with: { name: "addon-office-${{ inputs.commit }}", path: "${{ runner.temp }}/addon/", if-no-files-found: error, retention-days: 14, overwrite: true }
+
+  publish:
+    needs: [addon]
+    if: inputs.publish && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.addon.result == 'success'
+    runs-on: ubuntu-24.04
+    concurrency: { group: releases-index, cancel-in-progress: false }
+    permissions: { contents: write, id-token: write, attestations: write }
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "1.4.2" }
+      - uses: actions/download-artifact@v4
+        with: { name: "addon-office-${{ inputs.commit }}", path: "${{ runner.temp }}/addon/" }
+      - name: Reverify addon identity and index entry
+        run: bun scripts/index.mjs append-addon "$RUNNER_TEMP/candidate-runtime-index.json" "$RUNNER_TEMP/addon/addon-manifest.json"
+      - id: attest
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            ${{ runner.temp }}/addon/*.zip
+            ${{ runner.temp }}/addon/addon-manifest.json
+      - name: Verify provenance, publish immutable addon, append only runtime index
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DSH_RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/empty-gh"
+          for f in "$RUNNER_TEMP"/addon/*.zip "$RUNNER_TEMP/addon/addon-manifest.json"; do
+            GH_CONFIG_DIR="$RUNNER_TEMP/empty-gh" GH_TOKEN='' GITHUB_TOKEN='' gh attestation verify "$f" --bundle "$BUNDLE" --repo "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/addon.yml" --deny-self-hosted-runners
+          done
+          bun scripts/publish-release.mjs "$RUNNER_TEMP/addon/addon-manifest.json"
+          bash scripts/publish-index.sh addon "$RUNNER_TEMP/addon/addon-manifest.json"

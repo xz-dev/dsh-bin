@@ -1,0 +1,101 @@
+//! Fake `dsh-native` for the launcher tests, portable to every host (a real executable, also on Windows).
+//! Driven by environment variables, which the launcher passes through:
+//! - FAKE_OUT (required): directory for `<gen>.argv` (one argument per line) and `<gen>.env` (KEY=VALUE lines);
+//! - FAKE_EXIT: exit status (default 0);
+//! - `<gen>.cwd` gets the working directory; with FAKE_STDIN set, `<gen>.stdin` gets up to 4 KiB of stdin;
+//! - FAKE_STDIN_HASH: stream all stdin and record its SHA-256 (binary/pipeline acceptance);
+//! - FAKE_HOLD: when set, write `<FAKE_OUT>/started` and then sleep 30 s;
+//! - FAKE_HOLD_STDIN: signal `<gen>.ready`, then wait for one stdin byte instead of sleeping;
+//! - FAKE_RESTART_WAIT: signal `<gen>.ready` and wait for stdin before the first restart;
+//! - FAKE_RESTART_WRITE / FAKE_RESTART_DATA: restart once like an in-app restart, after writing DATA to the
+//!   file WRITE: respawn this executable with the same arguments and environment (plus FAKE_GEN=2), then
+//!   exit with the replacement's status.
+const std = @import("std");
+
+pub fn main() !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const a = arena.allocator();
+    var env = try std.process.getEnvMap(a);
+    const out = env.get("FAKE_OUT") orelse return error.NoFakeOut;
+    const gen = env.get("FAKE_GEN") orelse "1";
+    const args = try std.process.argsAlloc(a);
+
+    var argv_text: std.ArrayList(u8) = .empty;
+    for (args[1..]) |arg| try argv_text.print(a, "{s}\n", .{arg});
+    var dir = try std.fs.openDirAbsolute(out, .{});
+    defer dir.close();
+    try dir.writeFile(.{ .sub_path = try std.fmt.allocPrint(a, "{s}.argv", .{gen}), .data = argv_text.items });
+    var env_text: std.ArrayList(u8) = .empty;
+    var it = env.iterator();
+    while (it.next()) |e| try env_text.print(a, "{s}={s}\n", .{ e.key_ptr.*, e.value_ptr.* });
+    try dir.writeFile(.{ .sub_path = try std.fmt.allocPrint(a, "{s}.env", .{gen}), .data = env_text.items });
+    try dir.writeFile(.{ .sub_path = try std.fmt.allocPrint(a, "{s}.cwd", .{gen}), .data = try std.process.getCwdAlloc(a) });
+    if (env.get("FAKE_STDIN_HASH") != null) {
+        var hash = std.crypto.hash.sha2.Sha256.init(.{});
+        var buf: [8192]u8 = undefined;
+        while (true) {
+            const n = try std.fs.File.stdin().read(&buf);
+            if (n == 0) break;
+            hash.update(buf[0..n]);
+        }
+        const digest = std.fmt.bytesToHex(hash.finalResult(), .lower);
+        try dir.writeFile(.{ .sub_path = try std.fmt.allocPrint(a, "{s}.stdin-sha256", .{gen}), .data = &digest });
+    }
+    if (env.get("FAKE_STDIN") != null) {
+        var buf: [4096]u8 = undefined;
+        const n = try std.fs.File.stdin().readAll(&buf);
+        try dir.writeFile(.{ .sub_path = try std.fmt.allocPrint(a, "{s}.stdin", .{gen}), .data = buf[0..n] });
+    }
+
+    if (env.get("FAKE_RESTART_WAIT") != null and std.mem.eql(u8, gen, "1")) {
+        try dir.writeFile(.{ .sub_path = "1.ready", .data = "" });
+        var byte: [1]u8 = undefined;
+        _ = try std.fs.File.stdin().read(&byte);
+    }
+    if (env.get("FAKE_RESTART_WRITE")) |path| if (std.mem.eql(u8, gen, "1")) {
+        try std.fs.cwd().writeFile(.{ .sub_path = path, .data = env.get("FAKE_RESTART_DATA") orelse "" });
+        try env.put("FAKE_GEN", "2");
+        const self = try std.fs.selfExePathAlloc(a);
+        const child_argv = try a.alloc([]const u8, args.len);
+        child_argv[0] = self;
+        for (args[1..], 1..) |arg, i| child_argv[i] = arg;
+        var child = std.process.Child.init(child_argv, a);
+        child.env_map = &env;
+        const term = try child.spawnAndWait();
+        std.process.exit(switch (term) {
+            .Exited => |c| c,
+            else => 1,
+        });
+    };
+
+    if (env.get("FAKE_WRITE_STATE") != null) {
+        // CI's fake probes the public child environment by really writing each declared cache/temp dir.
+        const names = [_][]const u8{ "DSH_HOME", "BUN_INSTALL_CACHE_DIR", "BUN_RUNTIME_TRANSPILER_CACHE_PATH", "npm_config_cache", "pnpm_config_store_dir", "pnpm_config_cache_dir", "pnpm_config_state_dir", "PNPM_HOME", "TMPDIR", "TEMP", "TMP" };
+        for (names) |name| {
+            const target = env.get(name) orelse continue;
+            try std.fs.cwd().makePath(target);
+            try std.fs.cwd().writeFile(.{ .sub_path = try std.fs.path.join(a, &.{ target, try std.fmt.allocPrint(a, "{s}.probe", .{name}) }), .data = "contained" });
+        }
+    }
+
+    if (env.get("FAKE_SNAPSHOT_WRITE")) |text| {
+        const payload = try std.json.parseFromSliceLeaky(std.json.Value, a, env.get("DSH_MANAGER_LAUNCH").?, .{});
+        const snapshot_dir = payload.object.get("snapshot").?.object.get("dir").?.string;
+        const profile = try std.fs.path.join(a, &.{ snapshot_dir, "profiles", "probe" });
+        try std.fs.cwd().makePath(profile);
+        try std.fs.cwd().writeFile(.{ .sub_path = try std.fs.path.join(a, &.{ profile, "plugin" }), .data = text });
+    }
+
+    if (env.get("FAKE_HOLD_STDIN") != null) {
+        try dir.writeFile(.{ .sub_path = try std.fmt.allocPrint(a, "{s}.ready", .{gen}), .data = "" });
+        var byte: [1]u8 = undefined;
+        _ = try std.fs.File.stdin().read(&byte);
+    }
+    if (env.get("FAKE_HOLD") != null) {
+        try dir.writeFile(.{ .sub_path = "started", .data = "" });
+        std.Thread.sleep(30 * std.time.ns_per_s);
+    }
+    if (env.get("FAKE_STDOUT")) |text| try std.fs.File.stdout().writeAll(text);
+    const code = std.fmt.parseInt(u8, env.get("FAKE_EXIT") orelse "0", 10) catch 0;
+    std.process.exit(code);
+}

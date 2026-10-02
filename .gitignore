@@ -1,6 +1,7 @@
 /.pi/
 /out/
-/work/
+/dsh-bun-build/work/
+/dsh-bun-build/out/
 node_modules/
-launcher/zig-out/
-launcher/.zig-cache/
+zig-out/
+.zig-cache/
