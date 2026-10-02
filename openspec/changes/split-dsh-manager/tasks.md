@@ -54,7 +54,7 @@
 
 ## 8. 组合门禁、文档与源码收尾
 
-- [ ] 8.1 用至少两个新格式真实运行包、两个管理器版本及真实插件完成组合 E2E：空安装、版本/快照、卸载全部后重装、重启、只升级管理器，以及原路径不可访问且断网的完整搬迁；被测 PATH 无宿主 Node/Bun（PS-MOVE、PS-CONTAIN、RB-INDEPENDENT、MC-REINSTALL、DL-REAL-E2E）。
+- [x] 8.1 用至少两个新格式真实运行包、两个管理器版本及真实插件完成组合 E2E：空安装、版本/快照、卸载全部后重装、重启、只升级管理器，以及原路径不可访问且断网的完整搬迁；被测 PATH 无宿主 Node/Bun（PS-MOVE、PS-CONTAIN、RB-INDEPENDENT、MC-REINSTALL、DL-REAL-E2E）。
 - [x] 8.2 为既有 Linux glibc/musl、macOS、Windows 运行包 target 与管理器目标设置对应原生验收；验证四种 shell 和 Gentoo/Scoop 门禁都有实际执行记录，未运行的平台不计为通过（DL-REAL-E2E、SC-SHELLS）。
 - [x] 8.3 拆开 manager/runtime 的版本身份、索引生成和发布 CI，组合测试显式消费已验收的对方资产；用仅 manager 改动及仅 runtime 改动的试运行确认不会重建/重发另一产品（DL-MANAGER-ONLY、RL-ARTIFACT-E2E）。
 - [x] 8.4 将根 docs 归入 desc，更新中英文 README 与安装、数据位置、补全、命令、托管模式和卸载说明；验证链接与命令示例，移除旧根 install.sh 下载入口，不添加迁移指南（RL-OWNERSHIP、DL-NO-MIGRATION）。

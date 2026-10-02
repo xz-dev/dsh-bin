@@ -1145,3 +1145,37 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
 - addon dry run CI 36971353852（b03f434）通过：实际 tag `addon-office-v0.1.1-b1.1.gb03f4345`；复审员下载 5 个平台 ZIP 核对大小和哈希，把真实 manifest 追加到真实 runtime-index 副本，原条目不变，`runtime-release.yml:77` 的门禁接受这条 entry。
 - **独立复审 5544d93e：结论 BLOCK。** P1：如果 manifest 同时带 `targets` 和 `assets`，发布时上传的是 targets，索引记录的是 assets，可能把未上传的文件或错误哈希写进索引，还可能成为 Latest。父会话修复 f5a9459：`appendAddon` 拒绝带 `targets` 或 `kind` 的 manifest（publish-release 在任何 API 调用之前就会调用它）；Latest 判断排除 addon tag。混合形状回归在去掉守卫时失败（3 pass / 1 fail），恢复后通过（10 pass / 0 fail）；随后 CI 36976333735 全绿。
 - 9.3 顺序：先发布 addon，再发布 runtime；runtime publish 会拒绝 office slot 中没有新格式 addon 的情况。
+
+### 8.1 父会话验收
+
+- 实现：edc201e（`dsh-manager/test/artifact-e2e-combined.test.ts`：两个 CI runtime、两个 CI manager、真实插件和真实 office addon，按一个连续场景执行）、129fe38（ci.yml 新增 `combined-artifact-e2e` job：输入只有一个 `e2e_runs` JSON，run ID 先做纯数字校验，只经 `with:`/env 传递，权限只读，在 ubuntu-24.04 和 windows-2022 上运行）。复审修复：d4c81ff。
+- **全部使用 CI dry-run 制品（父会话决定），不使用已发布 release，也不用本地构建替代被测产品**：
+  - A = CI 36961211136：manager `1.0.0-rc.1`、runtime `0.1.7-rc.2-b87.1.g40773c74`（runtime-index `592e7681…`）；
+  - B = CI 36978469829（2578afa，`manager_version=1.0.1-rc.1`）：manager `1.0.1-rc.1`、runtime `0.1.7-rc.2-b92.1.g2578afa7`（runtime-index `a299e297…`）；
+  - addon = CI 36971353852：`addon-office-v0.1.1-b1.1.gb03f4345`，slot 与两个 runtime 一致。
+  - 受控源用仓库自带的 index 脚本把两个 runtime、两个 manager 和 addon 合并成索引，资产是 CI 原始字节，没有重新打包。
+- **CI 36986156302（ab47432）三平台 test、Scoop、`combined-artifact-e2e` 的 Linux 和 Windows 全绿。** 两个平台上 10 个步骤都有 `COMBINED_E2E` 记录（Windows 64263 assertions，Linux 62952）：
+  1. input-a / input-b：SHA256SUMS 和索引摘要核对；
+  2. empty-install：目录里只有 manager 1.0.0-rc.1，首次运行就从受控源安装最新 runtime（Windows 上实际目标为 windows-x64-modern）；
+  3. versions-snapshots-plugin：两个 runtime，选版，快照，真实插件经内嵌 pnpm 离线安装并加载，跨 runtime 复用同一份快照数据；
+  4. real-office-addon：安装真实 addon，选中后运行；
+  5. uninstall-all-reinstall：卸载全部 runtime 后 manager 仍可用，重装 A 和 B，原快照、配置、凭据、会话保持不变（Windows 1863 / Linux 1098 个受保护路径不变）（MC-REINSTALL）；
+  6. offline-in-app-restart：真实进程重启 2 次，期间没有网络请求；
+  7. manager-only-self-update：从受控源 `1.0.0-rc.1 → 1.0.1-rc.1`，替换后的可执行文件与第二份 CI 制品逐字节一致；runtime、addon、快照不变（Windows 63248 / Linux 62371 个路径）。Windows 走的是 7.3 的 helper（RB-INDEPENDENT）；
+  8. offline-move：整个安装目录搬到新位置，原路径不可访问，源服务器已停止；从新位置启动 A 和 B，原选择、快照、插件、addon、默认 home 都可用，旧路径没有被重新创建（PS-MOVE）；
+  9. containment：数据根以外写入 0、隔离 HOME 写入 0（Windows 审计 63269 / Linux 62393 个路径）（PS-CONTAIN）；
+  10. 被测 PATH 中没有宿主 Node/Bun：逐项检查 PATH，存在 node/bun 可执行文件即失败。
+- red 检查：受控源上一个 ZIP 被篡改时，明确报 `HashMismatch` 并以 exit 1 失败，不会静默跳过；没有制品时测试显示 SKIP 原因。
+- **独立复审 9ba1191e：结论 BLOCK。**
+  - P1：第一次 Windows 运行（CI 36982020602）在插件步骤返回 127，原因是 `pnpm was not found`。实际运行包里的 execa 执行 `.cmd` 时使用 `process.env.comspec || 'cmd.exe'`，而测试环境既没有 COMSPEC，PATH 里也没有 System32。这是测试环境不真实，不是产品缺陷。d4c81ff 在 Windows 上补齐 COMSPEC、windir、PATHEXT 和 System32 PATH，并继续拒绝 PATH 中任何 node/bun；没有加入宿主 PATH。
+  - P2：搬迁步骤只验证了一个 runtime。d4c81ff 改为重装 A 和 B，搬迁前确认两者都在，断网搬迁后分别启动并检查原快照和插件。
+  - 复审员另外独立核实：四份制品的 SHA256SUMS 和五份 addon ZIP 都相符；在 Linux 上独立完整重跑通过；篡改 ZIP 的重跑明确失败；CI job 只读，没有注入风险。
+  - 两处修复只改测试，由 CI 36986156302 两个平台的完整运行关闭，不再发起第三轮复审。
+- 限制：office 验证覆盖真实导入，不含 PDF 转换；重启验证的是真实 runtime respawn，不含 TUI 交互；只在 x64 的 Linux 和 Windows 上跑了深度 E2E，其余目标由 8.2 的原生组合门禁覆盖。
+- 勾选 **8.1**。
+
+### 8.6 场景映射（进行中）
+
+- 映射（reviewer 1f80465a，`/var/tmp/dsh-86/mapping.md`，源码快照 129fe38）：66 个场景全部映射，没有遗漏、重复或多余的 ID。分类：T 63 / P 0 / W 1 / G 0 / S9 2（DL-MANAGED-UPDATE 和 DL-REAL-E2E 的线上发布后复验留到第 9 节）。
+- 唯一的 W 是 RL-OWNERSHIP：原测试只检查打包脚本的归属。c5382e5 增加根目录布局断言（两个业务目录加 desc/、openspec/，且不存在根 scripts/、docs/、install.sh）；临时创建根 `scripts/` 时测试失败，删除后通过。
+- 待完成：一次跨切片的最终独立审查（不重复已验收切片的逐项复审），以及 CI。
