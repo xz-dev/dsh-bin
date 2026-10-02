@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Append one bundle or addon release to `releases` branch index.json (8.4). The workflow serializes
-# callers with `concurrency: releases-index`; the fetch–append–push loop with --force-with-lease also
-# survives a racing writer. index.mjs refuses to modify or remove existing entries.
-# usage: scripts/publish-index.sh bundle|addon <manifest.json>
+# Append one new product release to its independent index on the `releases` branch.
+# Callers serialize with `concurrency: releases-index`; a racing fast-forward push fails, never retries.
+# The legacy bundle/index.json path remains until section 9.2 cutover.
+# usage: scripts/publish-index.sh manager|runtime|addon|bundle <manifest.json>
 #   env: GITHUB_REPOSITORY, GITHUB_TOKEN (or a local path/URL in DSH_BIN_INDEX_REMOTE for tests)
 set -euo pipefail
-kind=${1:?bundle|addon}
+kind=${1:?manager|runtime|addon|bundle}
+case "$kind" in manager|runtime|addon|bundle) ;; *) echo "unknown index product: $kind" >&2; exit 2 ;; esac
 manifest=$(realpath "${2:?manifest.json}")
 here=$(cd "$(dirname "$0")" && pwd)
 remote=${DSH_BIN_INDEX_REMOTE:-"https://x-access-token:${GITHUB_TOKEN:?}@github.com/${GITHUB_REPOSITORY:?}.git"}
@@ -18,9 +19,10 @@ git -C "$work" config user.email '41898282+github-actions[bot]@users.noreply.git
 git -C "$work" config commit.gpgsign false
 
 # New independent writers use a single fast-forward push; a racing writer fails clearly.
-# The legacy bundle|addon index.json path below stays until section 9.2 cutover.
-if [[ "$kind" == manager || "$kind" == runtime ]]; then
-	name="$kind-index.json"
+# The legacy bundle index.json path below stays until section 9.2 cutover.
+if [[ "$kind" == manager || "$kind" == runtime || "$kind" == addon ]]; then
+	name="runtime-index.json"
+	if [[ "$kind" == manager ]]; then name="manager-index.json"; fi
 	if git -C "$work" ls-remote --exit-code --heads origin releases >/dev/null; then
 		git -C "$work" fetch -q origin releases
 		git -C "$work" checkout -q -B releases FETCH_HEAD
@@ -29,6 +31,8 @@ if [[ "$kind" == manager || "$kind" == runtime ]]; then
 	fi
 	if [[ "$kind" == manager ]]; then
 		bun "$here/../../dsh-manager/scripts/release.mjs" append "$work/$name" "$manifest"
+	elif [[ "$kind" == addon ]]; then
+		bun "$here/index.mjs" append-addon "$work/$name" "$manifest"
 	else
 		bun "$here/index.mjs" append-bundle "$work/$name" "$manifest"
 	fi

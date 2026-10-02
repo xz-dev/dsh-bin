@@ -15,7 +15,7 @@ const unzip = (zip: string) => {
 
 const KIT = "@deepseek-ai/libreoffice-kit";
 const slot = { commit: "e".repeat(40), kitVersion: "0.1.1" };
-const identity = { version: "0.1.1-b1.1.gdeadbeef", tag: "addon-office-v0.1.1-b1.1.gdeadbeef", slot };
+const identity = { version: "0.1.1-b1.1.gdeadbeef", tag: "addon-office-v0.1.1-b1.1.gdeadbeef", slot, run: 1, attempt: 1, builderCommit: "deadbeef" + "d".repeat(32) };
 
 async function tarball(name: string) {
 	const files = { "package/package.json": JSON.stringify({ name, version: "0.1.1" }), "package/engine.bin": `engine ${name}` };
@@ -46,6 +46,7 @@ async function fixture() {
 test("five platform zips, each with exactly one engine and the release identity", async () => {
 	const f = await fixture();
 	const m = await buildAddon({ tree: f.tree, office: f.office, out: join(f.dir, "out"), identity, fetchBytes: f.fetchBytes });
+	expect(m).toMatchObject({ run: 1, attempt: 1, builderCommit: identity.builderCommit });
 	expect(Object.keys(m.assets).sort()).toEqual(["darwin-arm64", "darwin-x64", "linux", "windows-arm64", "windows-x64"]);
 	expect(f.fetched.every((u) => u.startsWith("https://registry.npmjs.org/@deepseek-ai/libreoffice-kit-"))).toBe(true);
 	const { dest, names } = unzip(join(f.dir, "out", "dsh-addon-office-windows-x64.zip"));

@@ -29,4 +29,6 @@ test("addon tag", () => {
 	expect(d.tag).toBe("addon-office-v0.1.2-b9.1.gabcdef12");
 	expect(parseTag(d.tag)).toMatchObject({ channel: "addon", addon: "office", version: "0.1.2-b9.1.gabcdef12" });
 	expect(() => addonDistribution({ kitVersion: "x", run: 1, attempt: 1, builderCommit: bc })).toThrow();
+	expect(() => addonDistribution({ kitVersion: "0.1.2", run: 9, attempt: 1, launcherCommit: bc })).toThrow(/builder commit/);
+	expect(addonDistribution({ kitVersion: "0.1.2", run: 9, attempt: 1, builderCommit: "f".repeat(40) }).tag).toBe("addon-office-v0.1.2-b9.1.gffffffff");
 });

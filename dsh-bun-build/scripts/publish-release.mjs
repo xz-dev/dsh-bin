@@ -10,7 +10,8 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { distribution } from "./versioning.mjs";
+import { addonDistribution, distribution } from "./versioning.mjs";
+import { appendAddon, emptyIndex } from "./index.mjs";
 
 const API_VERSION = "2022-11-28";
 const fail = (m) => {
@@ -42,6 +43,11 @@ export async function publishRelease(manifestPath, env = process.env, fetchImpl 
 		if (identity.tag !== manifest.tag || identity.id !== manifest.id) fail("runtime manifest identity mismatch");
 	}
 	if (manifest.kind === "dsh-manager" && manifest.tag !== `manager-v${manifest.version}`) fail("manager manifest identity mismatch");
+	if (manifest.tag.startsWith("addon-office-v")) {
+		const identity = addonDistribution({ kitVersion: manifest.slot?.kitVersion, run: manifest.run, attempt: manifest.attempt, builderCommit: manifest.builderCommit });
+		if (identity.tag !== manifest.tag || identity.version !== manifest.version || manifest.builderCommit !== commit) fail("addon manifest identity mismatch");
+		appendAddon(emptyIndex(), manifest);
+	}
 	const paths = assetPaths(manifestPath, manifest);
 	for (const asset of Object.values(manifest.targets ?? manifest.assets)) {
 		const bytes = readFileSync(join(dirname(manifestPath), asset.file ?? asset.name));

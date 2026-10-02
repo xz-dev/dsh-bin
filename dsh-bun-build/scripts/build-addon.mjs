@@ -3,13 +3,14 @@
 // split-addon.mjs) plus exactly one engine package. Engine tarballs are the only registry bytes; each
 // must match the sha512 integrity upstream's pnpm-lock.yaml pins, or the build aborts.
 // usage: bun scripts/build-addon.mjs <addon-tree> <upstream-src> <out-dir> <identity-json> [--platforms linux,darwin-arm64,...]
-//   identity-json: {"version","tag","slot":{"commit","kitVersion"}}
+//   identity-json: {"version","tag","run","attempt","builderCommit","slot":{"commit","kitVersion"}}
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { archive } from "./archive.mjs";
 import { sha256 } from "./fetch-pnpm.mjs";
 import { checkLockfile, readLockfile } from "./lockfile-guard.mjs";
+import { addonDistribution } from "./versioning.mjs";
 
 export const KIT = "@deepseek-ai/libreoffice-kit";
 /** Addon platform → engine package suffix. Linux uses the portable WASM engine on every arch. */
@@ -50,7 +51,7 @@ const engineDirs = (tree) => {
 
 /**
  * @param {{tree: string, office: Record<string,{version:string,integrity:string}>, out: string,
- *   identity: {version:string, tag:string, slot:{commit:string,kitVersion:string}}, platforms?: string[],
+ *   identity: {version:string, tag:string, run:number, attempt:number, builderCommit:string, slot:{commit:string,kitVersion:string}}, platforms?: string[],
  *   fetchBytes?: (url: string) => Promise<Uint8Array>}} spec
  * @returns the addon release manifest `{tag, version, slot, assets: {<platform>: {file, size, sha256}}}`
  */
@@ -58,6 +59,8 @@ export async function buildAddon({ tree, office, out, identity, platforms = Obje
 	const base = JSON.parse(readFileSync(join(tree, "addon.json"), "utf8"));
 	if (office[KIT]?.version !== base.kitVersion) throw new Error(`addon tree kit ${base.kitVersion} is not the lockfile's ${office[KIT]?.version}`);
 	if (identity.slot?.kitVersion !== base.kitVersion) throw new Error(`slot kit ${identity.slot?.kitVersion} is not the tree's ${base.kitVersion}`);
+	const expected = addonDistribution({ kitVersion: identity.slot?.kitVersion, run: identity.run, attempt: identity.attempt, builderCommit: identity.builderCommit });
+	if (identity.tag !== expected.tag || identity.version !== expected.version || !/^[0-9a-f]{40}$/.test(identity.slot?.commit ?? "")) throw new Error("addon build identity mismatch");
 	fetchBytes ??= async (url) => {
 		const r = await fetch(url);
 		if (!r.ok) throw new Error(`GET ${url}: HTTP ${r.status}`);
@@ -87,7 +90,7 @@ export async function buildAddon({ tree, office, out, identity, platforms = Obje
 		rmSync(root, { recursive: true, force: true });
 		assets[platform] = { file, size: statSync(zip).size, sha256: sha256(readFileSync(zip)) };
 	}
-	const manifest = { tag: identity.tag, version: identity.version, slot: identity.slot, assets };
+	const manifest = { tag: identity.tag, version: identity.version, slot: identity.slot, run: identity.run, attempt: identity.attempt, builderCommit: identity.builderCommit, assets };
 	writeFileSync(join(out, "addon-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 	return manifest;
 }

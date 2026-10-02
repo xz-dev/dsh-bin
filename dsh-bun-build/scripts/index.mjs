@@ -1,5 +1,5 @@
 // Runtime-index v1 writer: local-build manifest in, append-only runtime entries out.
-import { distribution } from "./versioning.mjs";
+import { addonDistribution, distribution } from "./versioning.mjs";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 export const emptyIndex = () => ({ schema: 1, channels: { release: [], live: [] }, addons: { office: [] } });
@@ -62,6 +62,22 @@ export function appendBundle(index, manifest) {
 	return entry;
 }
 
+export function appendAddon(index, manifest) {
+	const identity = addonDistribution({ kitVersion: manifest.slot?.kitVersion, run: manifest.run, attempt: manifest.attempt, builderCommit: manifest.builderCommit });
+	if (identity.tag !== manifest.tag || identity.version !== manifest.version) throw new Error("addon manifest identity mismatch");
+	const list = index.addons.office;
+	if (list.some((entry) => entry.tag === manifest.tag)) throw new Error(`index already lists ${manifest.tag}; addon entries are never modified`);
+	const entry = {
+		tag: manifest.tag, version: manifest.version, slot: manifest.slot,
+		run: manifest.run, attempt: manifest.attempt, builderCommit: manifest.builderCommit,
+		assets: Object.fromEntries(Object.entries(manifest.assets).map(([platform, a]) => [platform, { name: a.file, size: a.size, sha256: a.sha256 }])),
+		seq: Math.max(0, ...list.map((e) => e.seq)) + 1,
+	};
+	parseIndex(JSON.stringify({ ...index, addons: { ...index.addons, office: [...list, entry] } }));
+	list.push(entry);
+	return entry;
+}
+
 export function assertAppendOnly(prev, next) {
 	for (const [before, after] of [[prev.channels.release, next.channels.release], [prev.channels.live, next.channels.live], [prev.addons.office, next.addons.office]]) {
 		before.forEach((entry, n) => { if (JSON.stringify(entry) !== JSON.stringify(after[n])) throw new Error(`index entry ${entry.tag} was modified or removed`); });
@@ -74,14 +90,14 @@ if (import.meta.main) {
 	if (cmd === "check" && path) {
 		readIndex(path);
 		console.log(`${path}: valid`);
-	} else if (cmd === "append-bundle" && path && manifestPath) {
+	} else if (["append-bundle", "append-addon"].includes(cmd) && path && manifestPath) {
 		const prev = readIndex(path), next = structuredClone(prev);
-		const entry = appendBundle(next, JSON.parse(readFileSync(manifestPath, "utf8")));
+		const entry = (cmd === "append-addon" ? appendAddon : appendBundle)(next, JSON.parse(readFileSync(manifestPath, "utf8")));
 		assertAppendOnly(prev, next);
 		writeFileSync(path, serialize(next));
 		console.log(`${entry.tag}: seq ${entry.seq}`);
 	} else {
-		console.error("usage: index.mjs append-bundle <runtime-index.json> <manifest.json> | check <runtime-index.json>");
+		console.error("usage: index.mjs append-bundle|append-addon <runtime-index.json> <manifest.json> | check <runtime-index.json>");
 		process.exit(2);
 	}
 }
