@@ -11,7 +11,7 @@
 
 ## 安装
 
-**发布状态：** 新 manager/runtime 发布家族和仅含管理器的 Gentoo/Scoop 包尚未发布。现有 Releases 和 bucket 清单不是本文描述的新安装。以下步骤用于新制品发布后。
+**Windows（Scoop）：** 添加 bucket 后 `scoop install dsh-bin/dsh`（[详情](desc/zh-CN/install.md#scoop)）。**Gentoo：** 从 overlay `emerge app-misc/dsh-bin`（[详情](desc/zh-CN/install.md#gentoo)）。
 
 从 **`manager-v<semver>`** [发布](https://github.com/xz-dev/dsh-bin/releases)下载 `manager-<target>.zip`，对照 `manager-index.json` 校验大小和 SHA-256，再把其中唯一的 `dsh` 文件（Windows 为 `dsh.exe`）解压到自己拥有的目录。目标包括：`linux-x64`、`linux-arm64`、`darwin-x64`、`darwin-arm64`、`windows-x64`、`windows-arm64`。
 

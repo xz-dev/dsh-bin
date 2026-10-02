@@ -2,10 +2,6 @@
 
 [README](../../README.md) · [中文](../zh-CN/install.md)
 
-## Release status
-
-The new `manager-v*`, `runtime-v*` / `runtime-live-*` and `addon-office-v*` releases are not published yet. Manager-only Gentoo/Scoop packages are also pending. Existing releases and bucket manifests do not provide this new layout. The steps below describe installation after those assets are published, not a working download from an old release.
-
 ## Download the single manager
 
 1. Choose a `manager-v<semver>` release on the [Releases page](https://github.com/xz-dev/dsh-bin/releases). Do not use the repository-wide Latest label to identify a runtime.
@@ -63,7 +59,7 @@ Stop sessions before moving the manager **and its whole `dsh-bin/` directory** t
 
 ## Managed packages
 
-Use these commands only after the manager-only packages are published. They install the manager, an ownership marker and an entry/shim, **not** a runtime or addon.
+These packages install the manager, an ownership marker and an entry/shim, **not** a runtime or addon.
 
 ### Gentoo
 
@@ -78,7 +74,7 @@ The manager package installs under `/usr/lib/dsh-bin` with `/usr/bin/dsh`. User 
 
 ### Scoop
 
-Once the new `dsh.json` is published to the `scoop` bucket branch:
+The bucket lives on the `scoop` branch of this repository:
 
 ```powershell
 $scoopRoot = (Resolve-Path (Join-Path (scoop prefix scoop) '..\..\..')).Path

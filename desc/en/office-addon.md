@@ -2,7 +2,7 @@
 
 [README](../../README.md) · [中文](../zh-CN/office-addon.md)
 
-The `office-to-pdf` and `skill-office` plugins need LibreOffice Kit. It ships as a separate addon; without a compatible installed addon those plugins are inactive and other application functions remain available. New-format office addons are not published yet; use these commands after a matching addon is available in the runtime index.
+The `office-to-pdf` and `skill-office` plugins need LibreOffice Kit. It ships as a separate addon; without a compatible installed addon those plugins are inactive and other application functions remain available.
 
 ## Install, inspect and remove
 
