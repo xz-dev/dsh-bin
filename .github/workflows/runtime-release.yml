@@ -3,6 +3,8 @@ name: runtime-release
 # Independent runtime path; the old coupled publisher is retired by the 9.2 cutover.
 # No manager source is compiled here; combination downloads an explicitly accepted manager.
 on:
+  schedule:
+    - cron: "17 0,6,12,18 * * *"
   push:
     branches: [main]
     paths: ["dsh-bun-build/**", ".github/workflows/runtime-release.yml"]
@@ -30,18 +32,49 @@ permissions: { contents: read, actions: read }
 env:
   BUN_VERSION: "1.4.2"
   DSH_BUILDER_COMMIT: ${{ github.sha }}
-  # Automatic path-filter run is dry-run only, never publication.
-  CHANNEL: ${{ inputs.channel || 'live' }}
-  UPSTREAM: ${{ inputs.upstream || 'master' }}
+  # Automatic path-filter and schedule runs are dry-run only, never publication.
 defaults:
   run: { working-directory: dsh-bun-build, shell: bash }
 jobs:
+  detect:
+    permissions: { contents: read, actions: read }
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ github.event_name != 'schedule' || steps.poll.outputs.build == 'true' }}
+      channel: ${{ steps.poll.outputs.channel || inputs.channel || 'live' }}
+      upstream: ${{ steps.poll.outputs.upstream || inputs.upstream || 'master' }}
+      index: ${{ steps.poll.outputs.index || inputs.accepted_index }}
+      digest: ${{ steps.poll.outputs.digest || inputs.accepted_sha256 }}
+    steps:
+      - name: Use explicit or path-filtered runtime request
+        if: github.event_name != 'schedule'
+        working-directory: .
+        run: echo 'Explicit or path-filtered runtime request; upstream polling skipped.'
+      - uses: actions/checkout@v4
+        if: github.event_name == 'schedule'
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        if: github.event_name == 'schedule'
+        with: { bun-version: "${{ env.BUN_VERSION }}" }
+      - name: Check newest upstream release (build only, humans publish)
+        if: github.event_name == 'schedule'
+        id: poll
+        run: bun scripts/upstream-check.mjs
   prepare:
     permissions: { contents: read, actions: read }
+    needs: detect
+    if: needs.detect.outputs.build == 'true'
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.p.outputs.matrix }}
       commit: ${{ steps.p.outputs.commit }}
+      channel: ${{ needs.detect.outputs.channel }}
+      upstream: ${{ needs.detect.outputs.upstream }}
+      index: ${{ needs.detect.outputs.index }}
+      digest: ${{ needs.detect.outputs.digest }}
+    env:
+      CHANNEL: ${{ needs.detect.outputs.channel }}
+      UPSTREAM: ${{ needs.detect.outputs.upstream }}
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
@@ -50,10 +83,10 @@ jobs:
       - id: p
         env:
           PUBLISH: ${{ inputs.publish || false }}
-          INDEX: ${{ inputs.accepted_index }}
+          INDEX: ${{ needs.detect.outputs.index }}
           RUN: ${{ inputs.accepted_run }}
           ARTIFACT: ${{ inputs.accepted_artifact }}
-          DIGEST: ${{ inputs.accepted_sha256 }}
+          DIGEST: ${{ needs.detect.outputs.digest }}
         run: |
           set -euo pipefail
           if [[ -n "$INDEX$RUN$ARTIFACT$DIGEST" ]]; then
@@ -96,7 +129,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { name: runtime-index-snapshot, path: "${{ runner.temp }}/index" }
       - name: Build runtime only, using frozen addon index
-        env: { IMAGE: "${{ matrix.containerImage }}", COMMIT: "${{ needs.prepare.outputs.commit }}", GH_TOKEN: "${{ github.token }}" }
+        env:
+          IMAGE: ${{ matrix.containerImage }}
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+          UPSTREAM: ${{ needs.prepare.outputs.upstream }}
         run: |
           set -euo pipefail
           ref=$COMMIT; [[ "$CHANNEL" == release ]] && ref=$UPSTREAM
@@ -132,7 +170,7 @@ jobs:
   combination:
     permissions: { contents: read, actions: read }
     needs: [prepare, aggregate]
-    if: inputs.accepted_index != '' || inputs.accepted_run != ''
+    if: needs.prepare.outputs.index != '' || inputs.accepted_run != ''
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
@@ -153,8 +191,8 @@ jobs:
           path: ${{ runner.temp }}/accepted
       - name: Candidate runtime + accepted manager (no manager compilation)
         env:
-          SOURCE: ${{ inputs.accepted_index }}
-          DIGEST: ${{ inputs.accepted_sha256 }}
+          SOURCE: ${{ needs.prepare.outputs.index }}
+          DIGEST: ${{ needs.prepare.outputs.digest }}
           TARGET: ${{ matrix.id }}
           IMAGE: ${{ matrix.containerImage }}
         run: |

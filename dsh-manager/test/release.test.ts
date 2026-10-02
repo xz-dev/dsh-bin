@@ -11,6 +11,7 @@ import { aggregateRelease } from "../../dsh-bun-build/scripts/aggregate-release.
 import { checkedIndex } from "../../dsh-bun-build/scripts/artifact-e2e.mjs";
 import { publishRelease } from "../../dsh-bun-build/scripts/publish-release.mjs";
 import { sha256 } from "../scripts/release.mjs";
+import { upstreamCheck } from "../../dsh-bun-build/scripts/upstream-check.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "dsh-independent-release-"));
 const bashPath = (p: string) => process.platform === "win32" ? p.replaceAll("\\", "/").replace(/^([A-Za-z]):\//, (_, drive) => `/${drive.toLowerCase()}/`) : p;
@@ -109,6 +110,40 @@ test("8.3: parsed workflows have independent triggers and publish gates; no coun
 		expect(w.on.workflow_dispatch.inputs.publish.default).toBe(false); expect(w.on.workflow_dispatch.inputs.prerelease.default).toBe(true);
 		expect(w.on.push.paths).toContain(`${product === "manager" ? "dsh-manager" : "dsh-bun-build"}/**`);
 		expect(w.jobs.publish.needs).toContain("combination"); expect(w.jobs.publish.if).toContain("inputs.publish"); expect(w.jobs.publish.if).toContain("success");
+		expect(w.jobs.publish.if).toContain("github.event_name == 'workflow_dispatch'");
+		expect(w.jobs.publish.if).toContain("github.ref == 'refs/heads/main'");
+		const scheduledPublish = Function("inputs", "github", "needs", `return ${w.jobs.publish.if}`)({ publish: true }, { event_name: "schedule", ref: "refs/heads/main" }, { combination: { result: "success" } });
+		expect(scheduledPublish).toBe(false);
+		for (const [name, job] of Object.entries(w.jobs) as [string, any][]) if (name !== "publish") expect(job.permissions).toEqual({ contents: "read", actions: "read" });
+		if (product === "runtime") {
+			expect(w.on.schedule).toEqual([{ cron: "17 0,6,12,18 * * *" }]);
+			expect(w.jobs.prepare.needs).toBe("detect");
+			expect(w.jobs.prepare.if).toBe("needs.detect.outputs.build == 'true'");
+			expect(w.jobs.detect.steps.find((s: any) => s.id === "poll").if).toBe("github.event_name == 'schedule'");
+			expect(w.jobs.combination.if).toContain("needs.prepare.outputs.index");
+			expect(w.jobs.combination.steps.find((s: any) => s.name?.startsWith("Candidate")).env.DIGEST).toBe("${{ needs.prepare.outputs.digest }}");
+		}
 		const build = JSON.stringify(w.jobs.build); expect(build).not.toContain(product === "manager" ? "build-target.mjs" : "zig build");
 	}
+});
+
+test("Upstream tracking: unchanged release does nothing; new tag builds dry-run with pinned manager, bootstrap skips combination", async () => {
+	const old = manifest(), published = runtimeIndex();
+	appendBundle(published, { ...old, upstream: { ...old.upstream, tag: "dsh-v0.1.7" } });
+	const refs = `${"c".repeat(40)}\trefs/tags/dsh-v0.1.7\n`;
+	const manager = emptyIndex(); appendManager(manager, JSON.parse(readFileSync(join(root, "manager/manager-manifest.json"), "utf8")));
+	const managerText = JSON.stringify(manager), calls: string[] = [];
+	const source = (index: any, counterpart: string | null) => (async (url: any, options: any) => {
+		calls.push(String(url)); expect(options.redirect).toBe("error");
+		return String(url).endsWith("runtime-index.json") ? Response.json(index) : counterpart === null ? new Response(null, { status: 404 }) : new Response(counterpart);
+	}) as typeof fetch;
+	expect(await upstreamCheck(refs, "fixture/repo", source(published, managerText))).toEqual({ build: false, channel: "release", upstream: "dsh-v0.1.7", index: "", digest: "" });
+	expect(calls).toHaveLength(1); calls.length = 0;
+	const next = `${refs}${"d".repeat(40)}\trefs/tags/dsh-v0.1.8-rc.2\n${"e".repeat(40)}\trefs/tags/dsh-v0.1.8-rc.10\n`;
+	expect(await upstreamCheck(next, "fixture/repo", source(published, managerText))).toEqual({ build: true, channel: "release", upstream: "dsh-v0.1.8-rc.10", index: "https://raw.githubusercontent.com/fixture/repo/releases/manager-index.json", digest: sha256(managerText) });
+	const absent = (async () => new Response(null, { status: 404 })) as typeof fetch;
+	expect(await upstreamCheck(next, "fixture/repo", absent)).toEqual({ build: true, channel: "release", upstream: "dsh-v0.1.8-rc.10", index: "", digest: "" });
+	await expect(upstreamCheck(refs.replace("c".repeat(40), "d".repeat(40)), "fixture/repo", source(published, managerText))).rejects.toThrow("published upstream tag moved");
+	await expect(upstreamCheck(next, "fixture/repo", (async () => new Response("denied", { status: 403 })) as typeof fetch)).rejects.toThrow("HTTP 403");
+	await expect(upstreamCheck(next, "fixture/repo", source(published, "{}"))).rejects.toThrow("published manager index");
 });
