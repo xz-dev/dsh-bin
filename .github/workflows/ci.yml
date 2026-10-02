@@ -9,6 +9,8 @@ on:
 permissions: { contents: read }
 
 jobs:
+  scoop:
+    uses: ./.github/workflows/scoop-check.yml
   test:
     strategy:
       fail-fast: false
