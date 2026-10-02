@@ -1050,3 +1050,16 @@ gh workflow run runtime-release.yml --ref feat/split-dsh-manager -f channel=rele
 - 独立审查、父会话 full suite、native ubuntu-24.04/macos-15/windows-2022 CI；新 release 工作流真实 dry-run/跨-run artifact 下载/六或十二原生组合 job 尚未执行。
 - 线上资产/索引/包安装/真实 self-update 不在本机 local 组合证据中；9.3 和 8.1 必须实际执行，不以 YAML/fixture/cross-build 代替。
 - 已知 addon 发布入口 blocker 与旧 auto-publish 暂停归后续切片；旧发布删除仍须单独精确清单确认。
+
+### 7.5 父会话验收
+
+- 实现：d902220、e2eff32、f652894、9fafff0、a72aca4。Scoop 包只安装管理器、与 7.4 相同的托管标记 `.dsh-manager-install.json` 和 shim；清单从 manager-index 生成，且只生成 `dsh.json`。旧的 dsh-live 和 dsh-office 清单不再生成，已发布的 bucket 分支不受影响，处理留到第 9 节。
+- **真实 Windows（用户确认 windows-2022 算作真实 Windows）**：ci.yml 调用 scoop-check.yml，在 windows-2022 上用本地 manifest 和 file:// zip 真实执行 `scoop install` 1.0.0 → `scoop update` 1.0.1 → `scoop uninstall`。验证内容：
+  - runtime/addon 管理和快照可用；
+  - self-update 在下载之前就拒绝，并提示用 scoop 更新；
+  - 版本目录变化后数据根保持不变，57 个路径逐字节一致。
+- 独立复审（run 17dccb5b）结论 BLOCK：P1 是 post_install 用 `WriteAllText` 写标记，会跟随已存在的链接，覆盖外部文件；P2 是 launchProtocols 没有类型校验。父会话修复 4d42538：改用 `FileStream CreateNew`，名字已存在（普通文件、symlink 或 hardlink）就明确拒绝；同时增加数组和整数校验。红绿验证在本机用真实 pwsh 完成（3 pass / 2 fail → 5 pass）。
+- 聚焦复审（run aee1062b）结论 BLOCK：关闭文件后还按路径调用 `SetAttributes`，此时若名字被换成别的文件，会修改外部文件的属性；另有一项 P2，协议数组仍接受负数。父会话修复 c7463ae：去掉按路径设置属性这一步（管理器从不读取只读位，所以不需要设置），协议值要求 ≥ 0。修复后 scoop.test.ts 5 pass。这次修改只删掉了一条按路径的操作，没有引入新的机制，因此没有再发起第三轮复审；复审员此前已确认其余检查项（四种既有标记一律拒绝，scoop reset 和同版本 update 不受影响）。
+- **CI 36958074058（2a40f12，已包含 c7463ae）三平台和真实 Scoop job 全绿**：ubuntu 260 pass、macOS 256 pass、windows 226 pass，0 fail。Windows 和 Linux 上的 marker 回归测试都实际执行了。
+- 残余风险：x64 的门禁不能证明 ARM64；runtime/addon 用的是格式合法的 fixture；真实发布资产要到 9.3 才会对真实下载复验。
+- 勾选 **7.5**。
