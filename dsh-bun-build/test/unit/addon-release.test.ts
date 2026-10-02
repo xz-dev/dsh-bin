@@ -99,6 +99,7 @@ test("DL-CUTOVER: addon publication validates builder identity and hashes before
 	}
 	writeFileSync(input, JSON.stringify(manifest())); writeFileSync(join(dir, manifest().assets.linux.file), "bad");
 	await expect(publishRelease(input, env, api as typeof fetch)).rejects.toThrow(/differs from build manifest/); expect(calls).toBe(0);
+	writeFileSync(input, JSON.stringify({ ...manifest(), channel: "release" }));
 	writeFileSync(join(dir, manifest().assets.linux.file), "zip");
 	expect((await publishRelease(input, env, api as typeof fetch)).published).toBe(true);
 	expect(release.assets.map((asset: any) => asset.name).sort()).toEqual(["addon-manifest.json", "dsh-addon-office-linux.zip"]);
