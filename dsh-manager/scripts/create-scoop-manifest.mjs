@@ -28,7 +28,7 @@ export function scoopManifests(index, repo = "xz-dev/dsh-bin") {
 		architecture,
 		post_install: [
 			`[System.IO.File]::WriteAllText((Join-Path $dir '.dsh-manager-install.json'), '{"schema":1,"owner":"scoop"}', [System.Text.UTF8Encoding]::new($false))`,
-			`(Get-Item (Join-Path $dir '.dsh-manager-install.json')).IsReadOnly = $true`,
+			`(Get-Item -LiteralPath (Join-Path $dir '.dsh-manager-install.json') -Force).IsReadOnly = $true`,
 		],
 	} };
 }
