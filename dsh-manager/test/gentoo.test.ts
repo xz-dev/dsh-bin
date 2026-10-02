@@ -51,7 +51,7 @@ for (const kind of ["symlink", "hardlink"]) test.skipIf(process.platform !== "li
 	else linkSync(sentinel, join(logs, "build1.log"));
 	writeFileSync(join(tools, "zig"), "#!/bin/sh\nprintf 'diagnostic-from-failed-build\\n'\nexit 1\n", { mode: 0o755 });
 	const source = readFileSync(script, "utf8").replace("base=/var/tmp/dsh-74-gentoo", `base='${scratch}'`);
-	const p = Bun.spawnSync(["sh", "-c", source, script], { env: { ...process.env, PATH: `${tools}:${process.env.PATH}`, HOME: join(dir, "home"), TMPDIR: dir }, stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+	const p = Bun.spawnSync(["sh", "-c", source, script], { env: { ...process.env, PATH: `${tools}:${process.env.PATH}`, HOME: join(dir, "home"), TMPDIR: dir, DSH_GENTOO_MANAGER_ZIP: "", DSH_GENTOO_MANAGER_INDEX: "", DSH_GENTOO_UPGRADE_ZIP: "", DSH_GENTOO_UPGRADE_INDEX: "" }, stdout: "pipe", stderr: "pipe", timeout: 30_000 });
 	expect(p.exitCode).toBe(1); expect(readFileSync(sentinel)).toEqual(bytes); expect(readFileSync(join(logs, "build1.log"))).toEqual(bytes);
 	const runs = readdirSync(logs).filter(name => name !== "build1.log"); expect(runs).toHaveLength(1);
 	const runLogs = join(logs, runs[0]); expect(statSync(runLogs).mode & 0o777).toBe(0o700);
@@ -68,6 +68,8 @@ function files(dir: string) {
 // Opt-in real Portage run: ROOT/config/dist/builds must all be prepared under this throwaway path.
 const realRoot = process.env.DSH_GENTOO_TEST_ROOT;
 const realLogs = process.env.DSH_GENTOO_TEST_LOGS;
+const upgradePV = process.env.DSH_GENTOO_TEST_UPGRADE_PV || "1.0.1";
+const upgradeVersion = process.env.DSH_GENTOO_TEST_UPGRADE_VERSION || "1.0.1";
 const realBase = "/var/tmp/dsh-74-gentoo";
 test.skipIf(!hasZig || process.platform !== "linux")(`PS-MANAGED / DL-MANAGED-UPDATE / DL-MANAGED-SELF / DL-MANAGED-REMOVE: ${realRoot ? "real non-root Portage lifecycle" : "isolated Gentoo package lifecycle"}`, async () => {
 	if (realRoot && (realRoot !== `${realBase}/root` || process.getuid?.() === 0 || !realLogs)) throw new Error("real run requires non-root throwaway ROOT and fresh log directory");
@@ -96,7 +98,8 @@ test.skipIf(!hasZig || process.platform !== "linux")(`PS-MANAGED / DL-MANAGED-UP
 		finally { clearTimeout(timer); }
 	}
 	async function portage(action: "upgrade" | "unmerge") {
-		const args = action === "upgrade" ? [`${realBase}/overlay/app-misc/dsh-bin/dsh-bin-1.0.1.ebuild`, "clean", "install", "merge"] : [`${realBase}/overlay/app-misc/dsh-bin/dsh-bin-1.0.1.ebuild`, "unmerge"];
+		const path = `${realBase}/overlay/app-misc/dsh-bin/dsh-bin-${upgradePV}.ebuild`;
+		const args = action === "upgrade" ? [path, "clean", "install", "merge"] : [path, "unmerge"];
 		const p = Bun.spawn(["/usr/bin/ebuild", ...args], { env: { PATH: "/usr/bin:/bin", HOME: i.home, ROOT: realRoot!, PORTAGE_CONFIGROOT: `${realBase}/config`, TMPDIR: `${realBase}/tmp` }, stdout: "pipe", stderr: "pipe" });
 		const timer = setTimeout(() => p.kill("SIGKILL"), 120_000);
 		try { const [status, stdout, stderr] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]); writeFileSync(join(realLogs!, `${action}.log`), stdout + stderr); expect({ status, stderr }).toMatchObject({ status: 0 }); }
@@ -116,12 +119,12 @@ test.skipIf(!hasZig || process.platform !== "linux")(`PS-MANAGED / DL-MANAGED-UP
 		chmodSync(i.dir, 0o755);
 		if (realRoot) await portage("upgrade");
 		else { const next = newInstall(); writeFileSync(join(next.dir, ".dsh-manager-install.json"), '{"schema":1,"owner":"portage"}\n'); i.dir = next.dir; i.exe = next.exe; }
-		const version = run(i, ["manager", "--version"], { env }); expect(version.status).toBe(0); expect(version.stdout).toContain(realRoot ? "1.0.1" : MANAGER_VERSION);
+		const version = run(i, ["manager", "--version"], { env }); expect(version.status).toBe(0); expect(version.stdout).toContain(realRoot ? upgradeVersion : MANAGER_VERSION);
 		expect(files(i.data)).toEqual(protectedBefore); expect(run(i, ["manager", "list", "--json"], { env }).stdout).toContain(B);
 		before = requests.length; expect((await command(["manager", "self-update"])).status).toBe(1); expect(requests.length).toBe(before);
 		if (realRoot) await portage("unmerge"); else { rmSync(i.exe); rmSync(join(i.dir, ".dsh-manager-install.json")); }
 		expect(existsSync(i.exe)).toBe(false); expect(files(i.data)).toEqual(protectedBefore); expect(session.proc.exitCode).toBe(null); expect(await session.finish()).toBe(0); session = undefined;
 		expect(readFileSync(join(i.data, "home/credential"), "utf8")).toBe("SECRET KEEP");
-		console.info(`Gentoo lifecycle: uid=${process.getuid?.()}, ${realRoot ? "Portage install 1.0.0 → upgrade 1.0.1 → unmerge" : "automated layout"}; prefix untouched, data/credentials/session preserved; requests=${requests.length}`);
+		console.info(`Gentoo lifecycle: uid=${process.getuid?.()}, ${realRoot ? `Portage install → upgrade ${upgradeVersion} → unmerge` : "automated layout"}; prefix untouched, data/credentials/session preserved; requests=${requests.length}`);
 	} finally { if (session) await session.finish(); s.stop(true); for (const dir of [packagedDir, i.dir]) if (existsSync(dir)) chmodSync(dir, 0o755); }
 }, 300_000);
