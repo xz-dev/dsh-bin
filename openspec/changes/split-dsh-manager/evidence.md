@@ -1208,3 +1208,9 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
 ### 9.2 准备：上游跟踪决定（用户 2026-10-02）
 
 - 旧 upstream-poll（main 上每日 4 次，自动构建并发布）会在 9.2 暂停。用户选择**自动构建、手动发布**：在 runtime-release.yml 增加一个小的 schedule，上游 release tag 变化时自动跑完整构建和组合检查（只做 dry run），由人在 main 上手动 dispatch 发布。publish 门禁不放宽（只允许 `workflow_dispatch` 且在 main）。这个 job 与暂停旧自动化的提交放在同一个 PR 中。
+
+### 9.3 准备：首发运行包顺序（用户 2026-10-02）
+
+- 上游最新稳定版已从 0.1.7-rc.2 前进到 `dsh-v0.2.0-rc.2`。0.2.0-rc.2 的 dry run（CI 36994120887，db3ddbe）32 个 job 成功：runtime `0.2.0-rc.2-b96.1.gdb3ddbe2` 在 12 个原生 target 上与已验收的 manager 1.0.0-rc.1 组合通过；SHA256SUMS 相符；runtime-index sha256 `2ad82703…`；office slot 与已验收 addon 相同（8e816b7e，kit 0.1.1）。
+- 用户选择：**先发布 0.1.7-rc.2，再发布 0.2.0-rc.2**（发布不可变，索引只追加，第一条永久保留）。
+- 以 0.2.0-rc.2 作为 A 的组合 E2E（CI 36996991154）在 empty-install 断言失败：manager 正确地默认安装了更新的 0.2.0-rc.2，但测试固定认为来自 B 的 runtime 才是默认值。35a4c12 改为按 manager 的排序规则（commitTime→run→attempt）确定默认 runtime。本地用真实 CI 制品验证两种输入顺序都 1 pass：原组合 62952 assertions；0.2.0-rc.2 组合 63729 assertions，10 个步骤全部通过。
