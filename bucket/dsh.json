@@ -1,23 +1,22 @@
 {
-  "version": "0.2.0-rc.2-xz.34.1.g8a39d4f5",
-  "description": "DeepSeek Harness (dsh), release channel, built from GitHub source by dsh-bin",
+  "version": "1.0.0",
+  "description": "Independent dsh manager; runtimes and addons are managed per user",
   "homepage": "https://github.com/xz-dev/dsh-bin",
   "license": "MIT",
   "bin": "dsh.exe",
-  "persist": [
-    "addons"
-  ],
-  "post_install": [
-    "New-Item -Force -ItemType File (Join-Path $dir '.scoop.managed.lock') | Out-Null"
-  ],
   "architecture": {
     "64bit": {
-      "url": "https://github.com/xz-dev/dsh-bin/releases/download/dsh-v0.2.0-rc.2-xz.34.1.g8a39d4f5/dsh-windows-x64-modern.zip",
-      "hash": "3d743d60e09e9824b063e99d042d87dcfdc665b7c043bd6466b809c20882ec8a"
+      "url": "https://github.com/xz-dev/dsh-bin/releases/download/manager-v1.0.0/manager-windows-x64.zip",
+      "hash": "a360c80662e27fe87ea025202fa1ee2ddb3e6346e0e2afe3f92697d280b2d3e9"
     },
     "arm64": {
-      "url": "https://github.com/xz-dev/dsh-bin/releases/download/dsh-v0.2.0-rc.2-xz.34.1.g8a39d4f5/dsh-windows-arm64.zip",
-      "hash": "ab6feb24998754f10025d63cab7f882496728df072eeded2c4f8beb48aee775d"
+      "url": "https://github.com/xz-dev/dsh-bin/releases/download/manager-v1.0.0/manager-windows-arm64.zip",
+      "hash": "6dd7c5819df2ffe34125f8ae324ba46ae12c4a0bc7fc0b225dff5fdc1c93a3eb"
     }
-  }
+  },
+  "post_install": [
+    "$marker = Join-Path $dir '.dsh-manager-install.json'",
+    "try { $fs = [System.IO.FileStream]::new($marker, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None) } catch { throw \"dsh: refusing to replace existing $marker; remove it and reinstall\" }",
+    "try { $b = [System.Text.UTF8Encoding]::new($false).GetBytes('{\"schema\":1,\"owner\":\"scoop\"}'); $fs.Write($b, 0, $b.Length) } finally { $fs.Dispose() }"
+  ]
 }
