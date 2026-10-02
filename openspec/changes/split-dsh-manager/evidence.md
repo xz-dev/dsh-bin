@@ -993,6 +993,9 @@ scoop uninstall dsh
 - `dsh-manager/scripts/release.mjs`：仅依赖 Node 标准库/Bun 测试和构建驱动，无 runtime 源码依赖。六目标 aggregate 保存原始哈希，后续 aggregate 若合法 native 字节被替换但哈希改变，仍拒绝；不以重新打开暂存的哈希覆盖可信 build manifest。
 - `dsh-bun-build/scripts/artifact-e2e.mjs`：显式 accepted_index HTTPS URL + index SHA256，或已下载 artifact 目录 + index SHA256；ZIP 校验 size/SHA256 后才解包/执行。候选 manager 与既有 runtime / 候选 runtime 与既有 manager 都经公开进程 `--use <id> --version/--help`，空 PATH 无宿主 Node/Bun，隔离 HOME/数据根。目标 ZIP 精确匹配 target；已安装 fixture 绕过 host 自动挑 target，以便真实 baseline/modern 包分别测试；不伪称首次下载验收（首次下载/应用深层组合归 8.1/9.3）。candidate runtime 精确取自身 manifest 的 id，不误取历史 channel 最新。
 - 组合 jobs 消费 **明确 run ID+artifact 名+SHA256** 或 HTTPS index+SHA256，跨 run 下载需 `actions:read`；无 Zig/setup-node/对方 rebuild。manager 在六个对应原生 runner 测已验收 runtime，runtime 在12个原生 target（含 musl 容器）测已验收 manager。缺 target、摘要不符、退出非零直接失败。发布需组合 job success。
+- feature branch 上新 release workflow 尚未出现在默认分支，直接 `workflow_dispatch` 实际返回 HTTP 404。因此两者增加同输入的 `workflow_call`，由默认分支已注册的 `ci.yml` dispatch 当前 feature ref 调用；正常 CI 不启用 release dry-run。`ci.yml` 两个调用 job 只在手动 `release_dry_run=true` 时执行，均硬编码 `publish: false`，不提供发布参数。
+- reusable workflow 的权限上限检查也覆盖会跳过的 publish job，故父会话批准仅这两个 caller jobs 授予 `contents:write/actions:read/id-token:write/attestations:write` 上限；所有被调用的 build/prepare/aggregate/combination jobs **显式声明 `contents:read/actions:read`**，不会继承 write；publish job 跳过。`ci.yml` 顶层仍 `contents:read`，PR/普通 CI 不调用该写权限入口。
+- artifact 命名核对：manager 仅 `manager-release`；runtime 为 `runtime-index-snapshot`、`runtime-target-<target>`、`runtime-release`，同一个 caller run 内无重名，不改名字。两份最终 release artifact 可从同一固定 bootstrap run 下载。
 - `publish-release.mjs` 保留 immutable-release 保护、逐资产哈希验证、attestation 验证；支持新 manager/runtime/addon tag 和 prerelease。prerelease 和 manager 发布都不是 GitHub Latest；不通过 Latest 发现 runtime。认证/不可变性受阻时失败，不降保护。
 - `publish-index.sh manager|runtime` 单次 fast-forward push，仅写 `releases` 分支 `manager-index.json` 或 `runtime-index.json`；并发写冲突报错，禁止合并重试/force。两工作流沿用 `releases-index` concurrency 避免正常冲突。旧 `index.json` 字节保持不变，不改 Scoop bucket/ebuild、不删旧发布。
 - `build.yml` 保留旧入口，仅加明确注释说明新入口及 9.2 暂停边界。注意：本切片开始前旧工作流已仍用 schemaVersion:2/append-addon，但现存 index writer 已只支持 schema:1/append-bundle；保留文件与旧分支不等于证明旧自动发布可用。旧 upstream-poll 的 main push/schedule 尚在，不能把新工作流 path filters 的独立性描述为所有旧路径都已暂停；9.2 负责切换。
@@ -1018,25 +1021,24 @@ scoop uninstall dsh
    bash -n dsh-bun-build/scripts/publish-index.sh
    ```
    actionlint 内置旧 runner 清单不认识原项目已使用的 macos-15-intel/windows-11-arm，两条 runner-label 诊断明确排除；未排除其他诊断。
+8. feature-branch dispatch 修复：三份 workflow 经 PyYAML/Bun.YAML 解析；`/var/tmp/dsh-83/tools/actionlint -pyflakes= -ignore 'label "(macos-15-intel|windows-11-arm)" is unknown' .github/workflows/ci.yml .github/workflows/manager-release.yml .github/workflows/runtime-release.yml` → exit 0。`bun /var/tmp/dsh-83-dispatch/check-workflow-call.mjs` 核对 call/dispatch 输入类型、默认值与 required 一致，accepted 参数交叉路由正确，最终/中间 artifact 无重名，所有非 publish jobs 只读且 caller 硬编码 `publish=false`；内存中故意改成 `publish=true` 或 build `contents:write` 均被断言拒绝。`TMPDIR=/var/tmp/dsh-83/tmp bun test dsh-manager/test/release.test.ts` → **7 pass / 0 fail / 74 assertions**。未执行 GitHub dispatch/native CI，不把这些静态/本机检查作为线上运行证据。
 
 ### 父会话下一步：仅 dry-run 工作流与精确制品复验
 
-新 workflow 可能须先出现在默认分支才可被 GitHub `workflow_dispatch` 注册；仅推 feature branch 不保证 GitHub 接受新 workflow 文件的 dispatch。父会话处理注册/推送/审查，不由 worker 外部操作。
+新 release workflow 尚未注册在默认分支，直接 dispatch feature branch 上的新文件返回 HTTP 404。父会话改为 dispatch 已注册的 `ci.yml`，当前 ref 中的两个 `workflow_call` 入口执行 dry-run；worker 不推送、不 dispatch，以下命令仍待父会话实际执行。
 
-先 build-only bootstrap（无 counterpart，此时组合跳过必须如实记录）：
+先 build-only bootstrap（无 counterpart，此时组合跳过必须如实记录）；同一次 caller run 同时生成两份最终 artifact：
 ```sh
-gh workflow run manager-release.yml --ref feat/split-dsh-manager -f version=1.0.0-rc.1 -f prerelease=true -f publish=false
-gh workflow run runtime-release.yml --ref feat/split-dsh-manager -f channel=release -f upstream=dsh-v0.1.7-rc.2 -f prerelease=true -f publish=false
+gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true
 ```
 
-父会话下载/核验/验收 ZIP 后，对 artifact 内 index 求 SHA256。明确记录 run ID，不使用模糊“最新”：
+父会话固定该 run ID 为 `BOOTSTRAP_RUN`，下载/核验/验收 ZIP 后，对 artifact 内 index 求 SHA256。这里两个 accepted run ID 均为这个已验收的固定 bootstrap run，不使用模糊“最新”。`RUNTIME_DIR` 和 `MANAGER_DIR` 为 `/var/tmp` 下父会话新建的独立输出目录：
 ```sh
-gh run download "$RUNTIME_RUN" -n runtime-release -D "$RUNTIME_DIR"
-gh run download "$MANAGER_RUN" -n manager-release -D "$MANAGER_DIR"
+gh run download "$BOOTSTRAP_RUN" -n runtime-release -D "$RUNTIME_DIR"
+gh run download "$BOOTSTRAP_RUN" -n manager-release -D "$MANAGER_DIR"
 RUNTIME_INDEX_SHA=$(sha256sum "$RUNTIME_DIR/runtime-index.json" | cut -d' ' -f1)
 MANAGER_INDEX_SHA=$(sha256sum "$MANAGER_DIR/manager-index.json" | cut -d' ' -f1)
-gh workflow run manager-release.yml --ref feat/split-dsh-manager -f version=1.0.0-rc.1 -f prerelease=true -f publish=false -f accepted_run="$RUNTIME_RUN" -f accepted_artifact=runtime-release -f accepted_sha256="$RUNTIME_INDEX_SHA"
-gh workflow run runtime-release.yml --ref feat/split-dsh-manager -f channel=release -f upstream=dsh-v0.1.7-rc.2 -f prerelease=true -f publish=false -f accepted_run="$MANAGER_RUN" -f accepted_artifact=manager-release -f accepted_sha256="$MANAGER_INDEX_SHA"
+gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f accepted_manager_run="$BOOTSTRAP_RUN" -f accepted_manager_artifact=manager-release -f accepted_manager_sha256="$MANAGER_INDEX_SHA" -f accepted_runtime_run="$BOOTSTRAP_RUN" -f accepted_runtime_artifact=runtime-release -f accepted_runtime_sha256="$RUNTIME_INDEX_SHA"
 ```
 
 两个 dry-run 都上传整个 release 目录：`manager-release` artifact 内含全部 manager ZIP、manager-index.json、manager-manifest.json 和 SHA256SUMS；`runtime-release` artifact 内含全部 runtime ZIP、runtime-index.json、release-manifest.json 和 SHA256SUMS。父会话固定 run ID 与逐资产哈希，在本地受控源服务这些**精确字节**，重跑 Gentoo、Scoop 和两版本 manager self-update；不重建替换被测制品。

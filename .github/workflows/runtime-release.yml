@@ -16,6 +16,16 @@ on:
       accepted_sha256: { description: "SHA256 of accepted manager-index.json", type: string }
       accepted_run: { description: "Accepted dry-run workflow run ID", type: string }
       accepted_artifact: { description: "Accepted manager release artifact name", type: string }
+  workflow_call:
+    inputs:
+      channel: { type: string, default: release }
+      upstream: { description: "dsh-v* tag for release, commit/master for live", type: string, required: true }
+      prerelease: { type: boolean, default: true }
+      publish: { type: boolean, default: false }
+      accepted_index: { description: "Accepted manager-index.json HTTPS URL (or artifact inputs)", type: string }
+      accepted_sha256: { description: "SHA256 of accepted manager-index.json", type: string }
+      accepted_run: { description: "Accepted dry-run workflow run ID", type: string }
+      accepted_artifact: { description: "Accepted manager release artifact name", type: string }
 permissions: { contents: read, actions: read }
 env:
   BUN_VERSION: "1.4.2"
@@ -27,6 +37,7 @@ defaults:
   run: { working-directory: dsh-bun-build, shell: bash }
 jobs:
   prepare:
+    permissions: { contents: read, actions: read }
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.p.outputs.matrix }}
@@ -69,6 +80,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: runtime-index-snapshot, path: "${{ runner.temp }}/runtime-index.json", if-no-files-found: error }
   build:
+    permissions: { contents: read, actions: read }
     needs: prepare
     strategy:
       fail-fast: false
@@ -98,6 +110,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: "runtime-target-${{ matrix.id }}", path: "${{ runner.temp }}/out/", if-no-files-found: error }
   aggregate:
+    permissions: { contents: read, actions: read }
     needs: build
     runs-on: ubuntu-24.04
     steps:
@@ -117,6 +130,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: runtime-release, path: "${{ runner.temp }}/release/", if-no-files-found: error }
   combination:
+    permissions: { contents: read, actions: read }
     needs: [prepare, aggregate]
     if: inputs.accepted_index != '' || inputs.accepted_run != ''
     strategy:

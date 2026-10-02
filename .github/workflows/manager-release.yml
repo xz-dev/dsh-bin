@@ -14,12 +14,22 @@ on:
       accepted_sha256: { description: "SHA256 of accepted runtime-index.json", type: string }
       accepted_run: { description: "Accepted dry-run workflow run ID", type: string }
       accepted_artifact: { description: "Accepted runtime release artifact name", type: string }
+  workflow_call:
+    inputs:
+      version: { description: "Strict manager SemVer", required: true, type: string }
+      prerelease: { type: boolean, default: true }
+      publish: { type: boolean, default: false }
+      accepted_index: { description: "Accepted runtime-index.json HTTPS URL (or use artifact inputs)", type: string }
+      accepted_sha256: { description: "SHA256 of accepted runtime-index.json", type: string }
+      accepted_run: { description: "Accepted dry-run workflow run ID", type: string }
+      accepted_artifact: { description: "Accepted runtime release artifact name", type: string }
 permissions: { contents: read, actions: read }
 env:
   BUN_VERSION: "1.4.2"
   ZIG_VERSION: "0.15.2"
 jobs:
   build:
+    permissions: { contents: read, actions: read }
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.identity.outputs.version }}
@@ -67,6 +77,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: manager-release, path: "${{ runner.temp }}/release/", if-no-files-found: error }
   combination:
+    permissions: { contents: read, actions: read }
     needs: build
     if: inputs.accepted_index != '' || inputs.accepted_run != ''
     strategy:

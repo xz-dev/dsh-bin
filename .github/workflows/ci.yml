@@ -5,10 +5,46 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_dry_run: { description: "Build both release artifacts without publishing", type: boolean, default: false }
+      manager_version: { type: string, default: "1.0.0-rc.1" }
+      runtime_upstream: { type: string, default: "dsh-v0.1.7-rc.2" }
+      accepted_manager_run: { description: "Accepted manager dry-run workflow run ID", type: string }
+      accepted_manager_artifact: { description: "Accepted manager artifact name (manager-release)", type: string }
+      accepted_manager_sha256: { description: "SHA256 of accepted manager-index.json", type: string }
+      accepted_runtime_run: { description: "Accepted runtime dry-run workflow run ID", type: string }
+      accepted_runtime_artifact: { description: "Accepted runtime artifact name (runtime-release)", type: string }
+      accepted_runtime_sha256: { description: "SHA256 of accepted runtime-index.json", type: string }
 
 permissions: { contents: read }
 
 jobs:
+  # Only manual dry runs can call these workflows; publish is always false here.
+  # Caller grants cover the skipped publish jobs; every build/verify job explicitly stays read-only.
+  # Write permissions belong only to these two calls, never ordinary CI or pull requests.
+  manager-release-dry-run:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run
+    permissions: { contents: write, actions: read, id-token: write, attestations: write }
+    uses: ./.github/workflows/manager-release.yml
+    with:
+      version: ${{ inputs.manager_version }}
+      prerelease: true
+      publish: false
+      accepted_run: ${{ inputs.accepted_runtime_run }}
+      accepted_artifact: ${{ inputs.accepted_runtime_artifact }}
+      accepted_sha256: ${{ inputs.accepted_runtime_sha256 }}
+  runtime-release-dry-run:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run
+    permissions: { contents: write, actions: read, id-token: write, attestations: write }
+    uses: ./.github/workflows/runtime-release.yml
+    with:
+      channel: release
+      upstream: ${{ inputs.runtime_upstream }}
+      prerelease: true
+      publish: false
+      accepted_run: ${{ inputs.accepted_manager_run }}
+      accepted_artifact: ${{ inputs.accepted_manager_artifact }}
+      accepted_sha256: ${{ inputs.accepted_manager_sha256 }}
   scoop:
     uses: ./.github/workflows/scoop-check.yml
   test:
