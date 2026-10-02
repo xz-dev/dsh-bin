@@ -163,11 +163,12 @@ jobs:
           if [[ -z "$IMAGE" ]]; then
             bun scripts/artifact-e2e.mjs runtime "$RUNNER_TEMP/candidate" "$source" "$DIGEST" "$TARGET"
           else
-            docker run --rm -v "$PWD:$PWD:ro" -v "$RUNNER_TEMP:$RUNNER_TEMP" -w "$PWD" -e GITHUB_REPOSITORY "$IMAGE" bun scripts/artifact-e2e.mjs runtime "$RUNNER_TEMP/candidate" "$source" "$DIGEST" "$TARGET"
+            docker run --rm -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE:ro" -v "$RUNNER_TEMP:$RUNNER_TEMP" -w "$PWD" -e GITHUB_REPOSITORY "$IMAGE" bun scripts/artifact-e2e.mjs runtime "$RUNNER_TEMP/candidate" "$source" "$DIGEST" "$TARGET"
           fi
   publish:
     needs: [aggregate, combination]
-    if: inputs.publish && needs.combination.result == 'success'
+    # Publish only from main by an explicit manual dispatch (workflow_call from ci.yml hard-codes publish: false).
+    if: inputs.publish && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.combination.result == 'success'
     runs-on: ubuntu-24.04
     concurrency: { group: releases-index, cancel-in-progress: false }
     permissions: { contents: write, id-token: write, attestations: write }

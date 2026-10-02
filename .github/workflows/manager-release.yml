@@ -116,7 +116,8 @@ jobs:
           bun dsh-bun-build/scripts/artifact-e2e.mjs manager "$RUNNER_TEMP/candidate" "${SOURCE:-$RUNNER_TEMP/accepted}" "$DIGEST" "$TARGET"
   publish:
     needs: [build, combination]
-    if: inputs.publish && needs.combination.result == 'success'
+    # Publish only from main by an explicit manual dispatch (workflow_call from ci.yml hard-codes publish: false).
+    if: inputs.publish && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && needs.combination.result == 'success'
     runs-on: ubuntu-24.04
     concurrency: { group: releases-index, cancel-in-progress: false }
     permissions: { contents: write, id-token: write, attestations: write }
