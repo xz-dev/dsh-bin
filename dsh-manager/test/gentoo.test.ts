@@ -1,6 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gentooEbuild, gentooVersion } from "../scripts/gentoo-ebuild.mjs";
 import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
@@ -41,6 +41,24 @@ test("7.4: invalid manager identity or missing Linux asset refuses packaging", (
 	}
 });
 
+for (const kind of ["symlink", "hardlink"]) test.skipIf(process.platform !== "linux" || process.getuid?.() === 0)(`7.4 review: failed Portage check preserves existing ${kind} log file`, () => {
+	const script = join(import.meta.dir, "../scripts/gentoo-portage-check.sh");
+	const dir = tempDir("dsh-gentoo-logs-"), scratch = join(dir, "scratch"), logs = join(scratch, "logs"), tools = join(dir, "tools");
+	mkdirSync(logs, { recursive: true }); mkdirSync(tools); mkdirSync(join(dir, "home"));
+	const sentinel = join(dir, "credential"), bytes = Buffer.from(`SECRET KEEP ${kind}\n`);
+	writeFileSync(sentinel, bytes);
+	if (kind === "symlink") symlinkSync(sentinel, join(logs, "build1.log"));
+	else linkSync(sentinel, join(logs, "build1.log"));
+	writeFileSync(join(tools, "zig"), "#!/bin/sh\nprintf 'diagnostic-from-failed-build\\n'\nexit 1\n", { mode: 0o755 });
+	const source = readFileSync(script, "utf8").replace("base=/var/tmp/dsh-74-gentoo", `base='${scratch}'`);
+	const p = Bun.spawnSync(["sh", "-c", source, script], { env: { ...process.env, PATH: `${tools}:${process.env.PATH}`, HOME: join(dir, "home"), TMPDIR: dir }, stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+	expect(p.exitCode).toBe(1); expect(readFileSync(sentinel)).toEqual(bytes); expect(readFileSync(join(logs, "build1.log"))).toEqual(bytes);
+	const runs = readdirSync(logs).filter(name => name !== "build1.log"); expect(runs).toHaveLength(1);
+	const runLogs = join(logs, runs[0]); expect(statSync(runLogs).mode & 0o777).toBe(0o700);
+	expect(readFileSync(join(runLogs, "build1.log"), "utf8")).toBe("diagnostic-from-failed-build\n");
+	expect(p.stdout.toString()).toContain(runLogs);
+});
+
 const A = "1.0.0-b1.1.gdeadbeef", B = "1.0.0-b2.1.gdeadbeef";
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 function files(dir: string) {
@@ -49,9 +67,10 @@ function files(dir: string) {
 
 // Opt-in real Portage run: ROOT/config/dist/builds must all be prepared under this throwaway path.
 const realRoot = process.env.DSH_GENTOO_TEST_ROOT;
+const realLogs = process.env.DSH_GENTOO_TEST_LOGS;
 const realBase = "/var/tmp/dsh-74-gentoo";
 test.skipIf(!hasZig || process.platform !== "linux")(`PS-MANAGED / DL-MANAGED-UPDATE / DL-MANAGED-SELF / DL-MANAGED-REMOVE: ${realRoot ? "real non-root Portage lifecycle" : "isolated Gentoo package lifecycle"}`, async () => {
-	if (realRoot && (realRoot !== `${realBase}/root` || process.getuid?.() === 0)) throw new Error("real run requires non-root throwaway ROOT");
+	if (realRoot && (realRoot !== `${realBase}/root` || process.getuid?.() === 0 || !realLogs)) throw new Error("real run requires non-root throwaway ROOT and fresh log directory");
 	const i = newInstall(); i.data = join(i.home, "xdg/dsh-bin");
 	if (realRoot) { i.dir = join(realRoot, "usr/lib/dsh-bin"); i.exe = join(realRoot, "usr/bin/dsh"); }
 	else writeFileSync(join(i.dir, ".dsh-manager-install.json"), '{"schema":1,"owner":"portage"}\n');
@@ -80,7 +99,7 @@ test.skipIf(!hasZig || process.platform !== "linux")(`PS-MANAGED / DL-MANAGED-UP
 		const args = action === "upgrade" ? [`${realBase}/overlay/app-misc/dsh-bin/dsh-bin-1.0.1.ebuild`, "clean", "install", "merge"] : [`${realBase}/overlay/app-misc/dsh-bin/dsh-bin-1.0.1.ebuild`, "unmerge"];
 		const p = Bun.spawn(["/usr/bin/ebuild", ...args], { env: { PATH: "/usr/bin:/bin", HOME: i.home, ROOT: realRoot!, PORTAGE_CONFIGROOT: `${realBase}/config`, TMPDIR: `${realBase}/tmp` }, stdout: "pipe", stderr: "pipe" });
 		const timer = setTimeout(() => p.kill("SIGKILL"), 120_000);
-		try { const [status, stdout, stderr] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]); writeFileSync(`${realBase}/logs/${action}.log`, stdout + stderr); expect({ status, stderr }).toMatchObject({ status: 0 }); }
+		try { const [status, stdout, stderr] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]); writeFileSync(join(realLogs!, `${action}.log`), stdout + stderr); expect({ status, stderr }).toMatchObject({ status: 0 }); }
 		finally { clearTimeout(timer); }
 	}
 	let session: Awaited<ReturnType<typeof holdSession>> | undefined;
