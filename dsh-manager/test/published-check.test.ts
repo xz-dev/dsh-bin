@@ -14,13 +14,14 @@ const workflow = Bun.YAML.parse(readFileSync(resolve(import.meta.dir, "../../.gi
 const script = workflow.jobs["first-download"].steps[0].run;
 const newest = "0.2.0-rc.2-b4.1.g243621d7";
 
-function check(eol: "LF" | "CRLF", fault = "") {
-	const dir = mkdtempSync(join(root, "case-")), archive = join(dir, "manager-windows-x64.zip");
+function check(eol: "LF" | "CRLF", fault = "", olderJq = false, backslashTemp = false) {
+	// Linux uses a literal backslash filename; Windows keeps native RUNNER_TEMP separators.
+	const dir = mkdtempSync(join(root, backslashTemp && process.platform !== "win32" ? "case\\-" : "case-")), archive = join(dir, "manager-windows-x64.zip");
 	mkdirSync(join(dir, "initial-home"));
 	// Shell stand-in records calls only; this is not native Windows manager/runtime proof.
 	writeZip(archive, [{ name: "dsh", mode: 0o755, data: Buffer.from(`#!/usr/bin/env bash
 set -euo pipefail
-[[ "$HOME" = "$RUNNER_TEMP/first-download/home" && "$USERPROFILE" = "$HOME" ]]
+[[ "$HOME" -ef "$RUNNER_TEMP/first-download/home" && "$USERPROFILE" -ef "$HOME" ]]
 printf '%s\\n' "$*" >> "$FIXTURE/calls"
 case "$*" in
   'manager --version') echo 'dsh manager 1.0.0' ;;
@@ -50,23 +51,26 @@ curl() {
 jq() {
   local output arg binary=0
   for arg in "$@"; do
-    if [[ "$arg" = --binary || "$arg" =~ ^-[^-]*b ]]; then binary=1; fi
+    if [[ "$arg" = --binary || "$arg" =~ ^-[^-]*b ]]; then
+      [[ "$OLDER_JQ" = 0 ]] || { echo 'jq: Unknown option --binary' >&2; return 2; }
+      binary=1
+    fi
   done
-  output=$(command jq "$@") || return $?
+  output=$(command jq "$@" | tr -d '\\r') || return $?
   # Even a producer that emitted metadata must not hide its nonzero exit behind read.
   if [[ "$FAULT" = jq ]]; then printf '%s\\n' "$output"; return 7; fi
   # Native jq.exe translates LF to CRLF unless --binary/-b was requested.
   if [[ "$EOL" = CRLF && "$binary" = 0 ]]; then printf '%s\\r\\n' "$output"; else printf '%s\\n' "$output"; fi
 }
 `;
-	const env: Record<string, string> = { PATH: process.env.PATH!, FIXTURE: bashPath(dir), FAULT: fault, EOL: eol, TARGET: "windows-x64", EXE: "dsh", RUNNER_TEMP: bashPath(dir), GITHUB_REPOSITORY: "fixture/repo", GITHUB_STEP_SUMMARY: bashPath(join(dir, "summary")), HOME: bashPath(join(dir, "initial-home")), USERPROFILE: bashPath(join(dir, "initial-home")), TMPDIR: bashPath(dir), TMP: dir, TEMP: dir };
+	const env: Record<string, string> = { PATH: process.env.PATH!, FIXTURE: bashPath(dir), FAULT: fault, EOL: eol, OLDER_JQ: olderJq ? "1" : "0", TARGET: "windows-x64", EXE: "dsh", RUNNER_TEMP: backslashTemp && process.platform === "win32" ? dir : bashPath(dir), GITHUB_REPOSITORY: "fixture/repo", GITHUB_STEP_SUMMARY: bashPath(join(dir, "summary")), HOME: bashPath(join(dir, "initial-home")), USERPROFILE: bashPath(join(dir, "initial-home")), TMPDIR: bashPath(dir), TMP: dir, TEMP: dir };
 	for (const key of ["SystemRoot", "SYSTEMROOT", "windir"]) if (process.env[key]) env[key] = process.env[key]!;
 	const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", prelude + script], { cwd: dir, env, encoding: "utf8", timeout: 10_000 });
 	return { ...result, dir };
 }
 
-for (const eol of ["LF", "CRLF"] as const) test(`published first-download: ${eol} jq output reaches application launch and newest runtime selection`, () => {
-	const r = check(eol);
+for (const [label, eol, olderJq, backslashTemp] of [["LF", "LF", false, false], ["CRLF", "CRLF", false, false], ["older jq + CRLF", "CRLF", true, false], ["backslash RUNNER_TEMP + CRLF", "CRLF", false, true]] as const) test(`published first-download: ${label} reaches application launch and newest runtime selection`, () => {
+	const r = check(eol, "", olderJq, backslashTemp);
 	expect(r.status, r.stderr).toBe(0);
 	expect(readFileSync(join(r.dir, "calls"), "utf8").split("\n").filter(Boolean)).toEqual(["manager --version", "plugin --profile first --help", "manager list", `--use ${newest} --version`]);
 	expect(readFileSync(join(r.dir, "summary"), "utf8")).toContain(`first download installed ${newest} with manager-v1.0.0 (windows-x64)`);

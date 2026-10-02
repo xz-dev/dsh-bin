@@ -31,15 +31,15 @@ jobs:
           stage="manager index download"
           curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/releases/manager-index.json" -o "$root/manager-index.json"
           stage="manager asset metadata"
-          # Native jq.exe must emit LF for Bash read and command substitution, not CRLF.
-          metadata=$(jq --binary -r --arg t "$TARGET" '.versions[-1] | "\(.tag) \(.assets[$t].name) \(.assets[$t].size) \(.assets[$t].sha256)"' "$root/manager-index.json")
+          # Normalize native jq.exe CRLF without requiring newer jq --binary support.
+          metadata=$(jq -r --arg t "$TARGET" '.versions[-1] | "\(.tag) \(.assets[$t].name) \(.assets[$t].size) \(.assets[$t].sha256)"' "$root/manager-index.json" | tr -d '\r')
           read -r tag name size sha <<< "$metadata"
           stage="manager archive download"
           curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/$tag/$name" -o "$root/$name"
           stage="manager archive size check"
           test "$(wc -c < "$root/$name" | tr -d ' ')" = "$size"
           stage="manager archive SHA256 check"
-          if command -v sha256sum >/dev/null; then got=$(sha256sum "$root/$name" | cut -d' ' -f1); else got=$(shasum -a 256 "$root/$name" | cut -d' ' -f1); fi
+          if command -v sha256sum >/dev/null; then got=$(sha256sum < "$root/$name" | cut -d' ' -f1); else got=$(shasum -a 256 < "$root/$name" | cut -d' ' -f1); fi
           test "$got" = "$sha"
           stage="manager archive extraction"
           unzip -q "$root/$name" -d "$root/tools"
@@ -48,7 +48,7 @@ jobs:
           stage="manager version"
           "$root/tools/$EXE" manager --version
           stage="newest runtime identity"
-          newest=$(curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/releases/runtime-index.json" | jq --binary -r '.channels.release[-1].id')
+          newest=$(curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/releases/runtime-index.json" | jq -r '.channels.release[-1].id' | tr -d '\r')
           # Bare --version/--help are answered by the manager itself; an app command makes the first launch
           # install the newest published runtime, then the runtime answers --version through --use.
           stage="first application launch"
