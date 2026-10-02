@@ -1120,3 +1120,28 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
   - `build.yml:157/162` 调用已删除的 `scripts/e2e.mjs`；
   - `scripts/upstream-diff.mjs` 对全仓库做 diff，并读取旧字段 `launcherCommit`。
 - 新 workflow 已为合入后做好准备：publish 只允许 main 上的手动 dispatch；main 上的 push 仍按 manager/runtime 路径过滤，只构建和验证，不发布。
+
+### 8.2 父会话验收
+
+- 实现：c3b156c（manager 原生组合 job 增加四种 shell 的真实 hook 检查和机器可读验收行；Gentoo 检查脚本接受外部制品输入）、b03f434；复审修复 b1ceb0f、3ccbb5c。
+- **原生验收矩阵（CI 36976333735，3ccbb5c，cross-fed，counterpart 为 36961211136 的固定制品）**：每个组合 job 先安装真实 hook，再在真实 shell 里查询一个管理器候选（`install`）和一个运行包候选（`plugin`，来自已安装运行包的 completion.json），然后卸载 hook，并确认 rc/profile 逐字节恢复。共 26 passed / 10 not-run / 0 failed，记录保存在 `/var/tmp/dsh-82/ci/matrix-36976333735.txt`：
+  - linux-x64-baseline、linux-arm64、darwin-x64-baseline、darwin-arm64：bash/zsh/fish/pwsh 全部 passed；Windows PowerShell 5.1 记为 not-run（其他操作系统没有）。
+  - windows-x64-baseline、windows-arm64：pwsh 和 Windows PowerShell 5.1 passed；bash/zsh/fish 记为 not-run。
+  - 运行包：runtime-release combination 在 12 个原生 target 上 12/12 通过，含 3 个 musl 容器（RL-ARTIFACT-E2E，从 8.3 起已有）。
+  - 三平台 test job 中 artifact-shells fixture 测试都实际执行并通过（Windows 包含 pwsh 和 PowerShell）。
+- 其他门禁的实际执行记录：
+  - Scoop：scoop-check.yml 在 windows-2022 上真实跑 install/update/uninstall，本次 CI 通过（7.5 起）。
+  - Gentoo：在父会话的 amd64 主机上以 uid 1000 非 root 跑真实 Portage，`gentoo-portage-check.sh` 用外部制品输入：CI manager `1.0.0-rc.1 → 1.0.1 → unmerge`，以及双制品 `rc.1 → rc.2 → unmerge`，都是 6 pass / 0 fail；用户数据、凭据、运行会话保留（报告 `/var/tmp/dsh-82/report.md`）。复审员另外核实：缺配对 index 或 ZIP 被篡改时明确拒绝，不会退回到本地构建。
+- **独立复审 118be8d1：结论 BLOCK。** 发现与处理：
+  - P1：新增的 Windows fixture 测试在 CI 36971350408 失败，补全结果为空；共享 harness 也没有隔离 APPDATA/LOCALAPPDATA。3ccbb5c 在 `artifactShells()` 内为所有调用方固定 HOME、USERPROFILE、APPDATA、LOCALAPPDATA、TMP、PSModuleAnalysisCachePath，并把 Windows 环境变量名统一转成大写，避免继承来的 `Path` 盖掉测试设定的 `PATH`。worker 判断这是最可能的根因，但没有在 Windows 实机上证明；CI 36976333735 中 Windows fixture 测试 pass，确认修复有效。
+  - P2：90 秒计时器不是真正的截止时间：后代进程占着管道时会无限等待，被 SIGTERM 后以 0 退出时会被当作成功。b1ceb0f 改为整体 race 一个会 reject 的 deadline，超时时杀掉直接子进程并关闭管道。两项回归（后代占管道、TERM 后 exit 0）都有 red/green，CI 在 ubuntu 和 macOS 上 pass；在 Windows 上作为 POSIX-only 跳过。
+  - 两处修复都只改测试 harness 和验收脚本，不涉及产品代码，由 CI 实测关闭，不再发起第三轮复审。
+- not-run 一律不计为通过。没有执行的：ARM64 上的 Scoop、非 amd64 上的 Portage、Windows ConPTY 交互。运行包 combination 只覆盖版本/help 门禁，完整应用 E2E 属于 8.1。
+- 勾选 **8.2**。
+
+### addon 发布路径修复（9.3 前置，不对应单独勾选项）
+
+- 21ecb43、30d7b7b：addon.yml 改用 `builderCommit` 和新 tag `addon-office-v<kit>-b<run>.<attempt>.g<sha8>`；build job 只读；新增 publish job，门禁与 8.3 相同（只允许 main 上的手动 dispatch，且 build 成功）；`index.mjs append-addon` 只向 runtime-index.json 追加，重复 tag 拒绝，单次 fast-forward。
+- addon dry run CI 36971353852（b03f434）通过：实际 tag `addon-office-v0.1.1-b1.1.gb03f4345`；复审员下载 5 个平台 ZIP 核对大小和哈希，把真实 manifest 追加到真实 runtime-index 副本，原条目不变，`runtime-release.yml:77` 的门禁接受这条 entry。
+- **独立复审 5544d93e：结论 BLOCK。** P1：如果 manifest 同时带 `targets` 和 `assets`，发布时上传的是 targets，索引记录的是 assets，可能把未上传的文件或错误哈希写进索引，还可能成为 Latest。父会话修复 f5a9459：`appendAddon` 拒绝带 `targets` 或 `kind` 的 manifest（publish-release 在任何 API 调用之前就会调用它）；Latest 判断排除 addon tag。混合形状回归在去掉守卫时失败（3 pass / 1 fail），恢复后通过（10 pass / 0 fail）；随后 CI 36976333735 全绿。
+- 9.3 顺序：先发布 addon，再发布 runtime；runtime publish 会拒绝 office slot 中没有新格式 addon 的情况。
