@@ -48,7 +48,7 @@
 
 - [x] 7.1 实现 manager 独立索引、版本比较和候选验证；相同启动协议的管理器修复必须可更新，安装旧 dsh 不降级管理器，并用文件哈希/选择/快照前后对比验证只升级管理器（MC-SELF-ONLY、MC-OLD-RUNTIME）。
 - [x] 7.2 完成 POSIX 管理器同卷安全替换与故障恢复；在下载、验证、替换边界中断，验证旧或完整新入口仍可运行且应用数据不变（MC-SELF-FAIL）。
-- [ ] 7.3 完成 Windows 同程序 helper 的交接、原安装上下文传递、替换结果与残留回收；真实 Windows 验证映像占用、父进程退出、helper 中断及入口完整性，不将“已交接”误报为“已升级”（MC-SELF-FAIL）。
+- [x] 7.3 完成 Windows 同程序 helper 的交接、原安装上下文传递、替换结果与残留回收；真实 Windows 验证映像占用、父进程退出、helper 中断及入口完整性，不将“已交接”误报为“已升级”（MC-SELF-FAIL）。
 - [ ] 7.4 将 Gentoo 包改为仅安装管理器和托管标记/入口；在非特权用户下验证 runtime 安装与选版可用、self-update 在下载前拒绝，包升级/卸载不删除用户数据（PS-MANAGED、DL-MANAGED-UPDATE、DL-MANAGED-SELF、DL-MANAGED-REMOVE）。
 - [ ] 7.5 将 Scoop 管理器清单与升级/卸载行为改为相同拥有权模型；真实 Windows 执行安装、包版本升级及卸载，验证数据根稳定且 runtime/addon 管理仍可用，并准备退出旧 dsh-live/dsh-office 入口（PS-SCOOP、DL-MANAGED-UPDATE、DL-MANAGED-SELF、DL-MANAGED-REMOVE）。
 

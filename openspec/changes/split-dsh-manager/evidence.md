@@ -904,3 +904,16 @@ ebuild /var/tmp/dsh-74-gentoo/overlay/app-misc/dsh-bin/dsh-bin-1.0.1.ebuild unme
 | DL-MANAGED-REMOVE | 打开 B 的真实 held runtime 会话后，逐路径哈希 runtime/snapshot/selection/home 配置/credential；真实 Portage upgrade 后入口报告 1.0.1，用户数据完全相同；真实 unmerge 后包入口消失，用户数据完全相同，held 会话仍活着且可正常结束 |
 
 残余边界：运行包使用 Zig fake-native 新格式归档 fixture（两份真实 manager 构建和真实 Portage merge/unmerge 已执行），不宣称本切片是上游应用组合 E2E；真实 upstream/plugin 组合另归 8.1。隔离 unprivileged ROOT 未执行系统依赖解析/安装，不验证线上尚未发布的 manager URL；生成器从真实格式 index 取 asset.name，发布集成留 8.3/9。Gentoo 原生运行仅 amd64；arm64 ebuild 生成覆盖，无原生 arm64 Portage 验收。
+
+### 7.3 父会话验收
+
+- 实现：e717bf8、c33adb7、8f8e4a6、efc7612。helper 和管理器是同一个程序，只继承显式列出的句柄（PROC_THREAD_ATTRIBUTE_HANDLE_LIST），以句柄相对的方式调用 NtSetInformationFile 完成替换；交接时只报告 "handed off"，真正的结果由下一次运行时报告并消费。6952dfe 修正了一项测试的基线：之前的基线取在 holding launch 创建 `state/pnpm` 之前。
+- 独立复审（run 713b738d）结论 BLOCK，两项 P1：
+  - 消费结果文件时没有检查数据根的所有权标记，因此在未标记的目录里，`--version` 也会删除用户文件；
+  - helper 最终名字上注册了无条件的 errdefer 删除，会删掉不属于本程序的文件。
+
+  修复：69ae651（先以只读方式校验所有权标记，判定逻辑与其他地方共用）、4d520cc（移除无条件清理，残留留给 clean 处理）、9605bd9。
+- 聚焦复审（run 68ba9270）结论 **OK with notes**，无 P0/P1/P2。
+- 父会话在 9605bd9 上跑完整验证：Zig 48/48，Bun 249 pass / 25 skip / 0 fail。**CI 36947891848 三平台全绿**：windows 217 pass。8 项 Windows helper 测试（包括两项复审回归）全部实际执行并通过。
+- **Windows 证据 = GitHub windows-2022 runner。用户已于 2026-10-02 确认它算作「真实 Windows」**（适用于 7.3/7.5/8.2）。
+- 勾选 **7.3**。
