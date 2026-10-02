@@ -8,14 +8,14 @@ import { extractZip, readZipEntries, writeZip } from "../../runtime/zip.ts";
 const tmp = () => mkdtempSync(join(tmpdir(), "dsh-zip-"));
 
 function tree(root: string) {
-	mkdirSync(join(root, "bundles/V1/bin"), { recursive: true });
-	writeFileSync(join(root, "dsh"), "launcher");
-	chmodSync(join(root, "dsh"), 0o700);
-	writeFileSync(join(root, "bundles/V1/bin/pnpm"), "#!/bin/sh\n");
-	chmodSync(join(root, "bundles/V1/bin/pnpm"), 0o755);
-	writeFileSync(join(root, "bundles/V1/bundle.json"), JSON.stringify({ a: "x".repeat(4000) }));
-	chmodSync(join(root, "bundles/V1/bundle.json"), 0o600);
-	writeFileSync(join(root, "bundles/V1/.usage.lock"), "");
+	mkdirSync(join(root, "bin"), { recursive: true });
+	writeFileSync(join(root, "dsh-native"), "runtime");
+	chmodSync(join(root, "dsh-native"), 0o700);
+	writeFileSync(join(root, "bin/pnpm"), "#!/bin/sh\n");
+	chmodSync(join(root, "bin/pnpm"), 0o755);
+	writeFileSync(join(root, "bundle.json"), JSON.stringify({ a: "x".repeat(4000) }));
+	chmodSync(join(root, "bundle.json"), 0o600);
+	writeFileSync(join(root, ".usage.lock"), "");
 }
 
 /** Rewrite the (same-length) name of the single-file archive's entry in both headers. */
@@ -45,8 +45,8 @@ describe("deterministic archive (6.2)", () => {
 		const a = join(tmp(), "a.zip");
 		archive(root, a);
 		await Bun.sleep(1100);
-		writeFileSync(join(root, "dsh"), "launcher"); // new mtime
-		chmodSync(join(root, "bundles/V1/bundle.json"), 0o640); // different non-exec mode
+		writeFileSync(join(root, "dsh-native"), "runtime"); // new mtime
+		chmodSync(join(root, "bundle.json"), 0o640); // different non-exec mode
 		const b = join(tmp(), "b.zip");
 		archive(root, b);
 		expect(Bun.hash(readFileSync(a))).toBe(Bun.hash(readFileSync(b)));
@@ -59,14 +59,14 @@ describe("deterministic archive (6.2)", () => {
 		archive(root, zip);
 		const out = join(tmp(), "x");
 		extractZip(zip, out);
-		expect(readFileSync(join(out, "bundles/V1/bundle.json"), "utf8")).toBe(readFileSync(join(root, "bundles/V1/bundle.json"), "utf8"));
+		expect(readFileSync(join(out, "bundle.json"), "utf8")).toBe(readFileSync(join(root, "bundle.json"), "utf8"));
 		// Windows has no POSIX mode bits; the archives for POSIX targets are built on POSIX runners.
 		if (process.platform !== "win32") {
-			expect(statSync(join(out, "dsh")).mode & 0o777).toBe(0o755);
-			expect(statSync(join(out, "bundles/V1/bin/pnpm")).mode & 0o777).toBe(0o755);
-			expect(statSync(join(out, "bundles/V1/bundle.json")).mode & 0o777).toBe(0o644);
+			expect(statSync(join(out, "dsh-native")).mode & 0o777).toBe(0o755);
+			expect(statSync(join(out, "bin/pnpm")).mode & 0o777).toBe(0o755);
+			expect(statSync(join(out, "bundle.json")).mode & 0o777).toBe(0o644);
 		}
-		expect(existsSync(join(out, "bundles/V1/.usage.lock"))).toBe(true);
+		expect(existsSync(join(out, ".usage.lock"))).toBe(true);
 	});
 
 	test("unzip(1) agrees with the reader", () => {
@@ -133,7 +133,7 @@ describe("validating reader (7.5 unsafe entries)", () => {
 		const root = tmp();
 		tree(root);
 		if (process.platform === "win32") return; // symlink creation needs privileges on Windows
-		Bun.spawnSync(["ln", "-s", "dsh", join(root, "alias")]);
+		Bun.spawnSync(["ln", "-s", "dsh-native", join(root, "alias")]);
 		expect(() => archive(root, join(tmp(), "s.zip"))).toThrow("symlink");
 	});
 });

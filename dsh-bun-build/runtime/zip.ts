@@ -1,7 +1,6 @@
-// Minimal ZIP format shared by the build (deterministic writer, scripts/archive.mjs) and the updater
-// (validating reader). The updater runs inside dsh-native with no unzip/7z/Node on the host, so it needs
-// its own reader; owning the writer too makes archives byte-reproducible on every OS without a
-// post-normalization step.
+// Build/test ZIP utility: deterministic writer (scripts/archive.mjs) and validating reader for
+// artifact inspection and extraction. The compiled runtime entry does not import this module;
+// production installation and download validation belong to the standalone Zig manager.
 //
 // Scope: stored/deflate entries, no ZIP64 (the writer refuses what would need it), no encryption.
 import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
@@ -110,7 +109,7 @@ export function writeZip(path: string, inputs: ZipInput[]): void {
 }
 
 /**
- * Parse and validate the central directory. Throws on anything the updater must not extract: absolute
+ * Parse and validate the central directory. Throws on unsafe artifact entries: absolute
  * paths, `..`, backslashes, duplicate (also case-folded) names, symlinks, hard links or special files,
  * encryption, ZIP64, and unknown compression methods.
  */
