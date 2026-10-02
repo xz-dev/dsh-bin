@@ -37,9 +37,12 @@ jobs:
           export HOME="$root/home" USERPROFILE="$root/home" LOCALAPPDATA="$root/home" APPDATA="$root/home" XDG_DATA_HOME="" XDG_CONFIG_HOME="$root/home/.config"
           "$root/tools/$EXE" manager --version
           newest=$(curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/releases/runtime-index.json" | jq -r '.channels.release[-1].id')
-          "$root/tools/$EXE" --version </dev/null | tee "$root/out.txt"
+          # Bare --version/--help are answered by the manager itself; an app command makes the first launch
+          # install the newest published runtime, then the runtime answers --version through --use.
+          "$root/tools/$EXE" plugin --profile first --help </dev/null | tee "$root/out.txt"
           "$root/tools/$EXE" manager list | tee "$root/list.txt"
           grep -F "$newest" "$root/list.txt"
+          "$root/tools/$EXE" --use "$newest" --version </dev/null | tee "$root/version.txt"
           echo "first download installed $newest with $tag ($TARGET)" >> "$GITHUB_STEP_SUMMARY"
   scoop:
     runs-on: windows-2022
