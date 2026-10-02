@@ -834,3 +834,15 @@
 - 最终 targeted：`TMPDIR=/var/tmp/dsh-73 bun test ./test/self-update.test.ts ./test/clean.test.ts ./test/self-update-windows.test.ts` → **33 pass / 5 skip / 0 fail / 619 assertions**。五项 skip 均明确说明 Windows image/handle native evidence 必须 windows-2022，既有 POSIX 测试实际执行。
 - `zig build test --summary all` → **45/45**；`zig fmt --check src test build.zig`、x86_64-windows-gnu / aarch64-macos cross-build、`git diff --check` 全通过。两份 cross-built binary 都恰好 1 version / 1 protocol marker。
 - 剩余门禁：parent 全量 Bun、Windows 原生 CI、独立复审；7.3 checkbox 未改。不能因 cross-build 通过宣称 Windows replacement 通过。同用户最后 identity-check→rename 微窗口、可信索引内容与断电 durability 沿用不变量的接受边界。
+
+### 7.3 独立复审
+
+- 复审 run `713b738d` 返回 BLOCK，两项 P1：结果消费没有先确认数据根所有权；helper 最终名字在 no-replace 发布失败或发布后换名时被无条件错误清理误删。
+- 按 parent 批准方案：结果消费只读核验 ownership marker；未标记、损坏标记或非普通结果文件不输出、不删除、不初始化。最终 helper 不做无条件错误清理；保留给既有 exact-name/marker/identity 的 clean。
+- **P1-1 red**：新增 POSIX 可执行的 `consumeIn` 单测，`TMPDIR=/var/tmp/dsh-fix73 zig build test --summary all` → **46/47 pass、1 fail**；旧逻辑消费并删掉 `failed: user note\n`，随后读取报 `FileNotFound`。日志 `/var/tmp/dsh-fix73/p1-1-red.log`。
+- **P1-1 green**：共享 `context.validDataMarker` 与 ensureData/clean 使用相同 kind/schema 谓词；consume 先通过保留 root 句柄 no-follow 读取 marker，之后才允许消费结果，读取不创建文件。`zig build test --summary all` → **47/47**。Windows 黑盒覆盖无标记、非法 JSON、错误 kind 和目录结果文件；本机 `-t 'result consumption'` → **0 pass / 1 skip / 0 fail**（原生行为留 Windows CI）。提交 `69ae651`。
+- **P1-2 red**：将现有发布与验证抽成同一小函数，新增实际调用它的 POSIX 单测（发布冲突、发布成功后验证失败）；保留原无条件 errdefer 时 `zig build test --summary all` → **47/48 pass、1 fail**，冲突位置的 USER CREDENTIAL 被删、读取报 FileNotFound。日志 `/var/tmp/dsh-fix73/p1-2-red.log`。Windows 黑盒另用已有 DSH_MANAGER_TEST barrier 覆盖发布前用户文件冲突、发布后最终名字被替换；本机不能运行原生 Windows red。
+- **P1-2 green**：移除最终 helper 的 errdefer，私有 copy 的既有清理不变；`publishHelper` 只负责 no-replace 发布、no-follow 验证与可信哈希比较，错误时不删除最终名字。`zig build test --summary all` → **48/48**（发布冲突和验证失败均保留 USER CREDENTIAL）。提交 `4d520cc`。
+- 最终 targeted（只运行批准的三个文件，不跑全量 Bun）：`TMPDIR=/var/tmp/dsh-fix73 PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH bun test ./test/self-update-windows.test.ts ./test/self-update.test.ts ./test/clean.test.ts` → **33 pass / 7 skip / 0 fail / 619 assertions**。新增两项 Windows 黑盒（ownership、publish/replacement races）本机 skip；POSIX 单测执行了两项根因的 red/green，不以 cross-build 充当 Windows 原生证明。
+- `zig fmt --check src test build.zig`、`zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-fix73/windows`、`zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-fix73/macos`、`git diff --check` 全通过。日志集中在 `/var/tmp/dsh-fix73/`。
+- 留给 parent：完整套件、Windows 原生 CI 与聚焦复审。checkbox 未动，未 push/dispatch。新增 helper 测试暂停只通过既有 `DSH_MANAGER_TEST=1` + `DSH_MANAGER_TEST_PAUSE` 生效；生产没有新增等待/重试。失败留下的真实 helper 由既有 clean 验证归属后回收，同用户最终 identity-check→单次 unlink 的已接受窗口不变。
