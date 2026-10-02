@@ -143,7 +143,7 @@ test.skipIf(!hasZig)("MC-SNAPSHOT: concurrent starts reuse prepared snapshot wit
 	const start = async () => {
 		const p = Bun.spawn([i.exe, "--use", A, "probe"], { cwd: i.home, env: baseEnv(i), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
 		const timer = setTimeout(() => p.kill("SIGKILL"), 30_000);
-		try { const [code, stderr] = await Promise.all([p.exited, new Response(p.stderr).text(), new Response(p.stdout).text()]); expect(stderr).not.toContain("Busy"); return code; }
+		try { const [code, stderr] = await Promise.all([p.exited, new Response(p.stderr).text(), new Response(p.stdout).text()]); expect(code, `concurrent snapshot launch stderr:\n${stderr}`).toBe(0); expect(stderr).not.toContain("Busy"); return code; }
 		finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await p.exited; } }
 	};
 	try { expect(await Promise.all([start(), start()])).toEqual([0, 0]); expect(rows(i).map((s: any) => s.id)).toEqual([`${A}@1`]); }
