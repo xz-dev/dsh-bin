@@ -1065,3 +1065,58 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
 - **CI 36958074058（2a40f12，已包含 c7463ae）三平台和真实 Scoop job 全绿**：ubuntu 260 pass、macOS 256 pass、windows 226 pass，0 fail。Windows 和 Linux 上的 marker 回归测试都实际执行了。
 - 残余风险：x64 的门禁不能证明 ARM64；runtime/addon 用的是格式合法的 fixture；真实发布资产要到 9.3 才会对真实下载复验。
 - 勾选 **7.5**。
+
+### 8.3 父会话验收
+
+- 实现：032ef4e、a536fc0、bca0428、0904704、e0f6cec、2a40f12、8d5e0c6；dry-run 修复 c05272a（runtime build 与 musl 容器拿到只读 `GH_TOKEN`，用于查询 pnpm release）；复审修复 8d101cc。
+- **Bootstrap dry run，CI 36961211136（40773c7）：全绿。** 产出 manager 6 个 ZIP、runtime 12 个 ZIP；父会话下载后两份 SHA256SUMS 都通过。index 摘要：
+  - manager-index.json `83f39773bc2824626eecbc99e2907c359f5733950b8155163a0821db23f08b76`
+  - runtime-index.json `592e7681ec5019320ef4b425c5119da343584a9834284b7c18001e6f47ee4129`
+  - 没有 counterpart 时，两条 combination 按设计跳过，publish 也跳过。
+  - 前一次 bootstrap（CI 36959046623，8d5e0c6）失败：12 个 runtime build 全部因缺 `GH_TOKEN` 失败，另有 macOS 快照测试失败（见下文 40773c7）。
+- **Cross-fed dry run 使用上面固定的 run ID、artifact 名和 index SHA256 作为已验收的 counterpart。** 第一次（CI 36963561221，e5d7790）：manager combination 6/6 通过，runtime 9/12；三个 musl job 失败，原因是容器只挂载了 `dsh-bun-build`，看不到 sibling `dsh-manager/scripts/release.mjs`。修复后 **CI 36965931865（d93336b）全绿**：三平台 test、Scoop job、manager combination 6/6、runtime combination 12/12（含三个 musl 容器），两条 publish 均跳过。全过程没有重建另一产品。
+- **用真实 dry-run 制品复验**（worker f51ceec5，报告 `/var/tmp/dsh-artifact-revalidation/report.md`），制品为 36961211136 的原始字节，经本地 HTTP 源提供：
+  - 管理器 CI 制品 `1.0.0-rc.1`：首次启动（PTY）、真实 runtime 自动安装、`--version`/`--help`、快照创建和选择都通过；
+  - POSIX 自更新：升级到按正式 workflow 方式打包、源码构建的 `1.0.0-rc.2`，二进制确实被替换，mode/UID/GID 保留，30657 项受保护数据不变；
+  - uid 1000 非 root 真实 Portage：用 CI 制品安装 → 升级到新版 → 卸载，31019 项用户数据不变；托管模式下两次 self-update 都在发出网络请求前拒绝；
+  - Gentoo ebuild 和 Scoop 两个生成器直接读取真实 manager-index.json，没有名称、字段或 schema 不符。
+  - 限制：gentoo-portage-check.sh 不接受外部制品参数，这次用的是隔离的等价 harness；第二个版本是本地构建的，不是第二份 CI 制品；Windows helper 自更新和 Scoop 用真实制品的检查留给 8.1/8.2。
+- **独立复审 9587ac8e：结论 BLOCK。** 发现与处理：
+  - P1：publish 条件不限制分支和事件，合入 main 后可以从任意 ref 手动发布。8d101cc 给两份 workflow 的 publish 条件加上 `github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'`。ci.yml 的 caller 仍把 `publish: false` 写死。
+  - P2：musl combination 容器缺少 sibling 挂载。8d101cc 改为以只读方式挂载 `$GITHUB_WORKSPACE`，修复由 CI 36965931865 的 12/12 验证。
+  - 其余项复审员已核实：13 个定向测试通过；非 publish job 一律只读；18 份制品哈希和两个 index 摘要相符；Linux x64 双向组合通过且没有重建。
+  - 两处修复都只是缩小条件或改挂载路径，没有新增机制，因此不再发起第三轮复审；修复效果由 CI 实测确认。
+- actionlint 1.7.7：只剩 `macos-15-intel` 和 `windows-11-arm` 两条未知 runner 标签。这两种 runner 在 36961211136 和 36965931865 中都实际启动并成功，属于工具内置标签表过旧。
+- 已记录的遗留：
+  - addon.yml 仍传 `launcherCommit`，是 9.3 的阻塞项；
+  - 新 workflow 只有进入默认分支后才能真正 dispatch 发布，见下方 9.2 准备；
+  - `upstream-diff.mjs` 以及 `build.yml` 中对已删除文件的引用属于旧自动化，9.2 停用。
+- 勾选 **8.3**。
+
+### 8.4 父会话验收
+
+- 实现：89a1506（双语 README 和 `desc/**` 重写、新增补全文档）。13 个 `docs → desc` 移动和根目录 `install.sh` 的删除，因并行 worker 共享 git index，被 8.5 的提交 afb83d2 一并带入：内容正确，提交边界混合，父会话决定保留且不改写历史。此后所有 worker 都只用 `git commit --only -- <paths>` 提交。另：e5d7790 修正管理器 help 中过时的 "not installed yet"。
+- worker 验证：88 个相对链接/锚点全部有效；61 个命令示例核对通过；在隔离 HOME 下做了 31 项原生 help、只读和补全检查，没有创建数据根；没有迁移指南。
+- **独立复审 5e7bfea5**：P2，`desc/{en,zh-CN}/how-it-works.md:42` 把 runtime 资产写成 `dsh-<target>.zip`，实际是 `runtime-<target>.zip`（local-build.mjs:21，以及 36961211136 的 12 份真实制品）。d93336b 已修正。复审员还独立核实：88 个链接（含 6 个锚点）有效；中英文命令一致；help、info、列表、选择和四种 shell 补全的 dry-run 都与文档一致；托管模式的 update/uninstall 命令与打包一致；文档没有声称已有尚未发布的 release。
+- CI 36965931865（d93336b）三平台全绿。勾选 **8.4**。
+
+### 8.5 父会话验收
+
+- 实现：afb83d2、da8252b。删除 `dsh-bun-build/legacy-manager-reference/**`（33 个文件）、旧 `scripts/e2e.mjs`、`scripts/local-e2e.mjs`；ZIP 测试改为单 runtime 根布局，addon fixture 改为新格式；净减 6041 行。
+- 四项证明（worker）：
+  - 源码依赖：`rg` 在 runtime/scripts 中零匹配；Bun 入口图 11 个模块，不含管理引擎；
+  - RB-CONTENTS：只拷贝 runtime 项目，在空 PATH 下组装出真实 ZIP，30285 项，根目录只有 runtime 内容；
+  - 隔离环境 `bun test ./test/unit ./test/runtime`：99 pass / 0 fail / 375 assertions；
+  - 独立构建：manager-only 目录在空 PATH 下 `zig build` 成功，`zig build test` 48/48，六目标 cross-build 通过；runtime-only 构建不需要 Zig/manager，真实 `dsh-native --version/--help` 在空 PATH 下返回 0。
+- **独立复审 5e7bfea5：8.5 通过。** 复审员独立重做：两侧隔离构建、99 pass、12 份真实 runtime ZIP 的大小/哈希/manifest 都匹配且不含管理器（linux-x64 有 30633 项）；新 workflow 没有引用已删除文件。
+- 保留 `runtime/zip.ts` 和 `readonly.ts`：构建、制品检查和测试仍在调用，它们不进入运行时入口图。
+- CI 36965931865 三平台全绿；runtime 12/12 组合使用的就是不含旧管理器的真实制品。勾选 **8.5**。
+
+### 9.2 准备记录（尚未执行）
+
+- **合并与发布顺序（用户 2026-10-02 选择：由 agent 自行合并）**：GitHub 只能 dispatch 默认分支上已有的 workflow，所以真实发布（9.3）必须在 feat/split-dsh-manager 合入 main 之后，从 main 执行。第 8 节全部门禁变绿后，由 agent 开 PR 并自行合并；**同一个 PR 必须暂停旧的 upstream-poll（schedule，每日 4 次，调用 build.yml）和 build.yml 的发布路径**，保证旧调度器不会在新树上运行。删除旧 release 仍要等用户对精确清单明确确认。
+- 本分支上的旧自动化已失效或过时，需要在 9.2 暂停或退役：
+  - `build.yml:140` 引用已删除的 `runtime/update/addon-resolve.ts`；
+  - `build.yml:157/162` 调用已删除的 `scripts/e2e.mjs`；
+  - `scripts/upstream-diff.mjs` 对全仓库做 diff，并读取旧字段 `launcherCommit`。
+- 新 workflow 已为合入后做好准备：publish 只允许 main 上的手动 dispatch；main 上的 push 仍按 manager/runtime 路径过滤，只构建和验证，不发布。
