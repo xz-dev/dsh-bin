@@ -846,3 +846,61 @@
 - 最终 targeted（只运行批准的三个文件，不跑全量 Bun）：`TMPDIR=/var/tmp/dsh-fix73 PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH bun test ./test/self-update-windows.test.ts ./test/self-update.test.ts ./test/clean.test.ts` → **33 pass / 7 skip / 0 fail / 619 assertions**。新增两项 Windows 黑盒（ownership、publish/replacement races）本机 skip；POSIX 单测执行了两项根因的 red/green，不以 cross-build 充当 Windows 原生证明。
 - `zig fmt --check src test build.zig`、`zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-fix73/windows`、`zig build -Dtarget=aarch64-macos --prefix /var/tmp/dsh-fix73/macos`、`git diff --check` 全通过。日志集中在 `/var/tmp/dsh-fix73/`。
 - 留给 parent：完整套件、Windows 原生 CI 与聚焦复审。checkbox 未动，未 push/dispatch。新增 helper 测试暂停只通过既有 `DSH_MANAGER_TEST=1` + `DSH_MANAGER_TEST_PAUSE` 生效；生产没有新增等待/重试。失败留下的真实 helper 由既有 clean 验证归属后回收，同用户最终 identity-check→单次 unlink 的已接受窗口不变。
+
+## 7.4 Gentoo 仅托管管理器
+
+- 范围：manager-index 的独立版本/资产生成 ebuild，仅安装管理器、`.dsh-manager-install.json` 与 `/usr/bin/dsh`；真实非 root Portage 生命周期运行在 `/var/tmp/dsh-74-gentoo/`，不修改系统 Portage 状态。
+- Red（改实现前）：`TMPDIR=/var/tmp bun test ./test/gentoo.test.ts` → **1 pass / 2 fail**（`/var/tmp/dsh-74-red.log`）；旧 generator 只读 runtime channels、版本含旧 `-xz` 身份，拒绝 manager SemVer，旧模板还捆绑 runtime/office 且使用已退役 marker。
+
+### 7.4 实现与自动化 Green（尚未验收）
+
+- 94d9848：generator 改读 `manager-index.json`（schema 1 / versions / manager-v SemVer），按独立 SemVer 选择最高版本；alpha.N/beta.N/rc.N 映射 Gentoo suffix，build metadata 不改变 PV。未知 prerelease 明确拒绝，不猜测版本序。Linux 资产的下载文件名使用索引 `assets[linux-x64|linux-arm64].name`，没有硬编码仍未发布的 manager 文件名；本地 DIST 名带 manager tag，避免不同版本冲突。校验 tag、协议、文件名、大小、SHA-256，防止把任意文本插入 ebuild。
+- 包只拥有 `/usr/lib/dsh-bin/dsh`、只读 `.dsh-manager-install.json`（`{"schema":1,"owner":"portage"}`）和 `/usr/bin/dsh` 相对链接。不捆绑 runtime/addon，不写用户默认版本，不使用旧 `.portage.managed.lock`，不需要 runtime 的 git/office 依赖。`doexe`/`doins` 精确安装两份文件，不递归复制归档树。
+- dcc6369：新增真实 non-root Portage 生命周期驱动、替换旧 root-only layout 脚本；托管 self-update 的建议命令修正为实际包 atom `emerge --ask --update app-misc/dsh-bin`。这条提示 red：3 pass / 1 fail（`/var/tmp/dsh-74-command-red.log`）；收到旧 `emerge ... dsh` 与新包 atom 不匹配。
+- 01b3bbc：真实运行不再跳过 Manifest；`ebuild ... manifest` 生成 BLAKE2B/SHA512，随后 install/merge/upgrade/unmerge 全按正常 Manifest 校验执行。
+- Green：`TMPDIR=/var/tmp bun test ./test/gentoo.test.ts ./test/self-update.test.ts` → **24 pass / 0 fail / 419 断言**（`/var/tmp/dsh-74-targeted.log`）。`zig build test --summary all` → **48/48**；`zig fmt --check src test build.zig`、两脚本 `sh -n`、`git diff --check` 均通过。唯一 manager 源码改动是 Gentoo 提示的包 atom，Windows x64 / macOS arm64 cross-build 都通过，前缀 `/var/tmp/dsh-74-windows`、`/var/tmp/dsh-74-macos`。未运行全量 Bun；留父会话跑全量与 CI。
+
+### real non-root portage run in /var/tmp/dsh-74-gentoo (user-approved)
+
+**非 root 真实 Portage 3.0.82.2，uid=1000；不是仅模拟 package layout。** 用户授权普通用户隔离运行，未使用 sudo/doas，也未修改 `/etc/portage`、系统 `/var/db/pkg`、`/var/db/repos` 或真实 HOME。
+
+可复跑入口（仅 Linux x64/Gentoo，缺依赖直接失败；已有非日志 scratch state 也直接拒绝）：
+
+```sh
+cd dsh-manager
+timeout 350 sh scripts/gentoo-portage-check.sh
+```
+
+该脚本的实际命令（由源码固定，全部配置/安装根在隔离目录）：
+
+```sh
+zig build -Dversion=1.0.0 --prefix /var/tmp/dsh-74-gentoo/build1
+zig build -Dversion=1.0.1 --prefix /var/tmp/dsh-74-gentoo/build2
+# writeZip 各生成只有 dsh 的 manager ZIP；gentooEbuild 从 manager-index fixture 生成两个真实 ebuild。
+# 安装只执行 amd64；未被安装的 arm64 Manifest fixture 使用同字节，仅服务离线 hash/Manifest 生成，不宣称 arm64 原生运行。
+env -i PATH=/usr/bin:/bin HOME=/var/tmp/dsh-74-gentoo/home \
+  ROOT=/var/tmp/dsh-74-gentoo/root PORTAGE_CONFIGROOT=/var/tmp/dsh-74-gentoo/config \
+  TMPDIR=/var/tmp/dsh-74-gentoo/tmp \
+  ebuild /var/tmp/dsh-74-gentoo/overlay/app-misc/dsh-bin/dsh-bin-1.0.0.ebuild manifest
+env -i PATH=/usr/bin:/bin HOME=/var/tmp/dsh-74-gentoo/home \
+  ROOT=/var/tmp/dsh-74-gentoo/root PORTAGE_CONFIGROOT=/var/tmp/dsh-74-gentoo/config \
+  TMPDIR=/var/tmp/dsh-74-gentoo/tmp \
+  ebuild /var/tmp/dsh-74-gentoo/overlay/app-misc/dsh-bin/dsh-bin-1.0.0.ebuild clean install merge
+sh scripts/gentoo-layout-check.sh /var/tmp/dsh-74-gentoo/root
+TMPDIR=/var/tmp/dsh-74-gentoo/tmp DSH_GENTOO_TEST_ROOT=/var/tmp/dsh-74-gentoo/root \
+  bun test ./test/gentoo.test.ts
+# 上述测试内，仍 env -i / isolated ROOT / CONFIGROOT / HOME，真实调用：
+ebuild /var/tmp/dsh-74-gentoo/overlay/app-misc/dsh-bin/dsh-bin-1.0.1.ebuild clean install merge
+ebuild /var/tmp/dsh-74-gentoo/overlay/app-misc/dsh-bin/dsh-bin-1.0.1.ebuild unmerge
+```
+
+日志保留在 `/var/tmp/dsh-74-gentoo/logs/{manifest.log,Manifest,install1.log,upgrade.log,unmerge.log,real.log,build1.log,build2.log}`；退出 trap 删除 root/config/overlay/dist/tmp/home/builds，仅留 logs。最终复跑 **4 pass / 0 fail / 53 断言**，`gentoo manager-only layout: ok`。upgrade 日志明确记录旧 1.0.0 “Original instance of package unmerged safely”，新 1.0.1 merged；unmerge 日志只删除两份包文件、入口链接及空程序父目录。
+
+| 场景 | 自动化与真实运行证据 |
+|---|---|
+| PS-MANAGED | 实际安装入口 `manager info` 为 portage；prefix 文件/目录 chmod 0444/0555，只能写隔离 `$XDG_DATA_HOME/dsh-bin`；安装两版 runtime 后包树 hashes 完全不变，包目录无相邻 dsh-bin 数据根 |
+| DL-MANAGED-UPDATE | 本地录请求 server 提供两个新格式 bundle；真实 Zig manager 原生 install 两版，select A/B、普通 launch、snapshot new --empty 均成功；fake-native 记录真实启动载荷，不用 Node/Bun 代做管理操作 |
+| DL-MANAGED-SELF | 初始化前与升级后都执行 self-update，非零拒绝并提示 `emerge --ask --update app-misc/dsh-bin`；每次 server 请求数不增加；第一次不创建 data root |
+| DL-MANAGED-REMOVE | 打开 B 的真实 held runtime 会话后，逐路径哈希 runtime/snapshot/selection/home 配置/credential；真实 Portage upgrade 后入口报告 1.0.1，用户数据完全相同；真实 unmerge 后包入口消失，用户数据完全相同，held 会话仍活着且可正常结束 |
+
+残余边界：运行包使用 Zig fake-native 新格式归档 fixture（两份真实 manager 构建和真实 Portage merge/unmerge 已执行），不宣称本切片是上游应用组合 E2E；真实 upstream/plugin 组合另归 8.1。隔离 unprivileged ROOT 未执行系统依赖解析/安装，不验证线上尚未发布的 manager URL；生成器从真实格式 index 取 asset.name，发布集成留 8.3/9。Gentoo 原生运行仅 amd64；arm64 ebuild 生成覆盖，无原生 arm64 Portage 验收。
