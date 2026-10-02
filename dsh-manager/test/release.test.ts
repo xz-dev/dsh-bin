@@ -13,6 +13,7 @@ import { publishRelease } from "../../dsh-bun-build/scripts/publish-release.mjs"
 import { sha256 } from "../scripts/release.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "dsh-independent-release-"));
+const bashPath = (p: string) => process.platform === "win32" ? p.replaceAll("\\", "/").replace(/^([A-Za-z]):\//, (_, drive) => `/${drive.toLowerCase()}/`) : p;
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 function bytes(t: string, v = "1.2.3-rc.1") {
 	const b = Buffer.alloc(160); const x64 = t.endsWith("x64");
@@ -52,7 +53,7 @@ test("DL-MANAGER-ONLY: manager/runtime dry-run generators and Git index publicat
 	for (const [name, text] of Object.entries(original)) writeFileSync(join(seed, name), text);
 	git("add", "index.json", "runtime-index.json", "manager-index.json"); git("commit", "-qm", "seed"); git("push", "-q", remote, "HEAD:releases");
 	const script = resolve(import.meta.dir, "../../dsh-bun-build/scripts/publish-index.sh");
-	const publish = (product: string, data: object) => { const f = join(dir, `${product}-manifest.json`); writeFileSync(f, JSON.stringify(data)); const p = spawnSync("bash", [script, product, f], { env: { ...process.env, DSH_BIN_INDEX_REMOTE: remote, RUNNER_TEMP: dir }, encoding: "utf8" }); expect(p.stderr, p.stdout).not.toContain("Error"); expect(p.status, p.stderr).toBe(0); };
+	const publish = (product: string, data: object) => { const f = join(dir, `${product}-manifest.json`); writeFileSync(f, JSON.stringify(data)); const p = spawnSync("bash", [bashPath(script), product, bashPath(f)], { env: { ...process.env, DSH_BIN_INDEX_REMOTE: bashPath(remote), RUNNER_TEMP: bashPath(dir) }, encoding: "utf8" }); expect(p.stderr, p.stdout).not.toContain("Error"); expect(p.status, p.stderr).toBe(0); };
 	const read = (f: string) => execFileSync("git", ["--git-dir", remote, "show", `releases:${f}`], { encoding: "utf8" });
 	publish("manager", m); expect(read("runtime-index.json")).toBe(original["runtime-index.json"]); expect(read("index.json")).toBe(original["index.json"]);
 	const manager = read("manager-index.json"); publish("runtime", manifest()); expect(read("manager-index.json")).toBe(manager); expect(read("index.json")).toBe(original["index.json"]);
@@ -95,7 +96,7 @@ test("8.3: manager publication is prerelease, immutable, never Latest, and verif
 test("8.3: executable workflow preflight permits explicit bootstrap but refuses publication or malformed counterpart inputs", () => {
 	const w = Bun.YAML.parse(readFileSync(resolve(import.meta.dir, "../../.github/workflows/manager-release.yml"), "utf8")) as any;
 	const script = w.jobs.build.steps.find((s: any) => s.id === "identity").run;
-	const run = (extra: Record<string, string>) => spawnSync("bash", ["-c", script], { cwd: resolve(import.meta.dir, "../.."), env: { ...process.env, VERSION: "1.0.0-rc.1", PUBLISH: "false", INDEX: "", RUN: "", ARTIFACT: "", DIGEST: "", GITHUB_OUTPUT: join(root, "outputs"), ...extra }, encoding: "utf8" });
+	const run = (extra: Record<string, string>) => spawnSync("bash", ["-c", script], { cwd: resolve(import.meta.dir, "../.."), env: { ...process.env, VERSION: "1.0.0-rc.1", PUBLISH: "false", INDEX: "", RUN: "", ARTIFACT: "", DIGEST: "", GITHUB_OUTPUT: bashPath(join(root, "outputs")), ...extra }, encoding: "utf8" });
 	const dry = run({}); expect(dry.status).toBe(0); expect(dry.stdout).toContain("combination gate skipped: no accepted counterpart (bootstrap)");
 	const pub = run({ PUBLISH: "true" }); expect(pub.status).not.toBe(0); expect(pub.stderr).toContain("publish refused");
 	const bad = run({ INDEX: "https://fixture.invalid/index", DIGEST: "bad" }); expect(bad.status).not.toBe(0);
