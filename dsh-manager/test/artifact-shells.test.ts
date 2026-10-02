@@ -2,10 +2,21 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { artifactShells } from "../../dsh-bun-build/scripts/artifact-e2e.mjs";
+import { artifactShells, checkedProcess } from "../../dsh-bun-build/scripts/artifact-e2e.mjs";
 import { addRuntime, baseEnv, cleanup, hasZig, newInstall, tree, WIN } from "./harness.ts";
 
 afterEach(cleanup);
+for (const [name, script] of [
+	["descendant keeps output pipes open", "sleep 1 & exit 0"],
+	["SIGTERM handler exits successfully", "trap 'exit 0' TERM; while :; do :; done"],
+]) {
+	test.skipIf(WIN)(`RL-ARTIFACT-E2E: deadline rejects when ${name}`, async () => {
+		const start = performance.now();
+		await expect(checkedProcess(["/bin/sh", "-c", script], import.meta.dir, process.env, 200)).rejects.toThrow(/timed out after 0\.2s:/);
+		expect(performance.now() - start).toBeLessThan(800);
+	}, 2_000);
+}
+
 test.skipIf(!hasZig)("SC-SHELLS: artifact acceptance loads installed native hooks and restores profiles without launching runtime", async () => {
 	const i = newInstall(), runtime = "1.0.0";
 	addRuntime(i.data, runtime, { completion: { schemaVersion: 1, commands: [{ name: "", options: [] }, { name: "plugin", options: [] }] } });

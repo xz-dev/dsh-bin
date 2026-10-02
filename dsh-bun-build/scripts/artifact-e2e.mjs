@@ -29,11 +29,20 @@ async function assetBytes(entry, asset, source, repo) {
 	if (bytes.length !== asset.size || sha256(bytes) !== asset.sha256) throw new Error(`${asset.name}: size/SHA256 mismatch`);
 	return bytes;
 }
-async function checkedProcess(command, cwd, env) {
+export async function checkedProcess(command, cwd, env, timeoutMs = 90_000) {
 	const p = Bun.spawn(command, { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-	const timer = setTimeout(() => p.kill(), 90_000);
+	let timer;
+	const deadline = new Promise((_, reject) => {
+		timer = setTimeout(() => {
+			reject(new Error(`timed out after ${timeoutMs / 1000}s: ${command.join(" ")}`));
+			if (p.exitCode === null) p.kill();
+		}, timeoutMs);
+	});
 	try {
-		const [code, out, err] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+		const [code, out, err] = await Promise.race([
+			Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]),
+			deadline,
+		]);
 		if (code !== 0) throw new Error(`${command.join(" ")}: exit ${code}\n${out}\n${err}`);
 		return out;
 	} finally { clearTimeout(timer); if (p.exitCode === null) p.kill(); }
