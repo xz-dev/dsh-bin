@@ -58,7 +58,7 @@ test("DL-MANAGER-ONLY: manager/runtime dry-run generators and Git index publicat
 	const read = (f: string) => execFileSync("git", ["--git-dir", remote, "show", `releases:${f}`], { encoding: "utf8" });
 	publish("manager", m); expect(read("runtime-index.json")).toBe(original["runtime-index.json"]); expect(read("index.json")).toBe(original["index.json"]);
 	const manager = read("manager-index.json"); publish("runtime", manifest()); expect(read("manager-index.json")).toBe(manager); expect(read("index.json")).toBe(original["index.json"]);
-});
+}, 60_000); // Real git + bash publishes; Windows runners took up to 5 s (CI 37013010606).
 
 test("8.3: runtime aggregate accepts D10 identities and refuses mixed builder/protocol or corrupt bytes", () => {
 	const dir = join(root, "runtime"); mkdirSync(dir); const m = manifest(); writeFileSync(join(dir, `${m.tag}.linux-x64-modern.json`), JSON.stringify(m)); writeFileSync(join(dir, "runtime-linux-x64-modern.zip"), "zip");

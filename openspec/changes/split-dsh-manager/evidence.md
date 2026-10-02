@@ -1215,3 +1215,18 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
 - 用户选择：**先发布 0.1.7-rc.2，再发布 0.2.0-rc.2**（发布不可变，索引只追加，第一条永久保留）。
 - 以 0.2.0-rc.2 作为 A 的组合 E2E（CI 36996991154）在 empty-install 断言失败：manager 正确地默认安装了更新的 0.2.0-rc.2，但测试固定认为来自 B 的 runtime 才是默认值。35a4c12 改为按 manager 的排序规则（commitTime→run→attempt）确定默认 runtime。本地用真实 CI 制品验证两种输入顺序都 1 pass：原组合 62952 assertions；0.2.0-rc.2 组合 63729 assertions，10 个步骤全部通过。
 - **CI 36999654680（35a4c12）全绿**（22 success / 4 skipped，跳过的是 manager 侧组合和 publish job）：三平台 test、Scoop、0.2.0-rc.2 runtime dry run，以及 A = 36994120887（0.2.0-rc.2 + manager 1.0.0-rc.1）、B = 36978469829（0.1.7-rc.2 + manager 1.0.1-rc.1）的 `combined-artifact-e2e`。Linux 和 Windows 都跑完 10 个步骤（63729 / 65037 assertions），包括 Windows helper 自更新和两个 runtime 的断网搬迁。
+
+### 9.3 发布计划（合并后，从 main 执行）
+
+- 合并：PR #1 在 checks（三平台 test + Scoop）通过后由 agent 合并到 main，合并提交 243621d（用户此前选择由 agent 自行合并）。合并后 main 上首轮 push 运行 runtime-release 37002473406、CI 37002474092、manager-release 37002473404 全部 success（都是路径触发的 dry run，没有发布）。旧 upstream-poll、build.yml 已从 main 删除。
+- **正式冻结**（9.2，在 main 上运行，旧自动化已删除）：`/var/tmp/dsh-92/frozen.json`，sha256 `398fa2a99317a79a46073fd2048c9e765016e93a1b6cf848a5f6754da97663aa`。7 个旧 release（release 4 / live 2 / addon 1），90 个资产，9,453,669,026 bytes，新家族 0，未知 0。release ID 和资产与演练清单完全相同；摘要不同，只是因为 discovery 中记录的 README 内容已更新，且 install.sh 已不存在。
+- 用户决定（2026-10-02）：manager 版本 `1.0.0`；首发顺序是 runtime 0.1.7-rc.2，再 0.2.0-rc.2；Gentoo ebuild 和 Manifest 由 agent 生成并用非 root Portage 校验后交给用户，由用户放入自己的 overlay；Scoop 在 9.3 只更新 `bucket/dsh.json`，`dsh-live.json`/`dsh-office.json` 作为旧下载入口在 9.4 确认清单后移除。
+- 顺序（每一步都核对已发布资产与索引一致后再进行下一步）：
+  1. addon：`addon.yml` publish，commit=`477b4f42…`（dsh-v0.1.7-rc.2）。slot 8e816b7e 同时适用于 0.1.7-rc.2 和 0.2.0-rc.2。它会先创建 runtime-index.json（runtime 发布要求 slot 中已有新格式 addon）。
+  2. 同时，在 main 上跑一次 runtime dry run（channel=release，upstream=dsh-v0.1.7-rc.2，publish=false），作为 manager 发布时组合门禁的已验收 counterpart。
+  3. manager `1.0.0` publish，prerelease=false，accepted_run 填第 2 步的 run，以 artifact + index sha256 固定。
+  4. runtime 0.1.7-rc.2 publish：accepted_index 为已发布的 manager-index.json，并固定其 sha256。
+  5. runtime 0.2.0-rc.2 publish：输入同上。
+  6. Scoop：只更新 dsh.json；生成 Gentoo 文件。
+  7. 真实验证：从已发布 release 首次下载并安装，跑一遍 Scoop 安装，用 Portage 校验 ebuild。
+- 每个 publish 都受门禁约束：只允许 main 上手动 dispatch、组合门禁必须成功、immutable release、逐资产哈希校验、attestation 校验、索引单次 fast-forward 追加。所有门禁都不放宽。

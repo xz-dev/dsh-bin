@@ -273,8 +273,10 @@ test.skipIf(!hasZig)("MC-EMPTY: exact tags/unique prefixes reused; ambiguous pre
 		expect((await install(i, s.origin, ["0.1.7-b1"])).status).toBe(0);
 		expect((await install(i, s.origin, [f.tag])).status).toBe(0);
 		expect(run(i, ["manager", "list"]).stdout).toContain(other);
+		// Plain `list` stays local: no request reaches the source. (`--available` must never fall back to the
+		// production index from a test: it once passed only because that URL returned 404 before publication.)
 		const before = s.requests.length;
-		expect(run(i, ["manager", "list", "--available"]).status).toBe(1);
+		expect(run(i, ["manager", "list"]).status).toBe(0);
 		expect(s.requests.length).toBe(before);
 	} finally { await s.stop(); }
 });
