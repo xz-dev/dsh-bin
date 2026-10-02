@@ -1243,7 +1243,7 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
 - **Scoop**：`bucket/dsh.json` 切到 manager 1.0.0（scoop 分支提交 156b17d，只改这一个文件；推送前看过 diff）。没有使用 `publish-scoop-bucket.sh`，因为它会重建整个 bucket 并删除 dsh-live/dsh-office，而用户选择的是这两个文件留到 9.4。已有 Scoop 用户下次 `scoop update dsh` 时会得到只含管理器的新包，没有迁移，旧数据不动。
 - **真实验证**（published-check.yml，只读；新 workflow 只能从默认分支 dispatch，因此经 PR #2 和 #3 合入）：
   - Scoop（run 37017913881，windows-2022）：真实 Scoop 克隆已发布的 bucket，`scoop install dsh-bin/dsh` 下载 manager-v1.0.0；install mode 为 scoop；`dsh manager update` 安装 0.2.0-rc.2-b4；`dsh manager self-update` 拒绝并提示改用 `scoop update dsh`；`scoop uninstall` 成功。
-  - 首次下载（同一次 run）：Linux x64 和 macOS arm64 从已发布 manager-index 取最新 manager，校验大小和哈希，首次运行应用命令后安装了 runtime-index 中最新的 0.2.0-rc.2-b4，`--use … --version` 通过。windows-x64 这个 job 在 Git Bash 步骤中没有任何输出就以 exit 1 结束，原因没有查明；同一 run 里真实 Windows 已经从已发布 bucket 下载 manager 1.0.0、安装最新 runtime 并运行成功，所以 Windows 的首次下载能力有证据覆盖，这个 job 记为检查脚本问题，未关闭。
+  - 首次下载（同一次 run）：Linux x64 和 macOS arm64 从已发布 manager-index 取最新 manager，校验大小和哈希，首次运行应用命令后安装了 runtime-index 中最新的 0.2.0-rc.2-b4，`--use … --version` 通过。windows-x64 这个 job 在 Git Bash 步骤中没有任何输出就以 exit 1 结束，原因当时没有查明；同一 run 里真实 Windows 已经从已发布 bucket 下载 manager 1.0.0、安装最新 runtime 并运行成功。该结果覆盖 Scoop 托管安装，不替代 Windows 便携模式首次下载验收；这个失败仍待定位和复验。
   - 本机 Linux 也做了同样的首次下载：manager 1.0.0 安装 0.2.0-rc.2-b4。
   - Gentoo：从已发布 manager-index 生成 `dsh-bin-1.0.0.ebuild` 和 Manifest。Manifest 中的 DIST 大小和 SHA256 与已下载的已发布 zip 一致。在本机以 uid 1000 非 root 跑真实 Portage，`DSH_GENTOO_MANAGER_ZIP` 指向已发布的 manager-linux-x64.zip：install → upgrade → unmerge，6 pass / 0 fail，数据、凭据、会话保留。按用户选择，文件放在 `/var/tmp/dsh-bin-gentoo-1.0.0/app-misc/dsh-bin/`，由用户加入自己的 overlay。
 - 发布后的修正（都经 PR 和三平台 CI）：
@@ -1283,13 +1283,13 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
 - 删除之后新安装和更新仍然可用（published-check run 37019461210）：
   - Scoop（windows-2022）：从已发布 bucket install → `manager update` 安装 0.2.0-rc.2-b4 → 运行 → self-update 拒绝并提示 scoop → uninstall，通过；
   - 首次下载：Linux x64 和 macOS arm64 通过；
-  - windows-x64 首次下载 job 与删除前一样，在 Git Bash 步骤中无输出就 exit 1（删除前的 run 37017913881 也是如此）。Windows 上的下载、安装和运行已由 Scoop job 证明，这一项作为检查脚本的遗留问题列入残余风险。
+  - windows-x64 首次下载 job 与删除前一样，在 Git Bash 步骤中无输出就 exit 1（删除前的 run 37017913881 也是如此）。Windows 上的托管下载、安装和运行已由 Scoop job 证明，但不能据此认定便携首次下载失败属于检查脚本，也不能替代该路径的复验。
 - 没有项目被权限或不可变规则阻塞，冻结清单已经全部清空。
 - 勾选 **9.5**。
 
 ### 9.6 交付与验收
 
 - 交付报告（2026-10-02）已逐项给出：实现范围；各切片 red/green 证据的位置（本文件）；跨平台 CI、原生组合、shell 矩阵、组合 E2E、真实 Portage、真实 Scoop 和首次下载的记录；新发布地址（manager-v1.0.0、runtime-v0.1.7-rc.2-b3、runtime-v0.2.0-rc.2-b4、addon-office-v0.1.1-b2、releases 分支两份索引、scoop 分支 dsh.json、Gentoo 文件路径）；旧发布清理结果（7 个删除，90 个 URL 返回 404）。
-- 报告中明确列出的残余风险和未执行检查：windows-x64 首次下载 job 无输出失败（检查脚本问题，Windows 能力由 Scoop job 覆盖）；ARM64 Portage 和 Scoop、Windows ConPTY 交互、addon 的 PDF 转换、TUI 交互重启都没有执行；深度 E2E 只覆盖 Linux 和 Windows x64；此前接受的残余风险（最终身份检查到 unlink 之间的窗口、浅层原生 header 检查、断电持久性、初始化残留需手动恢复）；macOS 快照并发修复没有在实机上复现根因；schedule 尚未在真实 cron 下运行。
+- 报告中明确列出的残余风险和未执行检查：windows-x64 首次下载 job 无输出失败（原因未定位；Scoop 只覆盖托管路径，便携首次下载复验待完成）；ARM64 Portage 和 Scoop、Windows ConPTY 交互、addon 的 PDF 转换、TUI 交互重启都没有执行；深度 E2E 只覆盖 Linux 和 Windows x64；此前接受的残余风险（最终身份检查到 unlink 之间的窗口、浅层原生 header 检查、断电持久性、初始化残留需手动恢复）；macOS 快照并发修复没有在实机上复现根因；schedule 尚未在真实 cron 下运行。
 - 用户回复 “ok”，确认验收（2026-10-02）。Gentoo ebuild 由用户自行加入 overlay。
 - 勾选 **9.6**。

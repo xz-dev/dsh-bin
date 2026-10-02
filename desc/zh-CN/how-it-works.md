@@ -43,6 +43,8 @@ installation/
 
 [管理器发布 CI](../../.github/workflows/manager-release.yml)只构建管理器；[运行包发布 CI](../../.github/workflows/runtime-release.yml)只构建运行包。组合门禁消费固定的另一方制品，不重编它。Dry-run 不发布；[CI 入口](../../.github/workflows/ci.yml)提供手动 `release_dry_run` 调用，硬编码关闭发布。公开发布等待发布门禁，以及需要时兼容 addon 就绪。GitHub 全局 Latest 不是发现协议。
 
+运行包流程每日在 UTC 00:17、06:17、12:17、18:17 检查最新上游 release tag：已发布则不构建，新 tag 只自动构建和组合验证，不自动发布。发布必须在 `main` 上手动触发并传入已验收管理器索引及 SHA-256。Live 渠道由 `channel=live` 和明确的上游 commit 手动构建/发布，不由这个定时检查填充；只有索引中已有兼容 live 运行包时，`manager update --channel live` 才可安装它。
+
 ## 完整性和失败边界
 
 管理器下载校验索引身份、大小、SHA-256，再验证归档路径、required content 和启动兼容性。链接或穿越不能授权写出所属目标范围。验证完成后才激活候选；失败不静默改选、不接管无关数据。

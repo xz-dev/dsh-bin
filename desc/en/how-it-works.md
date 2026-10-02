@@ -43,6 +43,8 @@ Manager assets are `manager-<os>-<arch>.zip` and each contains one executable. R
 
 [Manager release CI](../../.github/workflows/manager-release.yml) builds only the manager; [runtime release CI](../../.github/workflows/runtime-release.yml) builds only runtimes. Combination gates consume a pinned counterpart artifact instead of rebuilding it. Dry-run builds do not publish; the [CI entry](../../.github/workflows/ci.yml) exposes manual `release_dry_run` calls with publication hard-coded off. Public publication waits for the release gates and a compatible addon when required. Global GitHub Latest is not a discovery protocol.
 
+The runtime workflow checks the newest upstream release tag daily at 00:17, 06:17, 12:17 and 18:17 UTC. An already published tag needs no build; a new tag triggers only a dry-run build and combination checks, never automatic publication. Publishing requires a manual dispatch on `main` with an accepted manager index and its SHA-256. Live builds/releases use a manual request with `channel=live` and an explicit upstream commit; this scheduled check does not populate that channel. `manager update --channel live` can install a runtime only after a compatible live entry is published in the index.
+
 ## Integrity and failure boundaries
 
 Manager downloads verify indexed identity, size and SHA-256, then archive paths, required content and launch compatibility. Links or traversal cannot authorize writes outside the managed destination. A candidate is activated only after validation; a failure does not silently select a substitute or adopt unrelated data.
