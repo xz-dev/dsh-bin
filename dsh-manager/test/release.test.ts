@@ -9,6 +9,7 @@ import { readZipEntries } from "../../dsh-bun-build/runtime/zip.ts";
 import { appendBundle, emptyIndex as runtimeIndex } from "../../dsh-bun-build/scripts/index.mjs";
 import { aggregateRelease } from "../../dsh-bun-build/scripts/aggregate-release.mjs";
 import { checkedIndex } from "../../dsh-bun-build/scripts/artifact-e2e.mjs";
+import { publishRelease } from "../../dsh-bun-build/scripts/publish-release.mjs";
 import { sha256 } from "../scripts/release.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "dsh-independent-release-"));
@@ -33,6 +34,9 @@ test("8.3: six single-entry manager ZIPs validate headers, markers, CRC and stri
 		writeFileSync(join(out, `manager-${t}.zip`), zip);
 	}
 	const m = aggregate(out, "1.2.3-rc.1"); const i = emptyIndex(); appendManager(i, m); const before = JSON.stringify(i); appendManager(i, m); expect(JSON.stringify(i)).toBe(before);
+	const altered = bytes("linux-x64"); altered[120] = 1; writeFileSync(join(out, "manager-linux-x64.zip"), managerZip(altered, "linux-x64", "1.2.3-rc.1"));
+	expect(() => aggregate(out, "1.2.3-rc.1")).toThrow(/original build manifest/);
+	writeFileSync(join(out, "manager-linux-x64.zip"), managerZip(bytes("linux-x64"), "linux-x64", "1.2.3-rc.1"));
 	expect(() => appendManager(i, { ...m, version: "1.2.3-rc.1+repair", tag: "manager-v1.2.3-rc.1+repair" })).toThrow(/different content/);
 	for (const v of ["01.2.3", "1.2", "1.2.3-01", "1.2.3-rc.01", "1.2.3+", "1.2.3\n"]) expect(() => version(v)).toThrow();
 });
@@ -57,6 +61,8 @@ test("DL-MANAGER-ONLY: manager/runtime dry-run generators and Git index publicat
 test("8.3: runtime aggregate accepts D10 identities and refuses mixed builder/protocol or corrupt bytes", () => {
 	const dir = join(root, "runtime"); mkdirSync(dir); const m = manifest(); writeFileSync(join(dir, `${m.tag}.linux-x64-modern.json`), JSON.stringify(m)); writeFileSync(join(dir, "runtime-linux-x64-modern.zip"), "zip");
 	expect(aggregateRelease(dir, 1).id).toBe(m.id);
+	writeFileSync(join(dir, "runtime-vother.linux-arm64.json"), JSON.stringify({ ...m, builderCommit: "e".repeat(40), targets: {} }));
+	expect(() => aggregateRelease(dir, 1)).toThrow(/builderCommit/); rmSync(join(dir, "runtime-vother.linux-arm64.json"));
 	writeFileSync(join(dir, "runtime-linux-x64-modern.zip"), "bad"); expect(() => aggregateRelease(dir, 1)).toThrow(/sha256/);
 });
 
@@ -64,6 +70,36 @@ test("RL-ARTIFACT-E2E: accepted counterpart digest is checked before parsing or 
 	const dir = join(root, "accepted"); mkdirSync(dir); const text = JSON.stringify(runtimeIndex()); writeFileSync(join(dir, "runtime-index.json"), text);
 	expect(await checkedIndex(dir, sha256(text), "runtime")).toEqual(runtimeIndex());
 	await expect(checkedIndex(dir, "0".repeat(64), "runtime")).rejects.toThrow(/SHA256 mismatch/);
+});
+
+test("8.3: manager publication is prerelease, immutable, never Latest, and verifies every uploaded asset", async () => {
+	const path = join(root, "manager/manager-manifest.json"); const m = JSON.parse(readFileSync(path, "utf8")); const calls: any[] = [];
+	let release: any = { id: 1, tag_name: m.tag, target_commitish: "a".repeat(40), draft: true, prerelease: true, immutable: false, assets: [], upload_url: "https://upload.invalid/assets{?name}" };
+	const api = async (url: any, options: any = {}) => {
+		url = String(url); calls.push({ url, method: options.method ?? "GET" });
+		if (url.endsWith("/immutable-releases")) return Response.json({ enabled: true });
+		if (url.includes("/releases/tags/")) return new Response("missing", { status: 404 });
+		if (url.includes("?per_page=")) return Response.json([]);
+		if (url.startsWith("https://upload.invalid")) { const name = new URL(url).searchParams.get("name"); release.assets.push({ name, digest: `sha256:${sha256(options.body)}` }); return Response.json({}, { status: 201 }); }
+		if (options.method === "POST") { const body = JSON.parse(options.body); expect(body.prerelease).toBe(true); expect(body.tag_name).toBe(m.tag); return Response.json(release, { status: 201 }); }
+		if (options.method === "PATCH") { const body = JSON.parse(options.body); expect(body).toEqual({ draft: false, prerelease: true, make_latest: "false" }); release = { ...release, ...body, immutable: true }; }
+		return Response.json(release);
+	};
+	const result = await publishRelease(path, { GITHUB_TOKEN: "fixture", GITHUB_REPOSITORY: "fixture/repo", GITHUB_SHA: "a".repeat(40), DSH_RELEASE_PRERELEASE: "true" }, api as typeof fetch);
+	expect(result.published).toBe(true); expect(release.assets).toHaveLength(8); expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(1);
+	let mutations = 0;
+	await expect(publishRelease(path, { GITHUB_TOKEN: "fixture", GITHUB_REPOSITORY: "fixture/repo", GITHUB_SHA: "a".repeat(40) }, (async (_u: any, o: any) => { if (o?.method) mutations++; return Response.json({ enabled: false }); }) as typeof fetch)).rejects.toThrow(/immutability is disabled/);
+	expect(mutations).toBe(0);
+});
+
+test("8.3: executable workflow preflight permits explicit bootstrap but refuses publication or malformed counterpart inputs", () => {
+	const w = Bun.YAML.parse(readFileSync(resolve(import.meta.dir, "../../.github/workflows/manager-release.yml"), "utf8")) as any;
+	const script = w.jobs.build.steps.find((s: any) => s.id === "identity").run;
+	const run = (extra: Record<string, string>) => spawnSync("bash", ["-c", script], { cwd: resolve(import.meta.dir, "../.."), env: { ...process.env, VERSION: "1.0.0-rc.1", PUBLISH: "false", INDEX: "", RUN: "", ARTIFACT: "", DIGEST: "", GITHUB_OUTPUT: join(root, "outputs"), ...extra }, encoding: "utf8" });
+	const dry = run({}); expect(dry.status).toBe(0); expect(dry.stdout).toContain("combination gate skipped: no accepted counterpart (bootstrap)");
+	const pub = run({ PUBLISH: "true" }); expect(pub.status).not.toBe(0); expect(pub.stderr).toContain("publish refused");
+	const bad = run({ INDEX: "https://fixture.invalid/index", DIGEST: "bad" }); expect(bad.status).not.toBe(0);
+	const complete = run({ PUBLISH: "true", INDEX: "https://fixture.invalid/index", DIGEST: "a".repeat(64) }); expect(complete.status).toBe(0);
 });
 
 test("8.3: parsed workflows have independent triggers and publish gates; no counterpart build", () => {

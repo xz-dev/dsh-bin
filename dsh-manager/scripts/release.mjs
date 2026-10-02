@@ -56,8 +56,10 @@ export function appendManager(index, entry) {
 }
 export function aggregate(dir, v) {
 	version(v);
+	const existing = existsSync(join(dir, "manager-manifest.json")) ? JSON.parse(readFileSync(join(dir, "manager-manifest.json"), "utf8")) : null;
 	const assets = Object.fromEntries(Object.keys(TARGETS).map((t) => {
 		const name = `manager-${t}.zip`, bytes = readFileSync(join(dir, name)); verifyZip(bytes, t, v);
+		if (existing && (existing.version !== v || existing.assets?.[t]?.name !== name || existing.assets[t].size !== bytes.length || existing.assets[t].sha256 !== sha256(bytes))) throw new Error(`manager asset differs from original build manifest: ${t}`);
 		return [t, { name, size: bytes.length, sha256: sha256(bytes) }];
 	}));
 	const m = { kind: "dsh-manager", version: v, tag: `manager-v${v}`, launchProtocols: [1], assets };

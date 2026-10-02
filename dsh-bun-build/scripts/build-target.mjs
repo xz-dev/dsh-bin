@@ -16,7 +16,7 @@ import { splitOfficeAddon } from "./split-addon.mjs";
 import { BUN_VERSION, hostTargetId, target } from "./targets.mjs";
 import { transformApp } from "./transform-app.mjs";
 
-export async function buildTarget({ targetId, channel, ref, out, run, attempt, index, work, gitDir }) {
+export async function buildTarget({ targetId, channel, ref, expectedCommit, out, run, attempt, index, work, gitDir }) {
 	const t = target(targetId);
 	// The compiled dsh-native embeds the building Bun, so a mismatched runner or musl image ships another Bun.
 	if (process.versions.bun !== BUN_VERSION) throw new Error(`build with Bun ${BUN_VERSION} (this is Bun ${process.versions.bun})`);
@@ -24,6 +24,7 @@ export async function buildTarget({ targetId, channel, ref, out, run, attempt, i
 		throw new Error(`build ${t.id} on its native runner (this host is ${hostTargetId()})`);
 	}
 	const upstream = /^[0-9a-f]{40}$/.test(ref) ? { commit: ref } : resolveRef(ref);
+	if (expectedCommit && upstream.commit !== expectedCommit) throw new Error(`upstream ref moved: ${upstream.commit} != frozen ${expectedCommit}`);
 	if (channel === "release" && !upstream.tag) throw new Error("the release channel builds a dsh-v* tag");
 	const upstreamVersion = channel === "release" ? upstream.tag.slice("dsh-v".length) : undefined;
 	mkdirSync(work, { recursive: true });
@@ -55,6 +56,7 @@ if (import.meta.main) {
 		targetId,
 		channel,
 		ref,
+		expectedCommit: opt("--expected-commit"),
 		out: resolve(out),
 		run: Number(opt("--run")),
 		attempt: Number(opt("--attempt") ?? 1),

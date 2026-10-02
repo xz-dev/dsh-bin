@@ -10,6 +10,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { distribution } from "./versioning.mjs";
 
 const API_VERSION = "2022-11-28";
 const fail = (m) => {
@@ -21,6 +22,7 @@ export function assetPaths(manifestPath, manifest) {
 	const dir = dirname(manifestPath);
 	const files = Object.values(manifest.targets ?? manifest.assets ?? {}).map((a) => a.file ?? a.name);
 	if (!files.length) fail("manifest lists no assets");
+	if (!files.every((f) => typeof f === "string" && /^[0-9A-Za-z][0-9A-Za-z._+-]*\.zip$/.test(f))) fail("invalid release asset filename");
 	const extra = manifest.kind === "dsh-manager" ? ["manager-manifest.json", "SHA256SUMS"] : manifest.targets ? ["release-manifest.json", "SHA256SUMS"] : ["addon-manifest.json"];
 	return [...files, ...extra].map((f) => join(dir, f));
 }
@@ -35,7 +37,16 @@ export async function publishRelease(manifestPath, env = process.env, fetchImpl 
 	if (!/^(?:dsh-(?:v|live-|addon-office-v)|runtime-(?:v|live-)|addon-office-v|manager-v)/.test(manifest.tag ?? "")) fail(`not a dsh-bin tag: ${manifest.tag}`);
 	const prerelease = env.DSH_RELEASE_PRERELEASE === "true";
 	const latest = !prerelease && manifest.channel === "release";
+	if (manifest.kind === "dsh-runtime") {
+		const identity = distribution({ channel: manifest.channel, upstreamVersion: manifest.upstream?.version, upstreamCommit: manifest.upstream?.commit, run: manifest.run, attempt: manifest.attempt, builderCommit: manifest.builderCommit });
+		if (identity.tag !== manifest.tag || identity.id !== manifest.id) fail("runtime manifest identity mismatch");
+	}
+	if (manifest.kind === "dsh-manager" && manifest.tag !== `manager-v${manifest.version}`) fail("manager manifest identity mismatch");
 	const paths = assetPaths(manifestPath, manifest);
+	for (const asset of Object.values(manifest.targets ?? manifest.assets)) {
+		const bytes = readFileSync(join(dirname(manifestPath), asset.file ?? asset.name));
+		if (bytes.length !== asset.size || sha256(bytes) !== asset.sha256) fail(`release asset ${asset.file ?? asset.name} differs from build manifest`);
+	}
 	const expected = new Map(paths.map((p) => [basename(p), sha256(readFileSync(p))]));
 	const api = `https://api.github.com/repos/${repository}`;
 	const headers = (extra = {}) => ({ Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`, "User-Agent": "dsh-bin-release", "X-GitHub-Api-Version": API_VERSION, ...extra });

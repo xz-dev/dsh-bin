@@ -11,8 +11,8 @@ const script = resolve(import.meta.dir, "../../scripts/index.mjs");
 const manifest = (channel = "release", run = 1) => ({
 	kind: "dsh-runtime", id: channel === "release" ? `0.1.7-b${run}.1.gdeadbeef` : `live-cafebad-b${run}.1.gdeadbeef`,
 	tag: channel === "release" ? `runtime-v0.1.7-b${run}.1.gdeadbeef` : `runtime-live-cafebad-b${run}.1.gdeadbeef`, channel,
-	upstream: { commit: "c".repeat(40), commitTime: "2026-09-01T00:00:00.000Z", version: "0.1.7" },
-	run, attempt: 1, launchProtocol: 1, builderCommit: "d".repeat(40), addons: { office: { slot: null, pinned: null } },
+	upstream: { commit: "cafebad" + "c".repeat(33), commitTime: "2026-09-01T00:00:00.000Z", version: "0.1.7" },
+	run, attempt: 1, launchProtocol: 1, builderCommit: "deadbeef" + "d".repeat(32), addons: { office: { slot: null, pinned: null } },
 	targets: { "linux-x64-modern": { file: "runtime-linux-x64-modern.zip", size: 123, sha256: "a".repeat(64) } },
 });
 const invoke = (args: string[]) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8", timeout: 15_000 });

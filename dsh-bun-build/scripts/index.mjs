@@ -1,4 +1,5 @@
 // Runtime-index v1 writer: local-build manifest in, append-only runtime entries out.
+import { distribution } from "./versioning.mjs";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 export const emptyIndex = () => ({ schema: 1, channels: { release: [], live: [] }, addons: { office: [] } });
@@ -17,11 +18,19 @@ export function parseIndex(text) {
 		for (const entry of list) {
 			if (!object(entry) || entry.kind !== "dsh-runtime" || "launcherProtocol" in entry || entry.channel !== channel || !name(entry.id) || entry.tag !== `${channel === "release" ? "runtime-v" : "runtime-"}${entry.id}` || !positive(entry.seq) || entry.seq <= seq || tags.has(entry.tag)) throw new Error(`invalid runtime entry in ${channel}`);
 			if (!object(entry.upstream) || typeof entry.upstream.commit !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(entry.upstream.commitTime) || typeof entry.upstream.version !== "string" || !positive(entry.run) || !positive(entry.attempt) || !positive(entry.launchProtocol) || typeof entry.builderCommit !== "string" || !object(entry.addons?.office)) throw new Error(`invalid runtime metadata: ${entry.tag}`);
+			const identity = distribution({ channel, upstreamVersion: entry.upstream.version, upstreamCommit: entry.upstream.commit, run: entry.run, attempt: entry.attempt, builderCommit: entry.builderCommit });
+			if (identity.id !== entry.id || identity.tag !== entry.tag) throw new Error(`runtime identity differs from build metadata: ${entry.tag}`);
 			if (!object(entry.assets) || Object.keys(entry.assets).length === 0) throw new Error(`missing runtime assets: ${entry.tag}`);
 			for (const asset of Object.values(entry.assets)) if (!object(asset) || !name(asset.name) || !positive(asset.size) || !/^[0-9a-f]{64}$/.test(asset.sha256)) throw new Error(`invalid runtime asset: ${entry.tag}`);
 			seq = entry.seq;
 			tags.add(entry.tag);
 		}
+	}
+	let addonSeq = 0;
+	for (const e of index.addons.office) {
+		if (!object(e) || !/^addon-office-v[0-9A-Za-z.+-]+$/.test(e.tag ?? "") || e.tag !== `addon-office-v${e.version}` || !positive(e.seq) || e.seq <= addonSeq || !/^[0-9a-f]{40}$/.test(e.slot?.commit ?? "") || typeof e.slot?.kitVersion !== "string" || !object(e.assets) || !Object.keys(e.assets).length) throw new Error("invalid new-format office addon index entry");
+		for (const a of Object.values(e.assets)) if (!object(a) || !name(a.name) || !positive(a.size) || !/^[0-9a-f]{64}$/.test(a.sha256)) throw new Error(`invalid office addon asset: ${e.tag}`);
+		addonSeq = e.seq;
 	}
 	return index;
 }
@@ -59,7 +68,7 @@ export function assertAppendOnly(prev, next) {
 	}
 }
 
-// TODO(8.3): wire independent runtime/addon publishing into CI; no legacy index conversion.
+// Independent runtime publisher writes only runtime-index.json; no legacy index conversion.
 if (import.meta.main) {
 	const [cmd, path, manifestPath] = process.argv.slice(2);
 	if (cmd === "check" && path) {

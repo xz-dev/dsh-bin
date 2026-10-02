@@ -16,7 +16,7 @@ on:
       accepted_sha256: { description: "SHA256 of accepted manager-index.json", type: string }
       accepted_run: { description: "Accepted dry-run workflow run ID", type: string }
       accepted_artifact: { description: "Accepted manager release artifact name", type: string }
-permissions: { contents: read }
+permissions: { contents: read, actions: read }
 env:
   BUN_VERSION: "1.4.2"
   DSH_BUILDER_COMMIT: ${{ github.sha }}
@@ -46,7 +46,10 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -n "$INDEX$RUN$ARTIFACT$DIGEST" ]]; then
-            [[ "$DIGEST" =~ ^[0-9a-f]{64}$ ]] && { [[ "$INDEX" == https://* && -z "$RUN$ARTIFACT" ]] || [[ -z "$INDEX" && "$RUN" =~ ^[1-9][0-9]*$ && -n "$ARTIFACT" ]]; } || { echo 'invalid accepted counterpart inputs' >&2; exit 1; }
+            if [[ ! "$DIGEST" =~ ^[0-9a-f]{64}$ ]]; then echo 'invalid accepted counterpart digest' >&2; exit 1; fi
+            if [[ "$INDEX" == https://* && -z "$RUN$ARTIFACT" ]]; then :
+            elif [[ -z "$INDEX" && "$RUN" =~ ^[1-9][0-9]*$ && -n "$ARTIFACT" ]]; then :
+            else echo 'invalid accepted counterpart inputs' >&2; exit 1; fi
           elif [[ "$PUBLISH" == true ]]; then
             echo 'publish refused: accepted manager counterpart is required' >&2; exit 1
           else
@@ -54,7 +57,7 @@ jobs:
           fi
           [[ "$UPSTREAM" =~ ^[0-9A-Za-z._/-]+$ ]] || { echo 'invalid upstream ref' >&2; exit 1; }
           [[ "$CHANNEL" != release || "$UPSTREAM" == dsh-v* ]] || { echo 'release requires dsh-v* tag' >&2; exit 1; }
-          commit=$(bun scripts/fetch-upstream.mjs "$UPSTREAM" | jq -r .commit)
+          if [[ "$UPSTREAM" =~ ^[0-9a-f]{40}$ ]]; then commit=$UPSTREAM; else commit=$(bun scripts/fetch-upstream.mjs "$UPSTREAM" | jq -r .commit); fi
           slot=$(bun scripts/addon-slot.mjs "$RUNNER_TEMP/upstream.git" "$commit")
           code=$(curl -sS -L -w '%{http_code}' "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/releases/runtime-index.json" -o "$RUNNER_TEMP/runtime-index.json")
           case "$code" in 200) ;; 404) printf '{"schema":1,"channels":{"release":[],"live":[]},"addons":{"office":[]}}\n' > "$RUNNER_TEMP/runtime-index.json" ;; *) echo "runtime index HTTP $code" >&2; exit 1 ;; esac
@@ -85,7 +88,7 @@ jobs:
         run: |
           set -euo pipefail
           ref=$COMMIT; [[ "$CHANNEL" == release ]] && ref=$UPSTREAM
-          args=('${{ matrix.id }}' "$CHANNEL" "$ref" "$RUNNER_TEMP/out" --run "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT" --index "$RUNNER_TEMP/index/runtime-index.json" --work "$RUNNER_TEMP/work" --git-dir "$RUNNER_TEMP/upstream.git")
+          args=('${{ matrix.id }}' "$CHANNEL" "$ref" "$RUNNER_TEMP/out" --expected-commit "$COMMIT" --run "$GITHUB_RUN_NUMBER" --attempt "$GITHUB_RUN_ATTEMPT" --index "$RUNNER_TEMP/index/runtime-index.json" --work "$RUNNER_TEMP/work" --git-dir "$RUNNER_TEMP/upstream.git")
           if [[ -z "$IMAGE" ]]; then
             bun scripts/build-target.mjs "${args[@]}"
           else

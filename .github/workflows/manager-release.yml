@@ -14,7 +14,7 @@ on:
       accepted_sha256: { description: "SHA256 of accepted runtime-index.json", type: string }
       accepted_run: { description: "Accepted dry-run workflow run ID", type: string }
       accepted_artifact: { description: "Accepted runtime release artifact name", type: string }
-permissions: { contents: read }
+permissions: { contents: read, actions: read }
 env:
   BUN_VERSION: "1.4.2"
   ZIG_VERSION: "0.15.2"
@@ -42,7 +42,10 @@ jobs:
           set -euo pipefail
           bun dsh-manager/scripts/release.mjs version "$VERSION"
           if [[ -n "$INDEX$RUN$ARTIFACT$DIGEST" ]]; then
-            [[ "$DIGEST" =~ ^[0-9a-f]{64}$ ]] && { [[ "$INDEX" == https://* && -z "$RUN$ARTIFACT" ]] || [[ -z "$INDEX" && "$RUN" =~ ^[1-9][0-9]*$ && -n "$ARTIFACT" ]]; } || { echo 'invalid accepted counterpart inputs' >&2; exit 1; }
+            if [[ ! "$DIGEST" =~ ^[0-9a-f]{64}$ ]]; then echo 'invalid accepted counterpart digest' >&2; exit 1; fi
+            if [[ "$INDEX" == https://* && -z "$RUN$ARTIFACT" ]]; then :
+            elif [[ -z "$INDEX" && "$RUN" =~ ^[1-9][0-9]*$ && -n "$ARTIFACT" ]]; then :
+            else echo 'invalid accepted counterpart inputs' >&2; exit 1; fi
           elif [[ "$PUBLISH" == true ]]; then
             echo 'publish refused: accepted runtime counterpart is required' >&2; exit 1
           else
