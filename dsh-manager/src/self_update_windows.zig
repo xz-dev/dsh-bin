@@ -91,7 +91,6 @@ pub fn start(ctx: *Ctx, dir: std.fs.Dir, installed: std.fs.File, name: []const u
     var opened = true;
     defer if (opened) copy.close();
     defer dir.deleteFile(copy_name) catch {};
-    errdefer dir.deleteFile(helper_name) catch {};
     const original_hash = try binary.digest(installed);
     try installed.seekTo(0);
     var buf: [64 * 1024]u8 = undefined;
@@ -103,11 +102,8 @@ pub fn start(ctx: *Ctx, dir: std.fs.Dir, installed: std.fs.File, name: []const u
     try copy.sync();
     copy.close();
     opened = false;
-    try @import("self_update.zig").publish(ctx.a, dir, copy_name, helper_name);
-    const helper = try openFile(dir, helper_name, true);
+    const helper = try publishHelper(ctx, dir, copy_name, helper_name, original_hash);
     defer helper.close();
-    try binary.validateFile(ctx.a, helper, options.version);
-    if (!std.mem.eql(u8, &(try binary.digest(helper)), &original_hash)) return error.ManagerFileChanged;
     const parent_process = OpenProcess(win.SYNCHRONIZE | 0x1000, win.FALSE, win.GetCurrentProcessId()) orelse return error.ParentProcessUnavailable;
     defer win.CloseHandle(parent_process);
     const request = Request{
@@ -156,6 +152,18 @@ pub fn start(ctx: *Ctx, dir: std.fs.Dir, installed: std.fs.File, name: []const u
     util.print("update handed off to helper; run `dsh manager --version` to confirm\n", .{});
     util.flush();
     pause(ctx.env, "helper-parent", win.GetCurrentProcessId());
+}
+
+fn publishHelper(ctx: *const Ctx, dir: std.fs.Dir, copy_name: []const u8, helper_name: []const u8, original_hash: [32]u8) !std.fs.File {
+    // Final-name conflicts or replacements are not ours to delete; clean validates any genuine leftover.
+    binary.testPause(ctx, "helper-publish", helper_name);
+    try @import("self_update.zig").publish(ctx.a, dir, copy_name, helper_name);
+    binary.testPause(ctx, "helper-validate", helper_name);
+    const helper = if (builtin.os.tag == .windows) try openFile(dir, helper_name, true) else try binary.openRegular(dir, helper_name);
+    errdefer helper.close();
+    try binary.validateFile(ctx.a, helper, options.version);
+    if (!std.mem.eql(u8, &(try binary.digest(helper)), &original_hash)) return error.ManagerFileChanged;
+    return helper;
 }
 
 fn pause(env: std.process.EnvMap, stage: []const u8, pid: u32) void {
@@ -320,6 +328,31 @@ test "MC-SELF-FAIL review: result consumption leaves unowned or corrupt roots un
         const kept = try root.dir.readFileAlloc(t.allocator, "tmp/" ++ result_name, 4096);
         defer t.allocator.free(kept);
         try t.expectEqualStrings(note, kept);
+    }
+}
+
+test "MC-SELF-FAIL review: failed helper publication and validation never delete final names" {
+    const t = std.testing;
+    var env = std.process.EnvMap.init(t.allocator);
+    defer env.deinit();
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const ctx = Ctx{ .a = arena.allocator(), .env = env, .exe = "", .dir = "", .mode = .portable, .data = "", .app_home = "", .exe_identity = null };
+    for ([_]bool{ true, false }) |conflict| {
+        var root = t.tmpDir(.{});
+        defer root.cleanup();
+        const name = ".dsh-manager-helper-ab12.exe";
+        const note = "USER CREDENTIAL";
+        try root.dir.writeFile(.{ .sub_path = "copy", .data = note, .flags = .{ .mode = 0o755 } });
+        if (conflict) try root.dir.writeFile(.{ .sub_path = name, .data = note });
+        const file = publishHelper(&ctx, root.dir, "copy", name, [_]u8{0} ** 32) catch {
+            const kept = try root.dir.readFileAlloc(t.allocator, name, 4096);
+            defer t.allocator.free(kept);
+            try t.expectEqualStrings(note, kept);
+            continue;
+        };
+        file.close();
+        return error.InvalidHelperPublished;
     }
 }
 

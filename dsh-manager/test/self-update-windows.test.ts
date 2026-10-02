@@ -79,6 +79,26 @@ native(`MC-SELF-FAIL Windows review: result consumption never adopts unmarked or
     expect(readFileSync(join(path, "credential"), "utf8")).toBe("KEEP");
 });
 
+native(`MC-SELF-FAIL Windows review: helper publish conflicts and replaced names preserve user bytes${WIN ? "" : reason}`, async () => {
+    const s = source();
+    try { for (const stage of ["helper-publish", "helper-validate"]) {
+        const i = fixture(), old = hash(readFileSync(i.exe)), before = protectedState(i);
+        const p = spawn(i.exe, ["manager", "self-update"], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: s.origin, DSH_MANAGER_TEST_PAUSE: stage }, stdio: "pipe" });
+        let stderr = "", stdout = ""; p.stderr!.on("data", b => stderr += b); p.stdout!.on("data", b => stdout += b);
+        const done = new Promise<number | null>((resolve, reject) => { p.on("close", resolve); p.on("error", reject); });
+        const timer = setTimeout(() => p.kill("SIGKILL"), 25_000);
+        try {
+            await until(() => stderr.includes(`test pause: ${stage}`), `${stage} barrier`);
+            const name = stderr.match(/\.dsh-manager-helper-[0-9a-f]+\.exe/)![0], helper = join(i.dir, name);
+            if (stage === "helper-validate") renameSync(helper, join(i.out, "published-helper.exe"));
+            writeFileSync(helper, "USER CREDENTIAL"); p.stdin!.end("go");
+            expect(await done).toBe(1); expect(stdout).not.toContain("handed off"); expect(stdout).not.toContain("updated");
+            expect(readFileSync(helper, "utf8")).toBe("USER CREDENTIAL");
+            expect(hash(readFileSync(i.exe))).toBe(old); expect(protectedState(i)).toEqual(before); expect(existsSync(resultPath(i))).toBe(false);
+        } finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await done; } }
+    } } finally { s.stop(); }
+}, 60_000);
+
 native(`MC-SELF-ONLY / MC-SELF-FAIL Windows: handoff is not success; next entry consumes result once; helper keeps original context${WIN ? "" : reason}`, async () => {
     const i = fixture(), before = protectedState(i), s = source(), control = tempDir("helper-control-"), u = update(i, s, control);
     try {
