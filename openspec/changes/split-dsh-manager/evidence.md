@@ -960,3 +960,18 @@ scoop uninstall dsh
 | DL-MANAGED-REMOVE | 升级/卸载前后 bundles/addons/snapshots/selection/home 配置、credential、session 文件及所有 data-root 路径的哈希完全相同；卸载只移除包与 shim |
 
 残余边界：本地 package layout 测试与 Windows cross-build 不是原生 Scoop 证据；必须父会话取得真实 Windows job green 和独立复审后才能勾选 7.5。该 Windows 门禁只运行 x64，arm64 仅清单覆盖。Runtime 是真实执行的 Zig fake-native bundle，office 是有效格式 addon fixture，不是 upstream 应用/LibreOffice；组合真实应用/plugin 留给 8.1。未验证尚未发布的 manager asset URL 或生产 bucket 切换；官方下载 Scoop bootstrap 的网络或上游变动可能让门禁失败，失败必须报告，不静默跳过。既有文件系统最后一次 identity-check 到 syscall 的同用户竞争/断电持久性边界维持 design.md 记录，不宣称消除。
+
+### 7.4 父会话验收
+
+- 实现：94d9848、dcc6369、01b3bbc、3f3d34a。Gentoo 包只安装三样东西：管理器 `dsh`、托管标记 `.dsh-manager-install.json` 和 `/usr/bin/dsh` 链接；不捆绑 runtime 或 addon，也不固定用户的 runtime 版本。资产名直接取自 manager index。托管模式下 self-update 的提示改为真实的 atom：`emerge --ask --update app-misc/dsh-bin`。
+- **真实非 root Portage 运行（用户于 2026-10-02 授权：「在本机以非 root 运行」）**：使用 uid=1000，scratch 目录在 `/var/tmp/dsh-74-gentoo`，不用 sudo，不碰系统 portage 状态。完整走一遍：install 1.0.0 → upgrade 1.0.1 → unmerge。验证内容：
+  - PS-MANAGED：包目录只读，且 hash 保持不变；
+  - DL-MANAGED-UPDATE：runtime 安装、选版、启动、创建快照都正常；
+  - DL-MANAGED-SELF：在下载之前就拒绝，HTTP 请求数为 0；
+  - DL-MANAGED-REMOVE：运行包、快照、选择、配置、凭据逐路径 hash 不变，正在运行的会话也保持存活。
+
+  复审员在隔离 worktree 里独立重跑了一遍，结果 4 pass / 53 断言。
+- 独立复审（run dc3f0151）结论 BLOCK，一项 P1：检查脚本把日志写到固定且可复用的文件名，`>` 会跟随已存在的符号链接，从而覆盖 scratch 目录外的文件。修复 ac6d400：每次运行用 `mktemp -d` 新建私有日志目录。红绿验证：链接回归由 0/2 变为 6 pass / 65 断言；真实 Portage 重跑 6 pass / 67 断言。父会话复跑 gentoo.test.ts，6 pass。7.5 复审员也独立确认该修复已关闭这项问题（新建目录权限为 0700，已存在的 symlink/hardlink 哨兵保持不变）。
+- CI：36950201463（b5680fc）在 macOS 上两次失败，失败项都是与本次改动无关的 `MC-SNAPSHOT: concurrent starts...`（退出码 [1,0]）。诊断提交 e153650 让该测试在失败时输出子进程 stderr；之后 **CI 36953667817（e153650）三平台全绿，真实 Scoop job 也通过**，失败没有再复现。这一项作为 macOS 上的间歇性风险记录在案：若再出现，就能直接看到 stderr，再针对性修复。
+- 残余风险：原生 Portage 只在 amd64 上验证过；runtime 用的是 fake-native fixture，真实上游应用的组合验证留给 8.1；线上资产还没有发布（8.3/9.3 时会对真实下载重跑这项检查）。
+- 勾选 **7.4**。
