@@ -142,7 +142,9 @@ test("Upstream tracking: unchanged release does nothing; new tag builds dry-run 
 	const next = `${refs}${"d".repeat(40)}\trefs/tags/dsh-v0.1.8-rc.2\n${"e".repeat(40)}\trefs/tags/dsh-v0.1.8-rc.10\n`;
 	expect(await upstreamCheck(next, "fixture/repo", source(published, managerText))).toEqual({ build: true, channel: "release", upstream: "dsh-v0.1.8-rc.10", index: "https://raw.githubusercontent.com/fixture/repo/releases/manager-index.json", digest: sha256(managerText) });
 	const absent = (async () => new Response(null, { status: 404 })) as typeof fetch;
-	expect(await upstreamCheck(next, "fixture/repo", absent)).toEqual({ build: true, channel: "release", upstream: "dsh-v0.1.8-rc.10", index: "", digest: "" });
+	expect(await upstreamCheck(next, "fixture/repo", absent)).toEqual({ build: false, bootstrap: true, channel: "release", upstream: "dsh-v0.1.8-rc.10", index: "", digest: "" });
+	const malformed = `${next}${"f".repeat(40)}\trefs/tags/dsh-v99.99.99-rc..1\n${"f".repeat(40)}\trefs/tags/dsh-v01.0.0\n${"f".repeat(40)}\trefs/tags/dsh-v9.0.0-rc.01\n`;
+	expect((await upstreamCheck(malformed, "fixture/repo", source(published, managerText))).upstream).toBe("dsh-v0.1.8-rc.10");
 	await expect(upstreamCheck(refs.replace("c".repeat(40), "d".repeat(40)), "fixture/repo", source(published, managerText))).rejects.toThrow("published upstream tag moved");
 	await expect(upstreamCheck(next, "fixture/repo", (async () => new Response("denied", { status: 403 })) as typeof fetch)).rejects.toThrow("HTTP 403");
 	await expect(upstreamCheck(next, "fixture/repo", source(published, "{}"))).rejects.toThrow("published manager index");
