@@ -17,7 +17,7 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
         return 1;
     }
     if (ctx.mode != .portable) {
-        util.warn("this manager is owned by {s}; update it with `{s}`, not self-update", .{ @tagName(ctx.mode), if (ctx.mode == .portage) "emerge --ask --update dsh" else "scoop update dsh" });
+        util.warn("this manager is owned by {s}; update it with `{s}`, not self-update", .{ @tagName(ctx.mode), if (ctx.mode == .portage) "emerge --ask --update app-misc/dsh-bin" else "scoop update dsh" });
         return 1;
     }
     prepare(ctx, force) catch |err| {
