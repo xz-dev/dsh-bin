@@ -8,13 +8,6 @@ on:
       commit: { description: "upstream commit whose slot needs an addon", required: true, type: string }
       publish: { type: boolean, default: false }
       prerelease: { type: boolean, default: true }
-  workflow_call:
-    inputs:
-      commit: { required: true, type: string }
-    outputs:
-      # Retained for the old build.yml caller until the 9.2 cutover; workflow_call never publishes.
-      manifest: { value: "${{ jobs.addon.outputs.manifest }}" }
-      published-at: { value: "${{ jobs.addon.outputs.published-at }}" }
 
 permissions: {}
 
@@ -25,9 +18,6 @@ jobs:
   addon:
     runs-on: ubuntu-24.04
     permissions: { contents: read }
-    outputs:
-      manifest: ${{ steps.build.outputs.manifest }}
-      published-at: ${{ steps.build.outputs.published-at }}
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
@@ -49,7 +39,6 @@ jobs:
           test "$slot" != null
           identity=$(SLOT="$slot" bun -e "import {addonDistribution} from './scripts/versioning.mjs'; const slot=JSON.parse(process.env.SLOT); const build={run:Number(process.env.GITHUB_RUN_NUMBER),attempt:Number(process.env.GITHUB_RUN_ATTEMPT),builderCommit:process.env.GITHUB_SHA}; const d=addonDistribution({kitVersion:slot.kitVersion,...build}); console.log(JSON.stringify({...d,...build,slot}))")
           bun scripts/build-addon.mjs "$t/bundle/addon-tree" "$t/work/src" "$t/addon" "$identity"
-          { echo "manifest=$(jq -c . "$t/addon/addon-manifest.json")"; echo "published-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } >> "$GITHUB_OUTPUT"
       - name: Verify candidate identity and index entry without publication
         run: bun scripts/index.mjs append-addon "$RUNNER_TEMP/candidate-runtime-index.json" "$RUNNER_TEMP/addon/addon-manifest.json"
       - uses: actions/upload-artifact@v4

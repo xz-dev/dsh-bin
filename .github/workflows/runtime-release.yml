@@ -1,6 +1,6 @@
 name: runtime-release
 
-# Independent runtime path. Legacy build/upstream-poll remain enabled until section 9.2.
+# Independent runtime path; the old coupled publisher is retired by the 9.2 cutover.
 # No manager source is compiled here; combination downloads an explicitly accepted manager.
 on:
   push:

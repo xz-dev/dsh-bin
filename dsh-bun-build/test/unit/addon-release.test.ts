@@ -2,11 +2,12 @@
 import { afterAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { appendAddon, appendBundle, emptyIndex } from "../../scripts/index.mjs";
 import { publishRelease } from "../../scripts/publish-release.mjs";
+import { aggregateRelease } from "../../scripts/aggregate-release.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "dsh-addon-release-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -107,6 +108,26 @@ test("DL-CUTOVER: addon publication validates builder identity and hashes before
 	writeFileSync(join(dir, manifest().assets.linux.file), "zip");
 	expect((await publishRelease(input, env, api as typeof fetch)).published).toBe(true);
 	expect(release.assets.map((asset: any) => asset.name).sort()).toEqual(["addon-manifest.json", "dsh-addon-office-linux.zip"]);
+});
+
+test("DL-CUTOVER: retired release families and bundle index mode refuse before remote calls; legacy manifests cannot aggregate", async () => {
+	const dir = join(root, "retired"); mkdirSync(dir);
+	const input = join(dir, "addon-manifest.json"), env = { GITHUB_TOKEN: "fixture", GITHUB_REPOSITORY: "fixture/repo", GITHUB_SHA: manifest().builderCommit };
+	writeFileSync(join(dir, manifest().assets.linux.file), "zip");
+	let calls = 0;
+	const api = async () => { calls++; throw new Error("unexpected API call"); };
+	for (const tag of ["dsh-v0.1.7-xz.1.1.gdeadbeef", "dsh-live-deadbee-xz.1.1.gdeadbeef", "dsh-addon-office-v0.1.1-xz.1.1.gdeadbeef"]) {
+		writeFileSync(input, JSON.stringify({ ...manifest(), tag }));
+		await expect(publishRelease(input, env, api as typeof fetch)).rejects.toThrow(/not a new-format/);
+	}
+	expect(calls).toBe(0);
+	const result = spawnSync("bash", [bashPath(resolve(import.meta.dir, "../../scripts/publish-index.sh")), "bundle", bashPath(input)], {
+		env: { ...process.env, DSH_BIN_INDEX_REMOTE: "unused.invalid", RUNNER_TEMP: bashPath(dir) }, encoding: "utf8", timeout: 15_000,
+	});
+	expect(result.status).toBe(2); expect(result.stderr).toContain("unknown index product: bundle");
+	writeFileSync(join(dir, "dsh-vlegacy.json"), JSON.stringify({ ...manifest(), targets: {} }));
+	expect(() => aggregateRelease(dir)).toThrow(/no release manifests/);
+	expect(existsSync(join(dir, "release-manifest.json"))).toBe(false);
 });
 
 test("D10: addon workflow identity executes without launcher metadata; publication is main/manual-only with read-only build", () => {

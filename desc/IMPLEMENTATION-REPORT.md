@@ -1,12 +1,15 @@
 # dsh-bin implementation report (OpenSpec change `dsh-bin`)
 
+> 历史实施记录，描述拆分前的架构、工作流和发布。文中旧轮询、耦合构建及上游检测脚本名称仅用于追溯，不是当前入口。
+> `split-dsh-manager` 在 9.2 退役这些自动化；当前操作请看 [README](../README.md) 和 [架构说明](en/how-it-works.md)。
+
 ## Status
 
 All sections (1–10) are implemented. `openspec validate dsh-bin --strict` reports the change as
 valid. `tasks.md` has 47 tasks `[x]` and 6 `[ ]`.
 
 **Published.** The first automatic publication is `dsh-v0.1.7-rc.2-xz.7.1.g4e41a3f1`, from
-upstream-poll run 36514734022:
+legacy upstream poll run 36514734022:
 - all 12 targets were built natively and passed the packaged E2E;
 - it is attested and verified with empty gh credentials;
 - the release is immutable;
@@ -39,8 +42,8 @@ then failed on the next step, none of which had run before:
 - the packaged E2E tested the host's default target instead of the matrix target.
 
 The second build of the same poll run, `dsh-v0.2.0-rc.1` in run 36514734022, then failed accept on
-2 of the 12 targets with "index already lists dsh-v0.1.7-rc.2 … with different content". upstream-poll
-calls `build.yml` once per build within a single workflow run, and artifact names are shared across
+2 of the 12 targets with "index already lists dsh-v0.1.7-rc.2 … with different content". The legacy poll
+calls the coupled build workflow once per build within a single workflow run, and artifact names are shared across
 the whole run, so `target-<id>` could resolve to the earlier build's artifact. a83dab6 prefixes every
 build's artifacts with `<channel>-<commit>`, including the addon's. The cancelled run's rc.1 was
 never published, and poll 36521166476 rebuilds rc.1 and then live.
@@ -62,7 +65,7 @@ against a copy of the real `releases` branch before the poll reached them.
   older-upstream live build and persists" and "failed channel switch keeps the recorded channel"
   pin this behaviour.
 
-Publish-side files (`scripts/publish-*`, `scripts/upstream-diff.mjs`, `upstream-poll.yml`) are
+Publish-side files (the old publishing scripts, upstream diff helper and poll workflow) were
 now excluded from "packaging changed". Changing how releases are published does not rebuild
 bundles that are already published.
 
@@ -198,7 +201,7 @@ What the first runs found and fixed:
 
 ## Design decisions made on my own (package-manager style)
 
-- **Upstream poll.** `upstream-poll` calls `build.yml` as a reusable workflow with
+- **Upstream poll.** The legacy poll called the coupled build as a reusable workflow with
   `max-parallel: 1`, releases in version order and then live. Each build first publishes its slot's
   addon when the index has none, so later builds in the same slot embed it and no slot ever gets two
   addons.
@@ -414,14 +417,14 @@ All figures below were measured on Linux x64 (Ryzen AI 9 365). The benchmark boo
 
 Publishing works like xz-dev/pi, with no manual step:
 
-- `upstream-poll` runs on its cron, on every push to `main`, and on a manual dispatch that just
+- The legacy poll ran on its cron, on every push to `main`, and on a manual dispatch that just
   re-runs detection. It is the only caller of `build` with `publish: true`.
 - `build` and `addon` no longer have a `publish` input, so a manual dispatch is always a dry run.
 - A push that changes packaging (anything except docs, tests, Markdown, LICENSE and `ci.yml`) since
   the launcher commit of a channel's newest entry rebuilds:
   - the newest release tag, unless a newer tag is already pending;
   - the observed `master`.
-  `upstream-diff --head` decides this from the full history, and it is covered by unit tests.
+  The old upstream comparison helper's `--head` mode decided this from the full history, and it was covered by unit tests.
 - The first automatic poll came from the push of the automation commit. It planned
   `dsh-v0.1.7-rc.2`, then `dsh-v0.2.0-rc.1`, then live `4878cdab`, run one at a time. Each build
   publishes its slot's office addon first when the slot has none.
@@ -931,10 +934,10 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
 - **Approval:** after the checkpoint that asked for it explicitly, you replied "在 Windows 上卸载正在执行
   命令的那个版本：现有 CI 用例没覆盖到 需要覆盖，然后你继续开始做吧，目前仓库暂无人使用" (2026-09-30).
   The Windows case was covered first (see 5.4), then the reset proceeds.
-- **What the poll will build** (upstream-diff on an empty index, 2026-09-30): release `dsh-v0.1.7-rc.2`,
+- **What the poll would build** (old upstream diff on an empty index, 2026-09-30): release `dsh-v0.1.7-rc.2`,
   `dsh-v0.2.0-rc.1`, `dsh-v0.2.0-rc.2` (a new upstream tag since the plan), and one live build of
   master `639ed01`.
-- **Two-version acceptance:** upstream-poll runs builds one at a time (`max-parallel: 1`) in version
+- **Two-version acceptance:** the legacy poll ran builds one at a time (`max-parallel: 1`) in version
   order, each publishing before the next, and every accept job builds its fixture index from the
   published index plus the candidate. So rc.2 takes e2e's first-publication path, and 0.2.0-rc.1 and
   0.2.0-rc.2 each accept against the previously published version: the second-version install, copied
@@ -946,7 +949,7 @@ Results on a scratch `DSH_HOME`. "Only the snapshot changed" is checked with a d
 - Backup first (`~/.cache/dsh-reset/backup-20260930T1027`: old index, release list, tags, branch heads).
   Then deleted all five releases with their tags (`gh release delete --cleanup-tag`; immutable releases
   can be deleted), and reset `releases:index.json` to empty schema 2 as a new commit (no force push).
-  `main` was pushed at 7fab7c4 (CI green), which triggered upstream-poll.
+  `main` was pushed at 7fab7c4 (CI green), which triggered the legacy poll.
 - Poll 36660054356: both Windows build-targets failed. The windows-x64 LibreOffice Kit engine ships
   `sources/scripts/stage-native.mjs` with a `join(dir, file)` look-alike, which the exact profile-site
   check counted. Fixed in a32d0f6 (kit packages are not profile code), unit case added. Cancelled with
@@ -1029,7 +1032,7 @@ This section supersedes the pending-verification notes above; earlier entries re
 - Scheduled poll 36674777578 published `dsh-v0.2.0-rc.2-xz.30.1.g5cf33f29`; the pending failed-job
   rerun was superseded, not left as unfinished publication. Two manual polls 12 seconds apart,
   36681992263 and 36682009302, succeeded without starting any build after the index was current.
-- Following the user's choice to republish the test-harness change, upstream-poll 36685686997
+- Following the user's choice to republish the test-harness change, legacy poll 36685686997
   (8a39d4f) passed **24/24 accepts**: release and live on all 12 targets. It published:
   - `dsh-v0.2.0-rc.2-xz.34.1.g8a39d4f5` (release Latest);
   - `dsh-live-639ed01-xz.34.1.g8a39d4f5` (not Latest).
@@ -1074,8 +1077,8 @@ This section supersedes the pending-verification notes above; earlier entries re
 
 ### Known dry-run limitation (recorded, not changed)
 
-Manual build dispatch 36682206215 uses `build.yml`'s own run counter (6), whereas published bundles
-use `upstream-poll`'s counter (then 30). On the same upstream commit, candidate xz.6 sorts before the
+Manual build dispatch 36682206215 used the coupled build's own run counter (6), whereas published bundles
+used the legacy poll's counter (then 30). On the same upstream commit, candidate xz.6 sorts before the
 published xz.30 in snapshot version order, even though the fixture appends the candidate last. All
 12 accepts therefore failed the later assertion that V2's snapshot copies V1; the no-JS-PATH,
 headless boot and plugin-install steps had passed. This was not a successful dry run and is not

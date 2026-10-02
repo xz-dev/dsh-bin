@@ -1,9 +1,8 @@
 // Publish one immutable GitHub Release (8.3), ported from xz-dev/pi publish-github-release.mjs:
 // create or resume a draft → upload only missing assets → re-hash every asset → publish → poll until
-// GitHub reports `immutable: true`. GitHub's Latest is the release channel: a release-channel bundle is
-// published with make_latest=true (the poll publishes in index `seq` order, so Latest is what
-// `dsh update --channel release` installs); live and addon releases use make_latest=false. Discovery
-// still reads only the index, never Latest. An already-published release with identical assets is a no-op.
+// GitHub reports `immutable: true`. Only stable release-channel runtimes become Latest; managers,
+// live runtimes and addons never do. Discovery reads independent indexes, never Latest.
+// An already-published release with identical assets is a no-op.
 // Publishing-side only: the updater never calls the GitHub API.
 // usage: bun scripts/publish-release.mjs <manifest.json>   (release-manifest.json or addon-manifest.json)
 //   env: GITHUB_TOKEN, GITHUB_REPOSITORY, GITHUB_SHA
@@ -35,7 +34,7 @@ export async function publishRelease(manifestPath, env = process.env, fetchImpl 
 	const repository = env.GITHUB_REPOSITORY || fail("GITHUB_REPOSITORY is required");
 	const commit = (env.GITHUB_SHA || fail("GITHUB_SHA is required")).toLowerCase();
 	const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-	if (!/^(?:dsh-(?:v|live-|addon-office-v)|runtime-(?:v|live-)|addon-office-v|manager-v)/.test(manifest.tag ?? "")) fail(`not a dsh-bin tag: ${manifest.tag}`);
+	if (!/^(?:runtime-(?:v|live-)|addon-office-v|manager-v)/.test(manifest.tag ?? "")) fail(`not a new-format dsh-bin tag: ${manifest.tag}`);
 	const prerelease = env.DSH_RELEASE_PRERELEASE === "true";
 	const latest = !prerelease && manifest.channel === "release" && Boolean(manifest.targets) && !manifest.tag.startsWith("addon-");
 	if (manifest.kind === "dsh-runtime") {
