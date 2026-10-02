@@ -61,7 +61,10 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 			checkedAsset(managerDir, m.assets[managerTarget]);
 			note(`input-${label}`, {runtime: r.id, manager: m.version, runtimeIndexSHA256: sha256(readFileSync(join(runtimeDir, "runtime-index.json"))), managerIndexSHA256: sha256(readFileSync(join(managerDir, "manager-index.json")))});
 		}
-		const [a, b] = runtimeManifests, [old, next] = managerManifests;
+		// b = the runtime the manager treats as newest (commitTime -> run -> attempt), whichever dry run it came from.
+		const byAge = (x: any, y: any) => x.upstream.commitTime.localeCompare(y.upstream.commitTime) || x.run - y.run || x.attempt - y.attempt;
+		const [a, b] = [...runtimeManifests].sort(byAge), [old, next] = managerManifests;
+		const runtimeLabel = (r: any) => (r === runtimeManifests[0] ? "a" : "b");
 		expect(a.id).not.toBe(b.id); expect(Bun.semver.order(next.version, old.version)).toBe(1);
 		const addonDir = join(source, "addon"), addon = json(join(addonDir, "addon-manifest.json"));
 		const slotMatches = runtimeManifests.every(r => JSON.stringify(r.addons.office.slot) === JSON.stringify(addon.slot));
@@ -126,7 +129,7 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 		expect(requests).toContain("/runtime-index.json"); expect(existsSync(bundle(b.id))).toBe(true);
 		for (const arg of ["--version", "--help"]) expect((await command(["--use", b.id, arg])).out).toContain(arg === "--version" ? b.upstream.version : "dsh");
 		const actualTarget = json(join(bundle(b.id), "bundle.json")).target;
-		for (const [label, manifest] of [["a", a], ["b", b]] as const) checkedAsset(join(source, label, "runtime"), manifest.targets[actualTarget]);
+		for (const manifest of [a, b]) checkedAsset(join(source, runtimeLabel(manifest), "runtime"), manifest.targets[actualTarget]);
 		note("empty-install", {runtime: b.id, actualTarget});
 
 		const profile = join(snapshot(`${b.id}@1`), "profiles/combined"); mkdirSync(profile, { recursive: true });
