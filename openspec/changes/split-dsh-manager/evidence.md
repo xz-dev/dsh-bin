@@ -1179,3 +1179,7 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
 - 映射（reviewer 1f80465a，`/var/tmp/dsh-86/mapping.md`，源码快照 129fe38）：66 个场景全部映射，没有遗漏、重复或多余的 ID。分类：T 63 / P 0 / W 1 / G 0 / S9 2（DL-MANAGED-UPDATE 和 DL-REAL-E2E 的线上发布后复验留到第 9 节）。
 - 唯一的 W 是 RL-OWNERSHIP：原测试只检查打包脚本的归属。c5382e5 增加根目录布局断言（两个业务目录加 desc/、openspec/，且不存在根 scripts/、docs/、install.sh）；临时创建根 `scripts/` 时测试失败，删除后通过。
 - 待完成：一次跨切片的最终独立审查（不重复已验收切片的逐项复审），以及 CI。
+
+### 9.2 准备：上游跟踪决定（用户 2026-10-02）
+
+- 旧 upstream-poll（main 上每日 4 次，自动构建并发布）会在 9.2 暂停。用户选择**自动构建、手动发布**：在 runtime-release.yml 增加一个小的 schedule，上游 release tag 变化时自动跑完整构建和组合检查（只做 dry run），由人在 main 上手动 dispatch 发布。publish 门禁不放宽（只允许 `workflow_dispatch` 且在 main）。这个 job 与暂停旧自动化的提交放在同一个 PR 中。
