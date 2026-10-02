@@ -36,7 +36,9 @@ export async function artifactE2E({ product, candidate, accepted, digest, target
 	const runtimeIndex = product === "runtime" ? own : index, managerIndex = product === "manager" ? own : index;
 	parseIndex(JSON.stringify(runtimeIndex));
 	if (!Array.isArray(managerIndex.versions)) throw new Error("manager index versions must be a list");
-	const runtime = [...runtimeIndex.channels.release, ...runtimeIndex.channels.live].filter((e) => e.assets?.[target] && (product !== "runtime" || e.id === JSON.parse(readFileSync(join(candidate, "release-manifest.json"), "utf8")).id)).at(-1);
+	const runtimeManifest = join(product === "runtime" ? candidate : accepted, "release-manifest.json");
+	const exactRuntime = !/^https:\/\//.test(product === "runtime" ? candidate : accepted) && existsSync(runtimeManifest) ? JSON.parse(readFileSync(runtimeManifest, "utf8")).id : null;
+	const runtime = [...runtimeIndex.channels.release, ...runtimeIndex.channels.live].filter((e) => e.assets?.[target] && (!exactRuntime || e.id === exactRuntime)).sort((a, b) => a.upstream.commitTime.localeCompare(b.upstream.commitTime) || a.run - b.run || a.attempt - b.attempt).at(-1);
 	if (!runtime) throw new Error(`no accepted runtime target ${target}`);
 	const managerTarget = target.replace(/-(?:musl-)?(?:baseline|modern)$/, "").replace(/-musl$/, "");
 	const manager = [...managerIndex.versions].sort((a, b) => Bun.semver.order(a.version, b.version)).filter((e) => e.assets?.[managerTarget]).at(-1);
@@ -45,7 +47,7 @@ export async function artifactE2E({ product, candidate, accepted, digest, target
 	const runtimeBytes = await assetBytes(runtime, runtime.assets[target], runtimeSource, repo);
 	const managerBytes = await assetBytes(manager, manager.assets[managerTarget], managerSource, repo);
 	verifyZip(managerBytes, managerTarget, manager.version);
-	const root = mkdtempSync(join(tmpdir(), "dsh-artifact-e2e-"));
+	const root = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/var/tmp", "dsh-artifact-e2e-"));
 	try {
 		const tools = join(root, "tools"), home = join(root, "home"), empty = join(root, "empty-path");
 		for (const d of [tools, home, empty]) mkdirSync(d);
@@ -57,6 +59,7 @@ export async function artifactE2E({ product, candidate, accepted, digest, target
 		const runtimeZip = join(root, "runtime.zip"); writeFileSync(runtimeZip, runtimeBytes, { flag: "wx" }); extractZip(runtimeZip, bundle);
 		const metadata = JSON.parse(readFileSync(join(bundle, "bundle.json"), "utf8"));
 		if (metadata.id !== runtime.id || metadata.target !== target || metadata.launchProtocol !== 1 || metadata.kind !== "dsh-runtime" || metadata.schemaVersion !== 1) throw new Error("runtime archive identity mismatch");
+		const native = join(bundle, process.platform === "win32" ? "dsh-native.exe" : "dsh-native"), nativeBefore = readFileSync(native);
 		const env = { PATH: empty, HOME: home, USERPROFILE: home, LOCALAPPDATA: home, NO_COLOR: "1", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) };
 		async function run(args) {
 			const p = Bun.spawn([exe, ...args], { cwd: home, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
@@ -69,6 +72,7 @@ export async function artifactE2E({ product, candidate, accepted, digest, target
 		const help = await run(["--use", runtime.id, "--help"]);
 		if (!help.includes("dsh")) throw new Error("runtime --help missing dsh");
 		if (!readFileSync(exe).equals(verifyZip(managerBytes, managerTarget, manager.version))) throw new Error("combination changed manager bytes");
+		if (!readFileSync(native).equals(nativeBefore)) throw new Error("combination changed runtime executable bytes");
 		console.log(`RL-ARTIFACT-E2E passed: manager ${manager.version} + runtime ${runtime.id} (${target}); counterpart ${digest}, no counterpart rebuild`);
 	} finally { rmSync(root, { recursive: true, force: true }); }
 }

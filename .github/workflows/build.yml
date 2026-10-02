@@ -1,5 +1,7 @@
 name: build
 
+# Legacy coupled workflow retained until the authorized section 9.2 pause. New product publication
+# uses manager-release.yml / runtime-release.yml and never updates this workflow's index.json.
 # One distribution build (8.1–8.4): 12 targets on native runners → acceptance + packaged E2E with no
 # Node on PATH, including a new slot's candidate office addon (8.9) → the accepted addon's release and
 # index entry, then the bundle's immutable GitHub Release (Latest = release channel) → append to the
