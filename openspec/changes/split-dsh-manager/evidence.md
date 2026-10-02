@@ -1250,3 +1250,19 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
   - PR #2：发布后 MC-EMPTY 失败。原来的断言之所以能过，只是因为生产索引返回 404。05d152b 改为只检查本地 `list` 不发请求。只读扫描确认没有其他测试依赖生产环境为空（install.test.ts:248 只做本地检查）。另外 13543c5 给真实 git 索引发布测试设置显式超时（Windows runner 上耗时达到约 5 s）。
   - PR #3：published-check 的首次下载步骤原来用裸 `dsh --version`，这个命令由 manager 自己回答，不会安装 runtime。改为执行应用命令后用 `--use` 读取版本。28c2387 删除 README 和 desc 中已经不成立的“尚未发布”说明，相对链接全部有效。
 - 勾选 **9.3**。
+
+### 9.2 父会话验收
+
+- 授权：用户选择由 agent 在第 8 节全绿后合并 PR，并在同一个 PR 中暂停旧发布（2026-10-02）。c920b31 删除 `upstream-poll.yml`、`build.yml`、`upstream-diff.mjs`，以及只被它们使用的旧索引写入、旧 tag 支持和旧 aggregate 字段；随 PR #1（243621d）合入 main。
+- 冻结之后不会再产生旧格式资产：main 上已经没有任何能生成 `dsh-v*`、`dsh-live-*`、`dsh-addon-*` 的 workflow；`publish-release.mjs` 拒绝旧 tag 家族；upstream-poll 最后一次运行（2026-10-02T05:54Z）早于合并。冻结后旧家族 release 数量仍为 7。
+- 冻结清单：`/var/tmp/dsh-92/frozen.json`，sha256 `398fa2a99317a79a46073fd2048c9e765016e93a1b6cf848a5f6754da97663aa`。ID、tag、数量和 URL 如下（每个资产的 id、name、size、download URL、digest 都在清单里）：
+  - 399716292 `dsh-addon-office-v0.1.1-xz.28.1.gd499269a`（6 个资产）
+  - 399716693 `dsh-v0.1.7-rc.2-xz.28.1.gd499269a`（14）
+  - 399728621 `dsh-v0.2.0-rc.1-xz.28.1.gd499269a`（14）
+  - 399774675 `dsh-live-639ed01-xz.29.1.g5cf33f29`（14）
+  - 399792727 `dsh-v0.2.0-rc.2-xz.30.1.g5cf33f29`（14）
+  - 399843429 `dsh-v0.2.0-rc.2-xz.34.1.g8a39d4f5`（14）
+  - 399868698 `dsh-live-639ed01-xz.34.1.g8a39d4f5`（14）
+  - 合计 90 个资产，9,453,669,026 bytes；新家族 0，未知 0。
+  - 旧下载入口：releases 分支上的旧 `index.json`、scoop 分支上的 `bucket/dsh-live.json` 和 `bucket/dsh-office.json`。README 已在 28c2387 改为只指向新制品；`install.sh` 已经不存在。
+- 勾选 **9.2**。
