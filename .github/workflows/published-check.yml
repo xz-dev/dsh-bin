@@ -1,0 +1,78 @@
+name: Published release check
+
+# Read-only acceptance of what is actually published: the scoop branch bucket, manager-index.json and
+# runtime-index.json on the releases branch, and the immutable release assets they reference.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions: { contents: read }
+
+jobs:
+  first-download:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, target: linux-x64, exe: dsh }
+          - { runner: macos-15, target: darwin-arm64, exe: dsh }
+          - { runner: windows-2022, target: windows-x64, exe: dsh.exe }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Published manager -> first launch installs the newest published runtime
+        shell: bash
+        env: { TARGET: "${{ matrix.target }}", EXE: "${{ matrix.exe }}" }
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/first-download"; mkdir -p "$root/tools" "$root/home"
+          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/releases/manager-index.json" -o "$root/manager-index.json"
+          read -r tag name size sha < <(jq -r --arg t "$TARGET" '.versions[-1] | "\(.tag) \(.assets[$t].name) \(.assets[$t].size) \(.assets[$t].sha256)"' "$root/manager-index.json")
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/$tag/$name" -o "$root/$name"
+          test "$(wc -c < "$root/$name" | tr -d ' ')" = "$size"
+          if command -v sha256sum >/dev/null; then got=$(sha256sum "$root/$name" | cut -d' ' -f1); else got=$(shasum -a 256 "$root/$name" | cut -d' ' -f1); fi
+          test "$got" = "$sha"
+          unzip -q "$root/$name" -d "$root/tools"
+          chmod +x "$root/tools/$EXE" || true
+          export HOME="$root/home" USERPROFILE="$root/home" LOCALAPPDATA="$root/home" APPDATA="$root/home" XDG_DATA_HOME="" XDG_CONFIG_HOME="$root/home/.config"
+          "$root/tools/$EXE" manager --version
+          newest=$(curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/releases/runtime-index.json" | jq -r '.channels.release[-1].id')
+          "$root/tools/$EXE" --version </dev/null | tee "$root/out.txt"
+          "$root/tools/$EXE" manager list | tee "$root/list.txt"
+          grep -F "$newest" "$root/list.txt"
+          echo "first download installed $newest with $tag ($TARGET)" >> "$GITHUB_STEP_SUMMARY"
+  scoop:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Real Scoop install from the published bucket
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $homeDir = Join-Path $env:RUNNER_TEMP 'published-scoop'
+          New-Item -ItemType Directory $homeDir | Out-Null
+          $env:HOME = $homeDir; $env:USERPROFILE = $homeDir
+          $env:LOCALAPPDATA = Join-Path $homeDir 'local'; $env:APPDATA = Join-Path $homeDir 'roaming'
+          $env:SCOOP = Join-Path $homeDir 'scoop'; $env:SCOOP_GLOBAL = Join-Path $homeDir 'scoop-global'
+          Invoke-WebRequest 'https://get.scoop.sh' -OutFile (Join-Path $homeDir 'install.ps1')
+          & (Join-Path $homeDir 'install.ps1') -RunAsAdmin -ScoopDir $env:SCOOP -ScoopGlobalDir $env:SCOOP_GLOBAL
+          $env:PATH = "$(Join-Path $env:SCOOP 'shims');$env:PATH"
+          scoop config aria2-enabled false
+          $bucket = Join-Path $env:SCOOP 'buckets\dsh-bin'
+          git clone --branch scoop --single-branch "https://github.com/$env:GITHUB_REPOSITORY.git" $bucket
+          if ($LASTEXITCODE -ne 0) { throw 'bucket clone failed' }
+          scoop install dsh-bin/dsh
+          if ($LASTEXITCODE -ne 0) { throw 'scoop install failed' }
+          dsh manager --version
+          if ($LASTEXITCODE -ne 0) { throw 'manager failed' }
+          $info = dsh manager info | Out-String; $info
+          if ($info -notmatch 'scoop') { throw 'install mode is not scoop' }
+          dsh manager update
+          if ($LASTEXITCODE -ne 0) { throw 'runtime install failed' }
+          dsh --version
+          if ($LASTEXITCODE -ne 0) { throw 'runtime launch failed' }
+          dsh manager self-update 2>&1 | Out-String | Tee-Object -Variable su
+          if ($LASTEXITCODE -eq 0 -or $su -notmatch 'scoop') { throw 'managed self-update must refuse and point to scoop' }
+          scoop uninstall dsh
+          if ($LASTEXITCODE -ne 0) { throw 'scoop uninstall failed' }
+          "scoop install/update/uninstall from published bucket passed" | Out-File $env:GITHUB_STEP_SUMMARY -Append
