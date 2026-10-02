@@ -1230,3 +1230,23 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
   6. Scoop：只更新 dsh.json；生成 Gentoo 文件。
   7. 真实验证：从已发布 release 首次下载并安装，跑一遍 Scoop 安装，用 Portage 校验 ebuild。
 - 每个 publish 都受门禁约束：只允许 main 上手动 dispatch、组合门禁必须成功、immutable release、逐资产哈希校验、attestation 校验、索引单次 fast-forward 追加。所有门禁都不放宽。
+
+### 9.3 父会话验收
+
+- **全部从 main 发布**（243621d），每个 release 都是 immutable、非 prerelease，并在进行下一步之前把每个资产的大小和 SHA256 与索引逐一核对：
+  1. addon `addon-office-v0.1.1-b2.1.g243621d7`（addon.yml run 37004812706）：5/5 相符，追加进 runtime-index.json。
+  2. runtime dry run（main，37004821604，0.1.7-rc.2-b2，runtime-index sha256 `e1f98c48…`）作为 manager 首发时的已验收 counterpart。
+  3. manager `manager-v1.0.0`（manager-release run 37007518364）：6 个原生平台组合检查全部通过；6/6 相符；manager-index.json sha256 `b3ba8ed070a877a0261468435f8da203a3d11d60f1ec9760b73e437539bcfb97`；Linux 二进制输出 `dsh manager 1.0.0 (launch protocol 1)`。
+  4. runtime `runtime-v0.1.7-rc.2-b3.1.g243621d7`（37008345541，28 个 job）：counterpart 是已发布 manager-index（sha256 固定）；12/12 相符。
+  5. runtime `runtime-v0.2.0-rc.2-b4.1.g243621d7`（37011989196）：输入同上；12/12 相符；现在是 GitHub Latest。
+  - 所有门禁都没有放宽：只允许 main 上的 `workflow_dispatch`、组合门禁必须成功、immutable、逐资产哈希、attestation 校验、索引单次 fast-forward 追加。
+- **Scoop**：`bucket/dsh.json` 切到 manager 1.0.0（scoop 分支提交 156b17d，只改这一个文件；推送前看过 diff）。没有使用 `publish-scoop-bucket.sh`，因为它会重建整个 bucket 并删除 dsh-live/dsh-office，而用户选择的是这两个文件留到 9.4。已有 Scoop 用户下次 `scoop update dsh` 时会得到只含管理器的新包，没有迁移，旧数据不动。
+- **真实验证**（published-check.yml，只读；新 workflow 只能从默认分支 dispatch，因此经 PR #2 和 #3 合入）：
+  - Scoop（run 37017913881，windows-2022）：真实 Scoop 克隆已发布的 bucket，`scoop install dsh-bin/dsh` 下载 manager-v1.0.0；install mode 为 scoop；`dsh manager update` 安装 0.2.0-rc.2-b4；`dsh manager self-update` 拒绝并提示改用 `scoop update dsh`；`scoop uninstall` 成功。
+  - 首次下载（同一次 run）：Linux x64 和 macOS arm64 从已发布 manager-index 取最新 manager，校验大小和哈希，首次运行应用命令后安装了 runtime-index 中最新的 0.2.0-rc.2-b4，`--use … --version` 通过。windows-x64 这个 job 在 Git Bash 步骤中没有任何输出就以 exit 1 结束，原因没有查明；同一 run 里真实 Windows 已经从已发布 bucket 下载 manager 1.0.0、安装最新 runtime 并运行成功，所以 Windows 的首次下载能力有证据覆盖，这个 job 记为检查脚本问题，未关闭。
+  - 本机 Linux 也做了同样的首次下载：manager 1.0.0 安装 0.2.0-rc.2-b4。
+  - Gentoo：从已发布 manager-index 生成 `dsh-bin-1.0.0.ebuild` 和 Manifest。Manifest 中的 DIST 大小和 SHA256 与已下载的已发布 zip 一致。在本机以 uid 1000 非 root 跑真实 Portage，`DSH_GENTOO_MANAGER_ZIP` 指向已发布的 manager-linux-x64.zip：install → upgrade → unmerge，6 pass / 0 fail，数据、凭据、会话保留。按用户选择，文件放在 `/var/tmp/dsh-bin-gentoo-1.0.0/app-misc/dsh-bin/`，由用户加入自己的 overlay。
+- 发布后的修正（都经 PR 和三平台 CI）：
+  - PR #2：发布后 MC-EMPTY 失败。原来的断言之所以能过，只是因为生产索引返回 404。05d152b 改为只检查本地 `list` 不发请求。只读扫描确认没有其他测试依赖生产环境为空（install.test.ts:248 只做本地检查）。另外 13543c5 给真实 git 索引发布测试设置显式超时（Windows runner 上耗时达到约 5 s）。
+  - PR #3：published-check 的首次下载步骤原来用裸 `dsh --version`，这个命令由 manager 自己回答，不会安装 runtime。改为执行应用命令后用 `--use` 读取版本。28c2387 删除 README 和 desc 中已经不成立的“尚未发布”说明，相对链接全部有效。
+- 勾选 **9.3**。
