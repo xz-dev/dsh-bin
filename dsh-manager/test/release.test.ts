@@ -131,7 +131,7 @@ test("Upstream tracking: unchanged release does nothing; new tag builds dry-run 
 	const old = manifest(), published = runtimeIndex();
 	appendBundle(published, { ...old, upstream: { ...old.upstream, tag: "dsh-v0.1.7" } });
 	const refs = `${"c".repeat(40)}\trefs/tags/dsh-v0.1.7\n`;
-	const manager = emptyIndex(); appendManager(manager, JSON.parse(readFileSync(join(root, "manager/manager-manifest.json"), "utf8")));
+	const manager = emptyIndex(); appendManager(manager, { kind: "dsh-manager", version: "1.2.3", tag: "manager-v1.2.3", launchProtocols: [1], assets: Object.fromEntries(Object.keys(TARGETS).map(target => [target, { name: `manager-${target}.zip`, size: 3, sha256: sha256("zip") }])) });
 	const managerText = JSON.stringify(manager), calls: string[] = [];
 	const source = (index: any, counterpart: string | null) => (async (url: any, options: any) => {
 		calls.push(String(url)); expect(options.redirect).toBe("error");
