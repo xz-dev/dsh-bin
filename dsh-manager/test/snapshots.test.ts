@@ -140,12 +140,18 @@ test.skipIf(!hasZig)("MC-IN-USE: a post-preflight removal failure reports the al
 test.skipIf(!hasZig)("MC-SNAPSHOT: concurrent starts reuse prepared snapshot without taking the busy store lock", async () => {
 	const i = install(); expect(command(i, ["new", "--use", A, "--empty"]).status).toBe(0);
 	const held = acquireClaim(join(root(i), ".lock"), "exclusive"); expect(held).not.toBe("busy");
-	const start = async () => {
-		const p = Bun.spawn([i.exe, "--use", A, "probe"], { cwd: i.home, env: baseEnv(i), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+	// Each fake child owns its recorder files; test concurrent manager starts, not recorder writes.
+	const start = async (gen: string) => {
+		const p = Bun.spawn([i.exe, "--use", A, "probe"], { cwd: i.home, env: { ...baseEnv(i), FAKE_GEN: gen }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
 		const timer = setTimeout(() => p.kill("SIGKILL"), 30_000);
-		try { const [code, stderr] = await Promise.all([p.exited, new Response(p.stderr).text(), new Response(p.stdout).text()]); expect(code, `concurrent snapshot launch stderr:\n${stderr}`).toBe(0); expect(stderr).not.toContain("Busy"); return code; }
+		try { const [code, stderr] = await Promise.all([p.exited, new Response(p.stderr).text(), new Response(p.stdout).text()]); return { code, stderr }; }
 		finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await p.exited; } }
 	};
-	try { expect(await Promise.all([start(), start()])).toEqual([0, 0]); expect(rows(i).map((s: any) => s.id)).toEqual([`${A}@1`]); }
-	finally { if (held !== "busy") held.release(); }
+	try {
+		// Drain both children before assertions, including when one failed, so cleanup cannot race the other.
+		const results = await Promise.all([start("1"), start("2")]);
+		for (const { code, stderr } of results) { expect(code, `concurrent snapshot launch stderr:\n${stderr}`).toBe(0); expect(stderr).not.toContain("Busy"); }
+		for (const gen of ["1", "2"]) expect(launchOf(i, gen).snapshot.id).toBe(`${A}@1`);
+		expect(rows(i).map((s: any) => s.id)).toEqual([`${A}@1`]);
+	} finally { if (held !== "busy") held.release(); }
 });
