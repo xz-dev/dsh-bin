@@ -25,15 +25,14 @@ describe("7.5: Scoop owns only the manager", () => {
 		for (const old of [".scoop.managed.lock", "addons/", "dsh-live", "dsh-office"]) expect(JSON.stringify(m)).not.toContain(old);
 	});
 
-	test.skipIf(!Bun.which("pwsh"))("PS-SCOOP / DL-MANAGED-SELF: real post_install writes the read-only UTF-8 ownership marker", () => {
+	test.skipIf(!Bun.which("pwsh"))("PS-SCOOP / DL-MANAGED-SELF: real post_install writes the UTF-8 ownership marker and sets no attributes by path", () => {
 		const t = mkdtempSync(join(tmpdir(), "dsh-scoop-hook-"));
 		try {
 			const manifest = scoopManifests(INDEX).dsh;
 			execFileSync("pwsh", ["-NoProfile", "-Command", "$ErrorActionPreference = 'Stop'; $dir = $env:DSH_SCOOP_HOOK_DIR; " + manifest.post_install.join("; ")], { env: { ...process.env, DSH_SCOOP_HOOK_DIR: t } });
 			const path = join(t, ".dsh-manager-install.json");
 			expect(readFileSync(path, "utf8")).toBe('{"schema":1,"owner":"scoop"}');
-			const readonly = execFileSync("pwsh", ["-NoProfile", "-Command", "(Get-Item -LiteralPath (Join-Path $env:DSH_SCOOP_HOOK_DIR '.dsh-manager-install.json') -Force).IsReadOnly"], { env: { ...process.env, DSH_SCOOP_HOOK_DIR: t }, encoding: "utf8" });
-			expect(readonly.trim()).toBe("True");
+			expect(manifest.post_install.join(" ")).not.toMatch(/SetAttributes|IsReadOnly/);
 		} finally { rmSync(t, { recursive: true, force: true }); }
 	});
 
@@ -56,7 +55,7 @@ describe("7.5: Scoop owns only the manager", () => {
 	});
 
 	test("7.5: invalid manager index, identity, protocol or asset refuses packaging", () => {
-		for (const e of [{ ...entry("1.0.0"), tag: "../bad" }, entry("01.0.0"), entry("1.0.0-rc.01"), entry("1.0.0+"), { ...entry("1.0.0"), launchProtocols: [2] }, { ...entry("1.0.0"), launchProtocols: "91" }, { ...entry("1.0.0"), launchProtocols: ["1"] }, { ...entry("1.0.0"), assets: {} },
+		for (const e of [{ ...entry("1.0.0"), tag: "../bad" }, entry("01.0.0"), entry("1.0.0-rc.01"), entry("1.0.0+"), { ...entry("1.0.0"), launchProtocols: [2] }, { ...entry("1.0.0"), launchProtocols: "91" }, { ...entry("1.0.0"), launchProtocols: ["1"] }, { ...entry("1.0.0"), launchProtocols: [-1, 1] }, { ...entry("1.0.0"), assets: {} },
 			{ ...entry("1.0.0"), assets: { "windows-x64": { name: "$(touch bad).zip", size: 7, sha256: h("1") }, "windows-arm64": entry("1.0.0").assets["windows-arm64"] } }]) {
 			expect(() => scoopManifests({ schema: 1, versions: [e] })).toThrow();
 		}

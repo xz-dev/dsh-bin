@@ -14,7 +14,7 @@ export function scoopManifests(index, repo = "xz-dev/dsh-bin") {
 	for (let i = 1; i < entries.length; i++) if (Bun.semver.order(entries[i - 1].version, entries[i].version) === 0) throw new Error("ambiguous manager version");
 	const manager = entries[0];
 	const protocols = manager.launchProtocols;
-	if (!Array.isArray(protocols) || !protocols.every(Number.isSafeInteger)) throw new Error("invalid manager launchProtocols");
+	if (!Array.isArray(protocols) || !protocols.every((n) => Number.isSafeInteger(n) && n >= 0)) throw new Error("invalid manager launchProtocols");
 	if (!protocols.includes(1)) throw new Error("incompatible manager protocol");
 	const architecture = Object.fromEntries([["64bit", "windows-x64"], ["arm64", "windows-arm64"]].map(([arch, target]) => {
 		const a = manager.assets?.[target];
@@ -29,13 +29,12 @@ export function scoopManifests(index, repo = "xz-dev/dsh-bin") {
 		bin: "dsh.exe",
 		architecture,
 		// CreateNew never follows or overwrites an existing name (file, symlink or hardlink): a pre-existing
-		// marker is refused with a clear error instead of truncating whatever it points to. Read-only is set
-		// through the same handle's path only after we created the file ourselves.
+		// marker is refused with a clear error instead of truncating whatever it points to. No attribute is set
+		// afterwards by path (the manager never reads a read-only bit), so nothing can be redirected after close.
 		post_install: [
 			`$marker = Join-Path $dir '.dsh-manager-install.json'`,
 			`try { $fs = [System.IO.FileStream]::new($marker, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None) } catch { throw "dsh: refusing to replace existing $marker; remove it and reinstall" }`,
 			`try { $b = [System.Text.UTF8Encoding]::new($false).GetBytes('{"schema":1,"owner":"scoop"}'); $fs.Write($b, 0, $b.Length) } finally { $fs.Dispose() }`,
-			`[System.IO.File]::SetAttributes($marker, [System.IO.FileAttributes]::ReadOnly)`,
 		],
 	} };
 }
