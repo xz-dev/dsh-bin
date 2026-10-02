@@ -80,7 +80,16 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 			if (path === "/manager-index.json") return Response.json(managerIndex);
 			const file = assets.get(path); return file ? new Response(Bun.file(file)) : new Response(null, { status: 404 });
 		} });
-		const env = (): Record<string, string> => ({ PATH: install, HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home, TMPDIR: root, TMP: root, TEMP: root, NO_COLOR: "1", DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: server!.url.origin, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) });
+		const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+		if (WIN) expect(systemRoot).toBeDefined();
+		const system32 = WIN ? join(systemRoot!, "System32") : "";
+		const env = (): Record<string, string> => {
+			// .cmd shims need Windows' command processor, not a host Node/Bun installation.
+			const path = WIN ? [install, system32] : [install];
+			for (const dir of path) for (const name of ["node", "bun"]) for (const ext of ["", ".exe", ".cmd", ".bat", ".com"]) expect(existsSync(join(dir, name + ext))).toBe(false);
+			return { PATH: path.join(delimiter), HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home, TMPDIR: root, TMP: root, TEMP: root, NO_COLOR: "1", DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: server!.url.origin,
+				...(WIN ? { SystemRoot: systemRoot!, windir: systemRoot!, COMSPEC: join(system32, "cmd.exe"), PATHEXT: ".COM;.EXE;.BAT;.CMD" } : {}) };
+		};
 		const command = async (args: string[], extra: Record<string, string> = {}, expectedCode = 0) => {
 			const p = Bun.spawn([exe, ...args], { cwd, env: { ...env(), ...extra }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
 			const stdout = Readable.fromWeb(p.stdout), stderr = Readable.fromWeb(p.stderr);
@@ -103,7 +112,7 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 			expect(reports).toHaveLength(restart ? 2 : 1);
 			for (const report of reports) {
 				const shim = join(bundle(report.launch.runtime), "bin");
-				expect(report.path.split(delimiter)).toEqual([shim, install]);
+				expect(report.path.split(delimiter)).toEqual([shim, ...env().PATH.split(delimiter)]);
 				// The only Node is the runtime's bundled shim, never a host Node/Bun executable.
 				expect(Bun.which(WIN ? "node.cmd" : "node", { PATH: report.path })?.startsWith(shim)).toBe(true); expect(Bun.which("bun", { PATH: report.path })).toBeNull();
 				expect(report.home).toBe(home); expect(report.cwd).toBe(cwd); expect(report.launch.dataRoot).toBe(data); expect(report.launch.home).toBe(join(data, "home"));
@@ -162,7 +171,7 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 		expect(readdirSync(join(data, "bundles"))).toEqual([]);
 		online = false; const beforeOffline = requests.length;
 		await command(["manager", "list"]); await command(["manager", "info"]); expect(requests.length).toBe(beforeOffline);
-		online = true; await command(["manager", "install", b.id]);
+		online = true; await command(["manager", "install", b.id]); await command(["manager", "install", a.id]);
 		for (const [d, hashes] of Object.entries(preserved)) expect(digest(join(data, d))).toEqual(hashes);
 		await command(["manager", "select", "--use", b.id, "--snapshot", chosenSnapshot, "--addon", `office:${addon.version}`]);
 		expect((await probe())[0].launch.snapshot.id).toBe(chosenSnapshot);
@@ -187,14 +196,21 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 		expect(protectedData()).toEqual(beforeUpdate); expect((await probe())[0].launch.manager).toBe(next.version);
 		note("manager-only-self-update", {from: old.version, to: next.version, unchangedPaths: Object.keys(beforeUpdate).length});
 
+		for (const runtime of [a.id, b.id]) expect(existsSync(bundle(runtime))).toBe(true);
 		const requestsBeforeMove = requests.length;
 		await server.stop(true);
 		const original = install, sealed = join(root, "inaccessible original");
 		renameSync(install, sealed); mkdirSync(join(root, "moved")); install = join(root, "moved/portable install");
 		renameSync(sealed, install); // Entire install moved; original name no longer resolves on either OS.
 		exe = join(install, `dsh${suffix}`); data = join(install, "dsh-bin");
-		const movedState = protectedData(), movedReport = (await probe())[0];
-		expect(movedReport.launch.snapshot.id).toBe(chosenSnapshot); expect(movedReport.launch.addons.office.dir).toBe(join(data, "addons/office", addon.version));
+		const movedState = protectedData(), selectedReport = (await probe())[0];
+		expect(selectedReport.launch.runtime).toBe(b.id); expect(selectedReport.launch.snapshot.id).toBe(chosenSnapshot);
+		for (const runtime of [a.id, b.id]) {
+			expect(existsSync(bundle(runtime))).toBe(true);
+			const movedReport = (await probe(["--use", runtime, "--snapshot", chosenSnapshot, "--addon", `office:${addon.version}`]))[0];
+			expect(movedReport.launch.runtime).toBe(runtime);
+			expect(movedReport.launch.snapshot.id).toBe(chosenSnapshot); expect(movedReport.launch.addons.office.dir).toBe(join(data, "addons/office", addon.version));
+		}
 		await office();
 		// A real app boot may create a new session; it must preserve every pre-move user/runtime path.
 		const afterMove = protectedData();
@@ -202,7 +218,7 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 		expect(existsSync(original)).toBe(false);
 		await command(["manager", "clean"]); // Also removes the retired Windows helper/candidate, never user data.
 		expect(requests.length).toBe(requestsBeforeMove);
-		note("offline-move", {oldPathAbsent: true, sourceStopped: true, unchangedPaths: Object.keys(movedState).length});
+		note("offline-move", {runtimes: [a.id, b.id], snapshot: chosenSnapshot, oldPathAbsent: true, sourceStopped: true, unchangedPaths: Object.keys(movedState).length});
 		expect(tree(home)).toEqual([]); expect(tree(cwd)).toEqual([]);
 		const outside = tree(root).filter(p => !p.startsWith("moved/portable install/dsh-bin/"));
 		expect(outside).toEqual(["combined-plugin.tgz", "isolated-home", "moved", "moved/portable install", "moved/portable install/dsh-bin", `moved/portable install/dsh${suffix}`, "workspace"].sort());
