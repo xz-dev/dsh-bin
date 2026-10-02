@@ -2,37 +2,38 @@
 
 [README](../../README.md) · [中文](../zh-CN/office-addon.md)
 
-The office plugins (`office-to-pdf`, `skill-office`) need LibreOffice Kit. It is large, so it ships as a separate addon, not in the main archive. Without it, those two plugins show up as inactive when dsh starts, and everything else works.
+The `office-to-pdf` and `skill-office` plugins need LibreOffice Kit. It ships as a separate addon; without a compatible installed addon those plugins are inactive and other application functions remain available. New-format office addons are not published yet; use these commands after a matching addon is available in the runtime index.
 
-## Install and remove
+## Install, inspect and remove
 
-```sh
-dsh install --addon office                   # the default version for your dsh version
-dsh install --addon office:<version>         # a specific version
-dsh uninstall --addon office:<version>       # remove one version
-dsh uninstall --addon office                 # remove every version
-dsh list --addon office                      # installed and available versions
-```
-
-Several addon versions can be installed side by side. `dsh uninstall --addon` refuses a version that is in use or [selected](select.md).
-
-With Scoop, use `scoop install dsh-bin/dsh-office` instead.
-
-## Which version is used
-
-Each addon version belongs to a **slot**: the LibreOffice Kit version that upstream uses, and the upstream commit that introduced it. A dsh version works with the addons of its own slot.
-
-- A plain launch uses the newest installed addon of the right slot.
-- The default version for `dsh install --addon office` is the newest of the right slot in the release index. When the index is unreachable, it is the version pinned when the dsh version was built.
-- Each version carries the list of its slot's addon versions, so they stay installable even offline.
-
-## Using an addon from another slot
-
-An addon from another slot may not work. dsh-bin allows it but makes you ask for it:
+Install/select a runtime first, so the manager can read its office compatibility slot.
 
 ```sh
-dsh install --addon office:<version> --force
-dsh --addon office:<version> ...              # or: dsh select --use latest --addon office:<version>
+dsh manager install --addon office
+dsh manager install --addon office:<addon>
+dsh manager list
+dsh manager list --available
+dsh manager uninstall --addon office:<addon>
+dsh manager uninstall --addon office
 ```
 
-It is used only when named, and each such start prints a warning. If a named version is not installed, the start stops and tells you how to install it.
+Several versions can coexist under data-root `addons/office/`. Installation checks the addon without running dsh. Removal refuses in-use or persistently selected versions. The same commands work under Gentoo and Scoop; no separate office system package is needed.
+
+## Compatibility and defaults
+
+The runtime declares a slot identifying its upstream LibreOffice Kit dependency. Without an explicit selection, startup uses the highest-sequence installed addon of that slot, entirely offline.
+
+`install --addon office` chooses the newest compatible index entry, or the runtime's embedded pinned entry if the index is unavailable. Embedded metadata does not make an undownloaded ZIP available offline: installation still needs the archive in verified cache or a reachable source. A runtime with no published matching addon reports no candidate.
+
+`--force` reinstalls an addon but **never** bypasses its slot. Missing/incompatible explicit or saved launch choices produce a diagnostic and degrade to no office addon, not another version.
+
+## Select or disable
+
+```sh
+dsh --addon office:<addon> --profile tui
+dsh --addon office:none --profile tui
+dsh manager select --use <runtime> --addon office:<addon>
+dsh manager select --use latest --addon office:none
+```
+
+Saved addon selection requires `--use`. Omitting `--addon` when saving a selection clears the addon override. For repeated launch addon choices, the last wins. See [selection](select.md).

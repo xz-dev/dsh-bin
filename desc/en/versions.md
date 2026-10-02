@@ -1,89 +1,76 @@
-# Versions and updates
+# Versions and independent updates
 
 [README](../../README.md) · [中文](../zh-CN/versions.md)
 
-dsh-bin keeps several dsh versions installed side by side. One launcher starts any of them.
+Native management never starts dsh and needs no host JS runtime. Application commands remain outside the `manager` namespace.
 
-## See what is installed
-
-```sh
-dsh list           # installed versions, what can be installed, addon versions
-dsh list --json
-```
-
-Installed versions are marked `selected`, `latest` and `in use`. `dsh list` is read-only: it downloads nothing and changes nothing.
-
-## Update
+## Inspect
 
 ```sh
-dsh update
+dsh manager --help
+dsh manager --version
+dsh manager info
+dsh manager list
+dsh manager list --json
+dsh manager list --available
 ```
 
-This installs the newest version of your channel next to the installed ones. Nothing is replaced. `dsh update self`, `dsh update dsh` and `dsh update --self` do the same.
+Local listing is read-only and offline. It includes installed runtimes and office addons, with selected/latest/in-use/startable information. Only `--available` requests the runtime index, adding compatible remote runtimes and office addons for the selected runtime.
 
-- It never changes what a plain `dsh` starts. If you [pinned](select.md) another version, it warns you.
-- If no installed office addon fits the new version, it prints how to install one.
-- `dsh update --force` reinstalls the newest version.
-
-There is no downgrade command: older versions are still installed. Start one with `dsh --use <version>`, or [select](select.md) it.
-
-## Channels
-
-| Channel | Follows |
-|---|---|
-| `release` (default) | upstream `dsh-v*` tags |
-| `live` | upstream `master` |
+## Update a runtime
 
 ```sh
-dsh update --channel live      # switch to live
-dsh update --channel release   # switch back
+dsh manager update
+dsh manager update --channel live
+dsh manager update --channel release
+dsh manager update --force
 ```
 
-The new channel is recorded only after the install succeeds.
+`release` follows upstream release tags; `live` follows upstream master. A new installation defaults to release. A successful explicit channel change is recorded; a failed install leaves the channel unchanged.
 
-## Install a specific version
+An update adds the newest compatible runtime beside older ones, preserves saved selection and warns if a version is pinned. `--force` reinstalls the chosen runtime; it does not bypass compatibility or in-use protection. Ordinary launches do not implicitly update an existing installation.
+
+## Install a version
 
 ```sh
-dsh install 0.1.7-rc.2
-dsh install 0.1.7-rc.2 --channel live
+dsh manager install <version>
+dsh manager install <version> --channel live
+dsh manager install <version> --force
 ```
 
-A version can be the exact version, the release tag, or the upstream version such as `0.1.7-rc.2`. A unique prefix is enough. The install also creates the version's first [snapshot](snapshots.md).
+Copy the full ID/tag from `list --available`, or use an unambiguous prefix/upstream version. More than one matching build is an error; give a longer identity. Installation verifies the bundle and prepares its first [snapshot](snapshots.md). Reinstalling a runtime keeps valid existing snapshots and home.
 
-## Remove a version
+## Remove runtimes
 
 ```sh
-dsh uninstall 0.1.7-rc.2
-dsh uninstall 0.1.7-rc.1 0.1.7-rc.2
+dsh manager select --use latest
+dsh manager uninstall <version>
+dsh manager uninstall <version-a> <version-b>
 ```
 
-Snapshots of removed versions are kept. It refuses, for the whole list, if any of them is:
+You can remove **all** unused runtimes after unpinning. A request containing a missing, ambiguous, pinned or in-use runtime fails its preflight without deleting any requested runtime. Snapshots, saved selection, home and manager remain. Reinstalling the same runtime reuses retained data; ordinary empty startup can reinstall from the recorded channel.
 
-- the last installed version;
-- the version you pinned with `dsh select`;
-- in use.
+Usage protection covers managed runtime processes and their application restarts, not every independent descendant process.
 
-"In use" means a dsh process started by dsh-bin is running it: a session, `dsh plugin`, or an in-app restart. Child processes are not tracked.
-
-## Weak networks
-
-Updates are made to survive bad connections:
-
-- **Resume.** A retry continues where the download stopped (HTTP `Range`). An interrupted run keeps its partial file, and the next `dsh update` continues from there.
-- **Retry.** Network errors and HTTP 408/425/429/5xx are retried with exponential backoff, honouring `Retry-After`.
-- **Timeout.** A download that receives no data for 30 s is aborted and retried.
-- **Check.** The finished file is checked against the index size and SHA-256. A resumed file that fails is downloaded once more from the start.
-- **Progress.** A progress bar with speed and ETA on a terminal; one plain line per second otherwise.
-
-The new version is activated atomically: first the bundle, then the root launcher.
-
-## Clean up
+## Update only the manager
 
 ```sh
-dsh clean              # same as --all
-dsh clean --update     # partial downloads and install staging
-dsh clean --snapshots  # snapshot staging
-dsh clean --transpiler # dsh-bin's transpiler cache
+dsh manager self-update
+dsh manager self-update --force
 ```
 
-`dsh clean` removes only leftovers of interrupted runs and caches. It never removes installed versions, addons or snapshots.
+Portable self-update uses `manager-index.json`, not the runtime index. It compares strict SemVer (build metadata does not affect order), never downgrades, and normally skips the same version. `--force` permits same-version repair. Runtimes, snapshots, selection, configuration and credentials stay unchanged.
+
+On POSIX the verified candidate atomically replaces the real executable; an entry symlink stays a symlink. On Windows a temporary copy of the same program waits for the parent to exit, then performs replacement. **Handed off is not updated**: the next invocation reports the helper's result. Image/file-system restrictions may refuse replacement while keeping the old entry; exit other manager invocations and retry explicitly.
+
+Gentoo/Scoop installations refuse self-update before download: use `emerge --ask --update app-misc/dsh-bin` or `scoop update dsh` instead. Installing an older runtime never downgrades the manager.
+
+## Downloads and cleanup
+
+Downloads validate target identity, size, SHA-256, required paths and launch protocol before activation. Interrupted downloads can resume when the server's Range response is consistent; retries are bounded and honour Retry-After. Invalid bytes are not activated. Failures keep selection/channel unchanged.
+
+```sh
+dsh manager clean
+```
+
+Clean is offline and removes only recognized caches and interrupted-operation residue. It keeps valid runtimes, addons, snapshots, home, credentials and unknown files. If a relevant session or operation is busy, the entire clean refuses with zero deletions. A sole recovery copy is kept when the public generation is missing/invalid, with an explicit install recovery hint. There are no per-category clean flags.

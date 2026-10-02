@@ -2,36 +2,38 @@
 
 [README](../../README.md) · [中文](../zh-CN/select.md)
 
-A plain `dsh` starts the **selection**: a version, a snapshot and addon versions. By default it is `latest`: the newest installed version of your channel, with that version's newest snapshot and default addons.
+By default, a plain launch uses the newest installed runtime of the recorded channel, that runtime's newest snapshot and the newest installed compatible office addon. The manager never consults a remote latest on an ordinary installed launch.
 
-## For one run
+## For one launch
 
-Put these options before any other argument:
-
-```sh
-dsh --use 0.1.7-rc.2 --profile tui                  # an installed version (a unique prefix is enough)
-dsh --snapshot 0.2.0-rc.1@1 --profile tui           # a snapshot (implies its version)
-dsh --use 0.2.0 --snapshot 0.1.7-rc.2@2 ...         # an old snapshot on a new version
-dsh --addon office:0.1.2-xz.11.1.gaaaa0001 ...      # a specific addon version
-```
-
-## Change the default
+Put manager launch options **before** the first application argument. Here `<runtime>` is an installed runtime ID/unambiguous prefix, `<snapshot>` is a full ID or alias such as `<runtime>@before-change`, and `<addon>` is an installed addon version.
 
 ```sh
-dsh select                                          # show the selection and what it resolves to
-dsh select --use 0.1.7-rc.2                         # pin a version
-dsh select --use 0.1.7-rc.2 --snapshot 0.1.7-rc.2@2 # pin a version and snapshot
-dsh select --use latest                             # back to the default
+dsh --use <runtime> --profile tui
+dsh --snapshot <snapshot> --profile tui
+dsh --use <runtime-b> --snapshot <runtime-a>@1 --profile tui
+dsh --addon office:<addon> --profile tui
+dsh --addon office:none --profile tui
 ```
 
-- `--use` is required. Options you leave out go back to their defaults.
-- Selecting never downloads anything; the version must already be installed.
-- `dsh update` does not change the selection. While a version is pinned, it warns you after installing a newer one.
+A snapshot alone implies its runtime. An explicit `--use` overrides that implication, allowing another runtime to use the same snapshot without copying it. Missing or ambiguous explicit selections fail rather than falling back. Once application arguments begin, same-named options belong to the application.
 
-## Running sessions
+## Save a default
 
-A running session keeps its version and snapshot until it exits, including in-app restarts. Changing the selection affects only new starts.
+```sh
+dsh manager select
+dsh manager select --use <runtime>
+dsh manager select --use <runtime> --snapshot <snapshot>
+dsh manager select --use <runtime> --addon office:<addon>
+dsh manager select --use latest
+```
 
-## Help
+No arguments shows the current selection offline. Writes require `--use`; omit `--snapshot` to restore newest-snapshot selection, and omit `--addon` to restore default compatible-addon selection. Selection does not download anything, and referenced snapshots must already exist. Runtime update preserves this choice and warns when pinned.
 
-`dsh --help` shows upstream's help followed by the dsh-bin options and commands. `dsh plugin --profile <name> …` manages plugins as upstream designed. upstream's own `dsh update` never runs; use dsh-bin's [`dsh update`](versions.md#update).
+A running session, including in-app restarts, keeps its original runtime, snapshot and addon. Changing defaults affects only new starts.
+
+## Help versus application arguments
+
+`dsh --help` / `dsh --version` return native manager information and local runtime status, without starting an application or downloading one. `dsh manager --help` shows native management. A call with application arguments, such as `dsh --profile tui --help`, is passed to the selected application and follows ordinary startup rules.
+
+Plugin management is still an application command, for example `dsh plugin --profile tui add <package>`; see the installed upstream application's help for its fixed commands. The runtime's own self-update cannot replace the managed image: use [manager updates](versions.md).

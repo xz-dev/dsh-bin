@@ -2,55 +2,46 @@
 
 [README](../../README.zh-CN.md) · [English](../en/snapshots.md)
 
-快照保存你的插件。做有风险的插件改动前先存一份；改坏了，删掉它就回去了。
+快照包含各 profile 的插件运行文件：package/lock 文件、`node_modules`、`.plugin-manager` 和 `cordis.yml`。它们位于**数据根** `snapshots/<runtime>@<n>/profiles/`，不在 `DSH_HOME` 下。共享设置 `$DSH_HOME/profiles/<name>/cordis.patch.yml`、凭据和会话不复制；所有快照读取同一个应用 home。
 
-## 快照里有什么
+## 创建和选择
 
-快照 `<version>@<n>` 是每个 profile 插件运行时的完整副本：
+安装新运行包时，首个快照从前一运行包最新快照复制；无来源则为空。重装保留有效快照。新快照独立复制插件文件，不执行 pnpm 修复依赖；内部相对链接保留，绝对或越界链接拒绝。
 
-- `package.json` 和 lockfile；
-- `node_modules/` 和 `.plugin-manager/`；
-- `cordis.yml`。
-
-快照存放在 `$DSH_HOME/snapshots/`。你的设置 `$DSH_HOME/profiles/<name>/cordis.patch.yml` 不在快照里，由所有快照共用。
-
-## 快照怎么来的
-
-- **新版本自动创建。** 某个版本第一次启动时，会复制上一个版本最新的快照，插件就跟着过来了。之前没有快照的话，从空开始。
-- **你手动创建。** `dsh snapshot new` 把当前版本最新的快照复制成一个新快照。
-
-编号只增不减，从不复用。不带参数的 `dsh` 使用该版本最新的快照。
-
-## 命令
+编号只增长，删除后也不复用。未固定快照时选择运行包最新快照。以下 `<runtime>`、`<snapshot>` 从本地列表取得。
 
 ```sh
-dsh snapshot list                    # 带 newest、selected、in use 标记；脚本用 --json
-dsh snapshot new                     # 复制最新的快照
-dsh snapshot new --name before-mcp   # 同时起个名字
-dsh snapshot new --target 0.2.0-rc.1@1   # 复制指定的快照
-dsh snapshot new --empty             # 从没有插件开始
-dsh snapshot remove 0.2.0-rc.2@3     # 删除一个或多个快照
+dsh manager snapshot list
+dsh manager snapshot list --json
+dsh manager snapshot new
+dsh manager snapshot new --name before-change
+dsh manager snapshot new --use <runtime> --target <snapshot>
+dsh manager snapshot new --use <runtime> --empty
+dsh manager snapshot remove <snapshot>
 ```
 
-快照可以用编号（`0.2.0-rc.2@3`）或名字（`0.2.0-rc.2@before-mcp`）指定。名字可用字母、数字、`.`、`_` 和 `-`，不能全是数字。
+`--target` 复制已有快照；`--empty` 创建无插件快照。别名可用字母、数字、`.`、`_`、`-`，不能全为数字；引用形式为 `<runtime>@before-change`。删除可接受多个 ID，但遇到正在使用或已持久选择的快照，会在删除任何目标之前拒绝。
 
-`dsh snapshot remove` 不会删除正在使用的快照，也不会删除你[选择](select.md)的快照。
+## 试一次插件修改
 
-## 撤回一次插件改动
+1. 停止会使用该快照的会话。
+2. 创建新快照，记下输出 ID。
+3. 用应用命令修改插件。
+4. 退出应用后，若修改失败，删除新快照。
 
 ```sh
-dsh snapshot new                     # 假设创建了 0.2.0-rc.2@3
-dsh plugin --profile tui add …       # 改动进入 @3
-dsh snapshot remove 0.2.0-rc.2@3     # 改坏了：@2 重新成为最新
+dsh manager snapshot new --name experiment
+dsh plugin --profile tui add <package>
+dsh manager snapshot remove <runtime>@experiment
 ```
 
-## 在新版本上跑旧快照
+默认选择最新快照时，下次启动回到仍保留的前一个快照。若之前固定了快照，需显式改选；新快照不覆盖固定选择。删除快照会丢失其中插件修改，保留需要的副本。
+
+## 跨运行包试用
 
 ```sh
-dsh --snapshot 0.2.0-rc.1@1 --profile tui               # 快照和它自己的版本
-dsh --use 0.2.0 --snapshot 0.1.7-rc.2@2 --profile tui   # 在新版本上用旧快照
+dsh --snapshot <runtime-a>@1 --profile tui
+dsh --use <runtime-b> --snapshot <runtime-a>@1 --profile tui
 ```
 
-这样能分清问题出在插件还是 dsh 本身。所有启动选项见[选择 `dsh` 启动什么](select.md)。
-
-运行中的会话一直使用它的快照直到退出，应用内重启也一样。
+第一条使用快照所属运行包；第二条使用运行包 B 和 A 的现有插件文件，不复制、不修复。见[选择文档](select.md)。运行会话及应用内重启保持已解析快照，直到退出。

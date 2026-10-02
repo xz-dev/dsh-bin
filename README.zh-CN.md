@@ -2,60 +2,47 @@
 
 [English](README.md) | 简体中文
 
-[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）的独立打包版。不需要 Node.js，可以同时装多个 dsh 版本，插件存在快照里，随时能退回去。
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）的独立打包版，由 Zig 管理器和单独发布的 Bun 运行包组成。管理功能和已安装应用均不需要宿主 Node.js 或 Bun。
 
-## 为什么做这个
-
-dsh 变化很快，几天就出一个 RC，这个版本能用的插件，到下个版本可能就加载不了。npm 安装一次只能有一个版本，所有版本还共用同一份插件文件。升级出了问题，想回到之前能用的状态，只能重装、再手动把插件装一遍。
-
-dsh-bin 让升级可以撤回：
-
-- **不需要 Node.js。** 每个版本自带 Bun 运行时和 pnpm，没装任何 JavaScript 运行时的机器上也能 `dsh plugin add`。
-- **多版本并存。** `dsh update` 装新版本，旧版本留着。`dsh --use <版本>` 可以启动任意已安装的版本。
-- **插件快照。** 插件按版本存在编号快照里，新版本从上一个快照复制一份开始。改插件改坏了，删掉这个快照就回去了。
-- **还是原来的 dsh。** 直接用上游源码构建，不做修改。profile、凭据和设置都不用动。
-
-思路借用了容器（只读镜像自带运行时、可写层单独放、多个镜像并存），但不需要容器，只是一个小启动器加几个目录。启动也比 npm 安装稍快：Linux x64 上 profile 热启动 304–321 ms，npm 版是 361 ms。
+- **各自更新。** `dsh manager update` 安装运行包；`dsh manager self-update` 只更新管理器。
+- **多版本并存。** 装新运行包不替换旧版本，可以单次选版，也可以保存默认选择。
+- **插件快照。** 插件运行文件按运行包存入编号快照；共享配置、凭据和会话留在应用 home。
+- **默认便携。** 管理器和相邻的 `dsh-bin/` 一起保存。停止会话后，可整体移到兼容平台上的新位置。
 
 ## 安装
 
-**Linux、macOS**
+**发布状态：** 新 manager/runtime 发布家族和仅含管理器的 Gentoo/Scoop 包尚未发布。现有 Releases 和 bucket 清单不是本文描述的新安装。以下步骤用于新制品发布后。
+
+从 **`manager-v<semver>`** [发布](https://github.com/xz-dev/dsh-bin/releases)下载 `manager-<target>.zip`，对照 `manager-index.json` 校验大小和 SHA-256，再把其中唯一的 `dsh` 文件（Windows 为 `dsh.exe`）解压到自己拥有的目录。目标包括：`linux-x64`、`linux-arm64`、`darwin-x64`、`darwin-arm64`、`windows-x64`、`windows-arm64`。
+
+将该目录加入 PATH，或直接调用文件。运行包的 libc/CPU 目标由管理器检测；不要把运行包 ZIP 当管理器下载。详见[安装、数据位置和卸载](desc/zh-CN/install.md)。
+
+## 启动和管理
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xz-dev/dsh-bin/main/install.sh | sh
+dsh                              # 普通首次启动在需要时自动安装运行包
+dsh manager --help               # 原生管理命令，不需要先有运行包
+dsh manager info                 # 安装模式、数据根和应用 home
+dsh manager update               # 安装当前渠道最新运行包
+dsh manager snapshot new --name before-change
+dsh manager self-update          # 仅便携管理器；运行包和数据不变
+dsh manager clean                # 离线清理缓存和残留，不删除用户数据
 ```
 
-脚本会选好适合你系统的构建，校验 SHA-256，然后执行和[手动安装](docs/zh-CN/install.md#手动解压-zip)完全一样的步骤。Alpine 上先运行 `apk add libstdc++ libgcc`。
-
-**Windows（Scoop）**
-
-```powershell
-$scoopRoot = (Resolve-Path (Join-Path (scoop prefix scoop) '..\..\..')).Path
-git clone --branch scoop --single-branch https://github.com/xz-dev/dsh-bin.git (Join-Path $scoopRoot 'buckets\dsh-bin')
-scoop install dsh-bin/dsh
-```
-
-手动解压、Gentoo、从 npm 安装迁移：见[安装](docs/zh-CN/install.md)。
-
-## 快速上手
-
-```sh
-dsh --profile tui          # 启动 dsh
-dsh update                 # 把最新版本装在当前版本旁边
-dsh snapshot new           # 改插件之前先存一份
-dsh snapshot remove <id>   # 改坏了：退回上一个快照
-dsh --use 0.1.7-rc.2       # 运行已安装的旧版本
-```
+首次交互启动先询问 shell 补全，再检查或下载运行包；接受、拒绝都继续启动。非交互启动跳过询问，不消费应用 stdin。全新空安装默认使用 release 渠道；已有运行包可离线启动，不会隐式升级。
 
 ## 文档
 
-- [安装和卸载](docs/zh-CN/install.md)
-- [版本和更新](docs/zh-CN/versions.md)
-- [插件快照](docs/zh-CN/snapshots.md)
-- [选择 `dsh` 启动什么](docs/zh-CN/select.md)
-- [office 附加组件](docs/zh-CN/office-addon.md)
-- [工作原理](docs/zh-CN/how-it-works.md)：通道、信任模型、启动、限制
+- [安装、数据位置、托管包和卸载](desc/zh-CN/install.md)
+- [版本和独立更新](desc/zh-CN/versions.md)
+- [选择运行包、快照和 addon](desc/zh-CN/select.md)
+- [插件快照](desc/zh-CN/snapshots.md)
+- [Office addon](desc/zh-CN/office-addon.md)
+- [Bash、Zsh、Fish 和 PowerShell 补全](desc/zh-CN/completion.md)
+- [布局、发布身份、信任和开发](desc/zh-CN/how-it-works.md)
+
+代码和脚本分别属于 [dsh-manager/](dsh-manager/) 或 [dsh-bun-build/](dsh-bun-build/)；共享文档放在 [desc/](desc/)，规划放在 [openspec/](openspec/)。
 
 ## 许可证
 
-打包部分（启动器、兼容层、脚本）采用 [MIT](LICENSE)。打包进来的 DeepSeek Harness 及其依赖保持各自的许可证；office 附加组件附带的 LibreOffice Kit 采用 MPL-2.0。
+管理器、兼容层和打包脚本采用 [MIT](LICENSE)。DeepSeek Harness 和内嵌依赖保持各自许可证；office addon 包含 MPL-2.0 许可的 LibreOffice Kit。

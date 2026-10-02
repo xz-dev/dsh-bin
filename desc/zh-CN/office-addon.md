@@ -1,38 +1,39 @@
-# office 附加组件
+# Office addon
 
 [README](../../README.zh-CN.md) · [English](../en/office-addon.md)
 
-office 插件（`office-to-pdf`、`skill-office`）需要 LibreOffice Kit。它体积很大，所以作为单独的附加组件发布，不在主压缩包里。没装的话，dsh 启动时这两个插件会显示为未启用，其他功能照常。
+`office-to-pdf` 和 `skill-office` 插件需要 LibreOffice Kit，它作为单独 addon 发布。没有兼容的已安装 addon 时，这两个插件不可用，其他应用功能仍可用。新格式 office addon 尚未发布，以下命令用于运行包索引提供兼容 addon 后。
 
-## 安装和删除
+## 安装、查看和卸载
 
-```sh
-dsh install --addon office                   # 适合你当前 dsh 版本的默认版本
-dsh install --addon office:<版本>            # 指定版本
-dsh uninstall --addon office:<版本>          # 删除一个版本
-dsh uninstall --addon office                 # 删除所有版本
-dsh list --addon office                      # 已安装和可安装的版本
-```
-
-多个附加组件版本可以并存。`dsh uninstall --addon` 不会删除正在使用或被[选择](select.md)指定的版本。
-
-用 Scoop 的话，改用 `scoop install dsh-bin/dsh-office`。
-
-## 用的是哪个版本
-
-每个附加组件版本属于一个 **slot**：上游使用的 LibreOffice Kit 版本，以及引入它的上游提交。一个 dsh 版本只和自己 slot 的附加组件配套。
-
-- 不带参数启动时，使用已安装的、同 slot 的最新附加组件。
-- `dsh install --addon office` 默认安装 release 索引里同 slot 的最新版本。索引连不上时，用构建该 dsh 版本时固定的版本。
-- 每个版本都带有自己 slot 的附加组件版本列表，所以离线时也能装。
-
-## 使用其他 slot 的附加组件
-
-其他 slot 的附加组件不一定能用。dsh-bin 允许，但要你明确指定：
+先安装/选择运行包，管理器才能读取其 office 兼容 slot。
 
 ```sh
-dsh install --addon office:<版本> --force
-dsh --addon office:<版本> ...                 # 或者：dsh select --use latest --addon office:<版本>
+dsh manager install --addon office
+dsh manager install --addon office:<addon>
+dsh manager list
+dsh manager list --available
+dsh manager uninstall --addon office:<addon>
+dsh manager uninstall --addon office
 ```
 
-只有指定时才会用它，每次这样启动都会打印警告。指定的版本没安装时，启动会停止并告诉你怎么装。
+多个版本可并存于数据根 `addons/office/`。安装校验 addon，但不运行 dsh。卸载拒绝正在使用或已持久选择的版本。Gentoo、Scoop 下使用同样命令，不需要单独 office 系统包。
+
+## 兼容性和默认值
+
+运行包声明 slot，标识上游 LibreOffice Kit 依赖。没有显式选择时，启动完全离线，使用已安装同 slot 的最高序号 addon。
+
+`install --addon office` 选择索引中最新兼容项；索引不可用时使用运行包内嵌 pinned 项。内嵌元数据不让尚未下载的 ZIP 离线可用：安装仍需已验证缓存或可访问源。没有已发布兼容 addon 的运行包会报告无候选。
+
+`--force` 可重装 addon，但**绝不**绕过 slot。显式或已存启动选择缺失/不兼容时给出诊断，降级为不启用 office addon，不改用其他版本。
+
+## 选择或禁用
+
+```sh
+dsh --addon office:<addon> --profile tui
+dsh --addon office:none --profile tui
+dsh manager select --use <runtime> --addon office:<addon>
+dsh manager select --use latest --addon office:none
+```
+
+保存 addon 选择需要 `--use`；保存时省略 `--addon` 清除 addon 覆盖。单次启动重复指定 addon 时最后一项生效。见[选择文档](select.md)。

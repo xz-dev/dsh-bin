@@ -1,89 +1,76 @@
-# 版本和更新
+# 版本和独立更新
 
 [README](../../README.zh-CN.md) · [English](../en/versions.md)
 
-dsh-bin 可以同时装多个 dsh 版本，由同一个启动器启动其中任意一个。
+原生管理不启动 dsh，不需要宿主 JS 运行时。应用命令不在 `manager` 命名空间内。
 
-## 查看已安装的版本
-
-```sh
-dsh list           # 已安装版本、可安装版本、附加组件版本
-dsh list --json
-```
-
-已安装版本会带 `selected`、`latest` 和 `in use` 标记。`dsh list` 只读：不下载，也不做任何改动。
-
-## 更新
+## 查看状态
 
 ```sh
-dsh update
+dsh manager --help
+dsh manager --version
+dsh manager info
+dsh manager list
+dsh manager list --json
+dsh manager list --available
 ```
 
-它把你所在通道的最新版本装在已有版本旁边，不替换任何东西。`dsh update self`、`dsh update dsh` 和 `dsh update --self` 效果相同。
+本地列表只读、离线，包含已安装运行包和 office addon，以及 selected/latest/in-use/startable 信息。只有 `--available` 请求运行包索引，追加兼容的远程运行包和当前所选运行包的 office addon。
 
-- 它从不改变不带参数的 `dsh` 启动什么。如果你[固定](select.md)了别的版本，它会提醒你。
-- 如果没有已安装的 office 附加组件适配新版本，它会告诉你怎么装。
-- `dsh update --force` 重新安装最新版本。
-
-没有降级命令：旧版本还装着。用 `dsh --use <版本>` 启动它，或者[选择](select.md)它。
-
-## 通道
-
-| 通道 | 跟随 |
-|---|---|
-| `release`（默认） | 上游 `dsh-v*` tag |
-| `live` | 上游 `master` |
+## 更新运行包
 
 ```sh
-dsh update --channel live      # 切到 live
-dsh update --channel release   # 切回来
+dsh manager update
+dsh manager update --channel live
+dsh manager update --channel release
+dsh manager update --force
 ```
 
-安装成功后才会记录新通道。
+`release` 跟随上游发布标签；`live` 跟随上游 master。新安装默认 release。显式切换渠道仅在安装成功后记录；失败保留原渠道。
+
+更新把最新兼容运行包装在旧版本旁边，保留已存选择；固定版本时会提示。`--force` 重装目标运行包，不绕过兼容性或占用保护。已有安装的普通启动不隐式更新。
 
 ## 安装指定版本
 
 ```sh
-dsh install 0.1.7-rc.2
-dsh install 0.1.7-rc.2 --channel live
+dsh manager install <version>
+dsh manager install <version> --channel live
+dsh manager install <version> --force
 ```
 
-版本可以写精确版本、release tag，或者 `0.1.7-rc.2` 这样的上游版本号，写出唯一前缀即可。安装时还会创建该版本的第一个[快照](snapshots.md)。
+从 `list --available` 复制完整 ID/tag，或使用无歧义前缀、上游版本。多个构建匹配时会报错，需给出更长身份。安装校验运行包并准备首个[快照](snapshots.md)。重装运行包保留有效的已有快照和 home。
 
-## 删除版本
+## 移除运行包
 
 ```sh
-dsh uninstall 0.1.7-rc.2
-dsh uninstall 0.1.7-rc.1 0.1.7-rc.2
+dsh manager select --use latest
+dsh manager uninstall <version>
+dsh manager uninstall <version-a> <version-b>
 ```
 
-被删除版本的快照会保留。列表里只要有一个版本属于下面的情况，整条命令都会被拒绝：
+解除固定后可以卸载**全部**闲置运行包。请求包含缺失、歧义、固定或正在使用的运行包时，预检失败，不删除本次任何目标。快照、选择、home 和管理器保留。重装同一运行包复用已有数据；普通空安装启动可以按记录渠道回装。
 
-- 最后一个已安装的版本；
-- 你用 `dsh select` 固定的版本；
-- 正在使用的版本。
+占用保护覆盖受管理 runtime 进程及其应用内重启，不追踪所有独立后代进程。
 
-"正在使用"指有一个由 dsh-bin 启动的 dsh 进程在运行它：会话、`dsh plugin` 或应用内重启。不跟踪子进程。
-
-## 弱网
-
-更新针对差网络做了处理：
-
-- **续传。** 重试从下载中断的地方继续（HTTP `Range`）。中断的运行会留下未完成的文件，下次 `dsh update` 从那里接着下。
-- **重试。** 网络错误和 HTTP 408/425/429/5xx 按指数退避重试，遵守 `Retry-After`。
-- **超时。** 30 秒收不到数据就中止并重试。
-- **校验。** 下载完的文件按索引里的大小和 SHA-256 校验。续传得到的文件校验失败时，会从头再下一次。
-- **进度。** 在终端上显示带速度和剩余时间的进度条；否则每秒输出一行。
-
-新版本原子激活：先 bundle，后根启动器。
-
-## 清理
+## 只更新管理器
 
 ```sh
-dsh clean              # 等于 --all
-dsh clean --update     # 未下完的文件和安装暂存
-dsh clean --snapshots  # 快照暂存
-dsh clean --transpiler # dsh-bin 的转译缓存
+dsh manager self-update
+dsh manager self-update --force
 ```
 
-`dsh clean` 只清理中断运行的残留和缓存，从不删除已安装的版本、附加组件或快照。
+便携 self-update 使用 `manager-index.json`，不查运行包索引。版本按严格 SemVer 比较（build metadata 不参与排序），永不降级，同版本通常不下载；`--force` 允许同版本修复。运行包、快照、选择、配置和凭据保持不变。
+
+POSIX 将已验证候选原子替换真实可执行文件，入口符号链接保持不变。Windows 使用同一程序的临时副本，等待父进程退出后替换。**已交接不等于已更新**：下次调用报告 helper 结果。映像占用或文件系统限制可能拒绝替换并保留旧入口；退出其他管理器调用后显式重试。
+
+Gentoo/Scoop 在下载前拒绝 self-update，改用 `emerge --ask --update app-misc/dsh-bin` 或 `scoop update dsh`。安装旧运行包不会降级管理器。
+
+## 下载和清理
+
+下载在激活前验证目标身份、大小、SHA-256、required paths 和启动协议。服务器 Range 响应一致时可恢复中断下载；重试有上限并遵守 Retry-After。错误字节不激活，失败不切换选择或渠道。
+
+```sh
+dsh manager clean
+```
+
+Clean 离线，仅删除已识别的缓存和中断操作残留，保留有效运行包、addon、快照、home、凭据和未知文件。相关会话或操作忙时整次拒绝，零删除。公开 generation 缺失或无效时，唯一可恢复副本保留，并提示显式 install 恢复。不提供按类别清理的 flags。

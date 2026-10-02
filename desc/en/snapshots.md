@@ -2,55 +2,46 @@
 
 [README](../../README.md) · [中文](../zh-CN/snapshots.md)
 
-A snapshot holds your plugins. Before a risky plugin change, save one; if the change breaks something, remove it and you are back.
+Snapshots hold per-profile plugin runtime files: package/lock files, `node_modules`, `.plugin-manager` and `cordis.yml`. They live in **data-root** `snapshots/<runtime>@<n>/profiles/`, not under `DSH_HOME`. Shared settings at `$DSH_HOME/profiles/<name>/cordis.patch.yml`, credentials and sessions are not copied; every snapshot reads the same application home.
 
-## What a snapshot contains
+## Creation and selection
 
-A snapshot `<version>@<n>` is a full copy of every profile's plugin runtime:
+Installing a new runtime prepares its first snapshot from the previous runtime's newest snapshot; with no source it starts empty. Reinstalling keeps valid existing snapshots. New snapshots copy plugin files independently and never run pnpm to repair them. Internal relative links are preserved; absolute or escaping links are refused.
 
-- `package.json` and the lockfile;
-- `node_modules/` and `.plugin-manager/`;
-- `cordis.yml`.
-
-Snapshots live in `$DSH_HOME/snapshots/`. Your settings, `$DSH_HOME/profiles/<name>/cordis.patch.yml`, are not in the snapshot: all snapshots share them.
-
-## How snapshots are made
-
-- **On a new version.** The first start of a version copies the newest snapshot of the previous version, so your plugins come along. With no earlier snapshot, it starts empty.
-- **By you.** `dsh snapshot new` copies the current version's newest snapshot into a new one.
-
-Numbers only grow and are never reused. A plain `dsh` uses the version's newest snapshot.
-
-## Commands
+Numbers only increase and are never reused, even after deletion. An unpinned snapshot choice uses the runtime's newest snapshot. `<runtime>` and `<snapshot>` below are identities from the local lists.
 
 ```sh
-dsh snapshot list                    # newest, selected and in-use markers; --json for scripts
-dsh snapshot new                     # copy the newest snapshot
-dsh snapshot new --name before-mcp   # also give it a name
-dsh snapshot new --target 0.2.0-rc.1@1   # copy a specific snapshot
-dsh snapshot new --empty             # start with no plugins
-dsh snapshot remove 0.2.0-rc.2@3     # remove one or more snapshots
+dsh manager snapshot list
+dsh manager snapshot list --json
+dsh manager snapshot new
+dsh manager snapshot new --name before-change
+dsh manager snapshot new --use <runtime> --target <snapshot>
+dsh manager snapshot new --use <runtime> --empty
+dsh manager snapshot remove <snapshot>
 ```
 
-A snapshot can be named by number (`0.2.0-rc.2@3`) or by its name (`0.2.0-rc.2@before-mcp`). A name uses letters, digits, `.`, `_` and `-`, and cannot be all digits.
+`--target` copies an existing snapshot; `--empty` creates one without plugins. Alias characters are letters, digits, `.`, `_`, `-`; an alias cannot be all digits. Address an alias as `<runtime>@before-change`. Removal accepts several IDs but refuses any in-use or persistently selected snapshot before deleting any requested one.
 
-`dsh snapshot remove` refuses a snapshot that is in use or that you [selected](select.md).
+## Try a plugin change
 
-## Undo a plugin change
+1. Stop sessions that will use the snapshot.
+2. Create a new snapshot; note its printed ID.
+3. Make the plugin change using the application command.
+4. After exiting the application, remove the new snapshot if the change failed.
 
 ```sh
-dsh snapshot new                     # say this creates 0.2.0-rc.2@3
-dsh plugin --profile tui add …       # the change goes into @3
-dsh snapshot remove 0.2.0-rc.2@3     # it broke: @2 is the newest again
+dsh manager snapshot new --name experiment
+dsh plugin --profile tui add <package>
+dsh manager snapshot remove <runtime>@experiment
 ```
 
-## Run an old snapshot on a new version
+With the default newest-snapshot selection, the next launch uses the remaining previous snapshot. If you had a saved snapshot choice, explicitly select the intended one instead; new snapshots do not override a pin. Removing a snapshot loses plugin changes inside it, so keep a copy you need.
+
+## Cross-runtime trial
 
 ```sh
-dsh --snapshot 0.2.0-rc.1@1 --profile tui          # the snapshot and its own version
-dsh --use 0.2.0 --snapshot 0.1.7-rc.2@2 --profile tui   # an old snapshot on a new version
+dsh --snapshot <runtime-a>@1 --profile tui
+dsh --use <runtime-b> --snapshot <runtime-a>@1 --profile tui
 ```
 
-This tells you whether a problem comes from the plugins or from dsh itself. See [Choosing what `dsh` starts](select.md) for all launch options.
-
-A running session keeps its snapshot until it exits, including in-app restarts.
+The first uses the snapshot's runtime; the second uses runtime B with A's existing plugin files. Nothing is copied or repaired. See [selection](select.md). A session and its application restarts keep the resolved snapshot until exit.

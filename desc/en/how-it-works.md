@@ -1,84 +1,88 @@
-# How it works
+# Layout, releases and development
 
 [README](../../README.md) · [中文](../zh-CN/how-it-works.md)
 
-## Layout
+## Two independent products
+
+The Zig manager owns installation, selection, snapshots, addons, completion and self-update. It does not run JavaScript for management. The Bun runtime bundle contains upstream dsh, embedded Bun/pnpm, dependencies and runtime adaptation; it has no manager executable or management engine.
+
+They communicate through a versioned manifest and launch context. The manager resolves a runtime, snapshot, home and addon before starting the application. The runtime consumes those locations; an in-app restart retains them instead of reading a changed default selection.
+
+## Portable layout
 
 ```text
-~/.local/share/dsh-bin/
-  dsh                      the launcher (dsh.exe on Windows), written in Zig
-  bundles/<version>/       one read-only directory per installed version: dsh, Bun, pnpm
-$DSH_HOME/                 default ~/.dsh
-  profiles/<name>/         your profiles and cordis.patch.yml settings
-  snapshots/<version>@<n>/ plugin snapshots
-  dsh-bin/selection.json   what a plain dsh starts
+installation/
+  dsh                         dsh.exe on Windows
+  dsh-bin/                    data root
+    .dsh-bin-data.json         ownership marker
+    bundles/<runtime-id>/     read-only runtime bundles
+    addons/office/<addon-id>/  installed addons
+    snapshots/<runtime>@<n>/  per-profile plugin runtime files
+    home/                     default application home
+    cache/                    downloads, Bun/transpiler/npm/pnpm caches
+    state/                    selection, channel, completion choices, locks
+    tmp/                      installation/update residue
 ```
 
-The launcher reads your options and the selection, picks a version and snapshot, and starts that version's `dsh-native` before any JavaScript runs.
+A managed package's `.dsh-manager-install.json` beside the executable explicitly declares Portage/Scoop ownership. Without a marker the mode is portable, even in a read-only directory. Unknown/corrupt markers fail rather than selecting another location. The [managed roots and DSH_HOME override](install.md#where-data-lives) separate package content from user data.
 
-This is the container model without a container:
+The manager's controlled application environment directs known caches and temporary files into this root; it does not globally replace user HOME or sandbox plugins. Workspace changes and user-configured external paths remain the user's responsibility. Stop sessions before moving a portable installation; no cross-OS move or live move is promised.
 
-| Container | dsh-bin |
-|---|---|
-| Read-only image with its runtime | `bundles/<version>/` |
-| Pull by tag, check by digest | `dsh update` / `dsh install`, SHA-256 checked |
-| Several images on one machine | several versions side by side |
-| Writable layer, volumes | snapshots; settings kept outside and shared |
-| Commit / roll back | `dsh snapshot new` / `dsh snapshot remove` |
-| Optional layers | the office addon |
+## Release identities
 
-## Releases
+**These new release families are not published yet.** Do not substitute an existing old archive. Their independently generated indexes live on the `releases` branch:
 
-| Channel | Follows | Tag |
+| Product | Identity | Index |
 |---|---|---|
-| `release` | upstream `dsh-v*` tags, from `dsh-v0.1.7-rc.2` | `dsh-v<upstream-version>-xz.<run>.<attempt>.g<sha8>` |
-| `live` | upstream `master` | `dsh-live-<sha7>-xz.<run>.<attempt>.g<sha8>` |
+| Manager | `manager-v<semver>` | `manager-index.json` |
+| Release runtime | `runtime-v<upstream>-b<run>.<attempt>.g<sha8>` | `runtime-index.json`, release channel |
+| Live runtime | `runtime-live-<sha7>-b<run>.<attempt>.g<sha8>` | `runtime-index.json`, live channel |
+| Office addon | `addon-office-v<kit>-b<run>.<attempt>.g<sha8>` | `runtime-index.json`, office addons |
 
-Publishing is automatic. The `upstream-poll` workflow checks upstream four times a day and on every push to `main`:
+Manager assets are `manager-<os>-<arch>.zip` and each contains one executable. Runtime assets are `dsh-<target>.zip`; their roots contain `bundle.json`, `dsh-native`, `app/`, `pnpm/`, `bin/`, a fixed `completion.json` and any declared cache content, not the manager or an outer installation tree. A runtime's manifest records upstream/build identity and launch protocol, not a matching manager release version.
 
-- a new upstream tag becomes a `release` build, and a new `master` commit becomes a `live` build;
-- a push that changes packaging rebuilds the newest release tag and `master`;
-- a push that changes only docs or tests builds nothing.
+[Manager release CI](../../.github/workflows/manager-release.yml) builds only the manager; [runtime release CI](../../.github/workflows/runtime-release.yml) builds only runtimes. Combination gates consume a pinned counterpart artifact instead of rebuilding it. Dry-run builds do not publish; the [CI entry](../../.github/workflows/ci.yml) exposes manual `release_dry_run` calls with publication hard-coded off. Public publication waits for the release gates and a compatible addon when required. Global GitHub Latest is not a discovery protocol.
 
-Running `build` or `addon` by hand is always a dry run. Each build is published as an immutable GitHub Release. The Latest release is always the newest `release` build. `dsh update` finds versions through `index.json` on the `releases` branch, not the GitHub API.
+## Integrity and failure boundaries
 
-## Trust model
+Manager downloads verify indexed identity, size and SHA-256, then archive paths, required content and launch compatibility. Links or traversal cannot authorize writes outside the managed destination. A candidate is activated only after validation; a failure does not silently select a substitute or adopt unrelated data.
 
-- dsh is built from `github.com/deepseek-ai/deepseek-harness` at an exact commit, using the upstream lockfile (`--frozen-lockfile`, lifecycle scripts off). First-party dsh code never comes from npm.
-- pnpm comes from its GitHub release and is checked against a pinned SHA-256.
-- Third-party packages are checked against the upstream lockfile's integrity hashes. The only packages taken from npm are the LibreOffice Kit engine packages, pinned to the lockfile `sha512`, and they ship only in the office addon.
-- Release assets carry GitHub build-provenance attestations: `gh attestation verify <file> --repo xz-dev/dsh-bin`. Releases are immutable. The index is append-only.
+Runtime construction uses exact upstream commits and the frozen lockfile. Bundled pnpm is checksum-pinned; third-party package content follows lockfile integrity. Published release assets carry build-provenance attestations. Verify them with `gh attestation verify <file> --repo xz-dev/dsh-bin`; provenance is not a substitute for local platform/combination acceptance.
 
-## Startup
+Updates use same-volume staging and checked replacement. Process interruption is handled; power-loss durability is not promised. Clean preserves unknown files and valid data rather than guessing ownership. Locks fail with a clear busy/retry diagnostic instead of a background recovery service. See [versions and cleanup](versions.md).
 
-Measured on Linux x64 (Ryzen AI 9 365), booting the shipped `headless` profile with its plugins, best of 5–7 runs:
+## Application limitations
 
-| Case | npm + node | dsh-bin |
-|---|---|---|
-| Warm profile boot | 361 ms | 304–321 ms |
-| First start of a new version, empty cache | – | 497–683 ms |
-| First start of a new version, shipped cache | – | 454–515 ms |
+Runtime adaptation preserves upstream commands but is not an unchanged Node.js build. Node-internal hot reload (`@deepseek-ai/dsh-hmr`) is inactive. Office plugins need a compatible [office addon](office-addon.md). Plugin installation belongs to dsh and writes to the selected [snapshot](snapshots.md); the manager does not repair plugin dependencies automatically.
 
-- **Shipped transpiler cache.** Each build boots its profiles on its native runner and ships the Bun transpiler cache it produced. It is copied in on the version's first start, which saves about 90–150 ms.
-- **Own cache directory.** The cache lives in `$XDG_CACHE_HOME/dsh-bin/transpiler` (or `~/.cache/dsh-bin/transpiler`), `~/Library/Caches/dsh-bin/transpiler` on macOS and `%LOCALAPPDATA%\dsh-bin\cache\transpiler` on Windows, not in Bun's shared `~/.bun/install/cache`. A `BUN_RUNTIME_TRANSPILER_CACHE_PATH` you set yourself wins.
-- **Compiled entry.** The entry is built with `--minify --bytecode` on each target's native runner.
+Completion describes fixed upstream CLI declarations, not runtime-generated plugin commands. Usage protection covers managed runtime processes, including their restarts, not every isolated child. An explicit external home or a plugin's external path lies outside the portable guarantee. Only new-format runtimes with a supported launch protocol are accepted.
 
-## Limitations
+## Development ownership
 
-Some upstream plugins cannot run without Node. Each is replaced by a stub; dsh's startup check lists it as inactive with the reason, and startup continues:
+```text
+repo/
+  dsh-manager/    Zig source, build.zig, manager tests, release/package scripts
+  dsh-bun-build/  Bun runtime adapter, upstream build scripts, runtime tests
+  desc/          shared English/Chinese docs; historical implementation report
+  openspec/      requirements and change plans
+  .github/       CI and release workflows
+```
 
-- `@deepseek-ai/dsh-hmr`: always. It needs Node's internal module loader.
-- `@deepseek-ai/dsh-office-to-pdf` and `@deepseek-ai/dsh-skill-office`: when no installed [office addon](office-addon.md) fits the running dsh version.
-
-upstream's own self-update never runs; the bundle is read-only.
-
-## Development
+Build the manager with Zig 0.15.2, without Bun or upstream sources:
 
 ```sh
-bun install
-npm test    # bun test ./test/unit ./test/runtime ./test/launcher ./test/update-contract
-bun scripts/build-target.mjs <target> <live|release> <ref> <out> --run 1 --attempt 1 --index index.json
-bun scripts/e2e.mjs <index.json> <assets-dir>   # packaged E2E, no JS runtime on PATH
+cd dsh-manager
+zig build
+zig build test
 ```
 
-Requires Bun 1.4.2 and Zig 0.15.2. Node is used only at build time.
+Runtime tooling uses Bun 1.4.2 and its upstream build prerequisites; it never needs to compile the manager:
+
+```sh
+cd dsh-bun-build
+bun install
+bun test ./test/unit ./test/runtime
+bun scripts/build-target.mjs <target> <release|live> <ref> <out> --run 1 --attempt 1 --index <runtime-index.json>
+```
+
+Use isolated HOME/data roots and actual artifacts for integration checks. Cross-compiling proves a build, not native runtime acceptance. The [implementation report](../IMPLEMENTATION-REPORT.md) is an unchanged historical record, not current installation instructions.

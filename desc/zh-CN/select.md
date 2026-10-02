@@ -2,36 +2,38 @@
 
 [README](../../README.zh-CN.md) · [English](../en/select.md)
 
-不带参数的 `dsh` 启动的是**选择**：一个版本、一个快照和附加组件版本。默认是 `latest`：你所在通道已安装的最新版本，配上该版本最新的快照和默认附加组件。
+普通启动默认使用记录渠道内最新已安装运行包、该运行包最新快照，以及最高序号的已安装兼容 office addon。已有安装的普通启动不查询远程 latest。
 
-## 只用一次
+## 单次选择
 
-把这些选项放在其他参数前面：
-
-```sh
-dsh --use 0.1.7-rc.2 --profile tui                  # 已安装的版本（写出唯一前缀即可）
-dsh --snapshot 0.2.0-rc.1@1 --profile tui           # 指定快照（隐含其版本）
-dsh --use 0.2.0 --snapshot 0.1.7-rc.2@2 ...         # 在新版本上用旧快照
-dsh --addon office:0.1.2-xz.11.1.gaaaa0001 ...      # 指定附加组件版本
-```
-
-## 修改默认
+管理器启动选项必须放在首个应用参数**之前**。以下 `<runtime>` 是已安装运行包 ID/无歧义前缀，`<snapshot>` 是完整编号或别名（如 `<runtime>@before-change`），`<addon>` 是已安装 addon 版本。
 
 ```sh
-dsh select                                          # 显示选择以及它解析成什么
-dsh select --use 0.1.7-rc.2                         # 固定版本
-dsh select --use 0.1.7-rc.2 --snapshot 0.1.7-rc.2@2 # 固定版本和快照
-dsh select --use latest                             # 恢复默认
+dsh --use <runtime> --profile tui
+dsh --snapshot <snapshot> --profile tui
+dsh --use <runtime-b> --snapshot <runtime-a>@1 --profile tui
+dsh --addon office:<addon> --profile tui
+dsh --addon office:none --profile tui
 ```
 
-- `--use` 必填。没写的选项恢复默认。
-- 选择从不下载任何东西；版本必须已经装好。
-- `dsh update` 不会改变选择。固定了某个版本时，装了更新的版本后它会提醒你。
+仅指定快照隐含其运行包；显式 `--use` 覆盖该隐含选择，可以用另一运行包启动同一快照，不会复制。显式选择缺失或歧义会报错，不回退。应用参数开始后，同名选项归应用处理。
 
-## 运行中的会话
+## 保存默认选择
 
-运行中的会话一直使用它的版本和快照直到退出，应用内重启也一样。改选择只影响之后的新启动。
+```sh
+dsh manager select
+dsh manager select --use <runtime>
+dsh manager select --use <runtime> --snapshot <snapshot>
+dsh manager select --use <runtime> --addon office:<addon>
+dsh manager select --use latest
+```
 
-## 帮助
+无参数时离线显示当前选择。写入必须给 `--use`；省略 `--snapshot` 恢复最新快照选择，省略 `--addon` 恢复默认兼容 addon 选择。选择不下载内容，引用的快照必须已存在。运行包更新保留默认选择，并提示固定状态。
 
-`dsh --help` 先显示上游的帮助，后面是 dsh-bin 的选项和命令。`dsh plugin --profile <name> …` 按上游的设计管理插件。上游自带的 `dsh update` 永远不会运行；请用 dsh-bin 的 [`dsh update`](versions.md#更新)。
+运行会话及应用内重启保持原运行包、快照和 addon；修改默认只影响新启动。
+
+## 帮助和应用参数
+
+`dsh --help` / `dsh --version` 返回原生管理器信息和本地运行包状态，不启动应用、不下载。`dsh manager --help` 显示原生管理命令。带应用参数的调用，如 `dsh --profile tui --help`，透传给所选应用，遵循普通启动规则。
+
+插件管理仍是应用命令，例如 `dsh plugin --profile tui add <package>`；固定命令以已安装上游应用帮助为准。运行包自身的 self-update 不能替换受管理映像，应使用[管理器更新命令](versions.md)。
