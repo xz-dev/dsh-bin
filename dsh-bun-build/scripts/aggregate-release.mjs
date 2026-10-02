@@ -6,11 +6,11 @@ import { readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "
 import { join } from "node:path";
 import { sha256 } from "./fetch-pnpm.mjs";
 
-const IDENTITY = ["tag", "version", "channel", "run", "attempt", "launcherProtocol", "launcherCommit"];
+const IDENTITY = ["kind", "tag", "id", "version", "channel", "run", "attempt", "launchProtocol", "builderCommit", "launcherProtocol", "launcherCommit"];
 
 export function aggregateRelease(dir, expectTargets) {
 	const parts = readdirSync(dir)
-		.filter((n) => /^dsh-(v|live-).+\.json$/.test(n))
+		.filter((n) => /^(?:dsh-(?:v|live-)|runtime-(?:v|live-)).+\.json$/.test(n))
 		.map((n) => JSON.parse(readFileSync(join(dir, n), "utf8")));
 	if (!parts.length) throw new Error(`no release manifests in ${dir}`);
 	const [first] = parts;

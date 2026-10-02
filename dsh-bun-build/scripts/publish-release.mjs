@@ -19,9 +19,9 @@ const fail = (m) => {
 /** Asset file paths of a bundle release manifest (`targets`) or addon manifest (`assets`), plus metadata files. */
 export function assetPaths(manifestPath, manifest) {
 	const dir = dirname(manifestPath);
-	const files = Object.values(manifest.targets ?? manifest.assets ?? {}).map((a) => a.file);
+	const files = Object.values(manifest.targets ?? manifest.assets ?? {}).map((a) => a.file ?? a.name);
 	if (!files.length) fail("manifest lists no assets");
-	const extra = manifest.targets ? ["release-manifest.json", "SHA256SUMS"] : ["addon-manifest.json"];
+	const extra = manifest.kind === "dsh-manager" ? ["manager-manifest.json", "SHA256SUMS"] : manifest.targets ? ["release-manifest.json", "SHA256SUMS"] : ["addon-manifest.json"];
 	return [...files, ...extra].map((f) => join(dir, f));
 }
 
@@ -32,7 +32,9 @@ export async function publishRelease(manifestPath, env = process.env, fetchImpl 
 	const repository = env.GITHUB_REPOSITORY || fail("GITHUB_REPOSITORY is required");
 	const commit = (env.GITHUB_SHA || fail("GITHUB_SHA is required")).toLowerCase();
 	const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-	if (!/^dsh-(v|live-|addon-office-v)/.test(manifest.tag ?? "")) fail(`not a dsh-bin tag: ${manifest.tag}`);
+	if (!/^(?:dsh-(?:v|live-|addon-office-v)|runtime-(?:v|live-)|addon-office-v|manager-v)/.test(manifest.tag ?? "")) fail(`not a dsh-bin tag: ${manifest.tag}`);
+	const prerelease = env.DSH_RELEASE_PRERELEASE === "true";
+	const latest = !prerelease && manifest.channel === "release";
 	const paths = assetPaths(manifestPath, manifest);
 	const expected = new Map(paths.map((p) => [basename(p), sha256(readFileSync(p))]));
 	const api = `https://api.github.com/repos/${repository}`;
@@ -70,6 +72,7 @@ export async function publishRelease(manifestPath, env = process.env, fetchImpl 
 	const assertIdentity = (r) => {
 		if (r.tag_name !== manifest.tag) fail(`release tag ${r.tag_name} is not ${manifest.tag}`);
 		if (r.target_commitish !== commit) fail(`release ${manifest.tag} targets ${r.target_commitish}, expected ${commit}`);
+		if (Boolean(r.prerelease) !== prerelease) fail(`release ${manifest.tag} prerelease flag differs`);
 	};
 
 	// Refuse before any mutation when the repository would publish a mutable release. A 403/404 (token
@@ -84,7 +87,7 @@ export async function publishRelease(manifestPath, env = process.env, fetchImpl 
 		console.log(`${manifest.tag} is already published with identical assets`);
 		return { published: false, release };
 	}
-	release ??= await json(`${api}/releases`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tag_name: manifest.tag, target_commitish: commit, name: manifest.tag, body: `dsh-bin ${manifest.version}. Verify with SHA256SUMS and GitHub artifact attestations.`, draft: true, prerelease: false }) }, [201]);
+	release ??= await json(`${api}/releases`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tag_name: manifest.tag, target_commitish: commit, name: manifest.tag, body: `dsh-bin ${manifest.version ?? manifest.id}. Verify with SHA256SUMS and GitHub artifact attestations.`, draft: true, prerelease }) }, [201]);
 	assertIdentity(release);
 	const present = await checkAssets(release, true);
 	for (const p of paths) {
@@ -94,14 +97,14 @@ export async function publishRelease(manifestPath, env = process.env, fetchImpl 
 	release = await json(`${api}/releases/${release.id}`);
 	if (!release.draft) fail(`release ${manifest.tag} is no longer a draft before publication`);
 	await checkAssets(release, false);
-	release = await json(`${api}/releases/${release.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ draft: false, prerelease: false, make_latest: String(manifest.channel === "release") }) });
+	release = await json(`${api}/releases/${release.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ draft: false, prerelease, make_latest: String(latest) }) });
 	for (let i = 0; i < 60 && !release.immutable; i++) {
 		await sleep(5000);
 		release = await json(`${api}/releases/${release.id}`);
 	}
 	if (!release.immutable) fail(`release ${manifest.tag} did not become immutable; is release immutability enabled for ${repository}?`);
 	await checkAssets(release, false);
-	console.log(`Published ${manifest.tag} (immutable, ${manifest.channel === "release" ? "latest" : "not latest"})`);
+	console.log(`Published ${manifest.tag} (immutable, ${latest ? "latest" : "not latest"})`);
 	return { published: true, release };
 }
 
