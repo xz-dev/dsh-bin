@@ -975,3 +975,80 @@ scoop uninstall dsh
 - CI：36950201463（b5680fc）在 macOS 上两次失败，失败项都是与本次改动无关的 `MC-SNAPSHOT: concurrent starts...`（退出码 [1,0]）。诊断提交 e153650 让该测试在失败时输出子进程 stderr；之后 **CI 36953667817（e153650）三平台全绿，真实 Scoop job 也通过**，失败没有再复现。这一项作为 macOS 上的间歇性风险记录在案：若再出现，就能直接看到 stderr，再针对性修复。
 - 残余风险：原生 Portage 只在 amd64 上验证过；runtime 用的是 fake-native fixture，真实上游应用的组合验证留给 8.1；线上资产还没有发布（8.3/9.3 时会对真实下载重跑这项检查）。
 - 勾选 **7.4**。
+
+## 8.3 独立发布身份、索引和组合制品门禁
+
+### 范围与批准边界
+
+- 实现提交：`032ef4e`（独立发布工作流/打包器/索引写入/组合入口）、`a536fc0`（冻结 upstream commit、原始构建哈希核验、发布输入门禁）。只实现 8.3；不勾选 tasks.md，不推送、不调用 gh、不创建分支/tag/release，不触碰两份并行 change。
+- 父会话明确批准修改现存 `dsh-bun-build/scripts/{aggregate-release,publish-release,publish-index,index,build-target}.mjs|sh` 和对应测试；不新增根 common 层。现存 publisher 的旧 tag 分支保留，新写入只操作对应的新索引。
+- 目前不存在可证明已验收的新格式 CI runtime artifact。首次 `publish=false` 且没有 accepted counterpart 时只构建/核验/上传，并输出 **`combination gate skipped: no accepted counterpart (bootstrap)`**；这不是组合验收成功。`publish=true` 缺 counterpart 则在构建前明确拒绝。父会话先人工验收一次 dry-run 的 ZIP/index，再把明确 run ID、artifact 名和 index SHA256 输入另一产品的 dry-run；不自动选择“最新”资产。
+- 非空 office slot 缺已发布新格式 addon 时：dry-run 保留合法 `slot`、`pinned=null`、`known=[]`，应用沿既有行为降级；publish 明确拒绝并要求先发布 addon，不顺带构建 addon。**9.3 阻塞：addon release path must be fixed and the addon published before the runtime publish**。现存 addon.yml 仍传 `launcherCommit`，而 addonDistribution 要求 `builderCommit`；父会话批准本切片不修它，留单独小修。
+
+### 实现
+
+- `.github/workflows/manager-release.yml`：严格 SemVer；dispatch `publish=false`、`prerelease=true` 默认值。manager-only push 路径筛选；静态 Zig 六目标 `linux-x64/linux-arm64/darwin-x64/darwin-arm64/windows-x64/windows-arm64`，归档名 `manager-<target>.zip`，唯一 `dsh(.exe)` entry。校验 ELF/Mach-O/PE/arch、唯一 version/protocol marker、ZIP CRC/模式/精确单 entry；生成 SHA256SUMS、manager-manifest.json 和 manager-index.json。正常构建不读取/编译 runtime 源码。
+- `.github/workflows/runtime-release.yml`：runtime-only push 路径筛选；沿用 12 个原生 runtime target 和 pinned musl images；`upstream` 固定 commit，release tag 被移动则失败。meta/build 身份只含 upstream、run、attempt、builderCommit、launchProtocol；不编译 manager。读取独立 runtime-index.json 快照，复用新 addon 引用；生成/核验 runtime ZIP、release-manifest.json、SHA256SUMS、runtime-index.json。上传 `runtime-release` artifact。
+- `dsh-manager/scripts/release.mjs`：仅依赖 Node 标准库/Bun 测试和构建驱动，无 runtime 源码依赖。六目标 aggregate 保存原始哈希，后续 aggregate 若合法 native 字节被替换但哈希改变，仍拒绝；不以重新打开暂存的哈希覆盖可信 build manifest。
+- `dsh-bun-build/scripts/artifact-e2e.mjs`：显式 accepted_index HTTPS URL + index SHA256，或已下载 artifact 目录 + index SHA256；ZIP 校验 size/SHA256 后才解包/执行。候选 manager 与既有 runtime / 候选 runtime 与既有 manager 都经公开进程 `--use <id> --version/--help`，空 PATH 无宿主 Node/Bun，隔离 HOME/数据根。目标 ZIP 精确匹配 target；已安装 fixture 绕过 host 自动挑 target，以便真实 baseline/modern 包分别测试；不伪称首次下载验收（首次下载/应用深层组合归 8.1/9.3）。candidate runtime 精确取自身 manifest 的 id，不误取历史 channel 最新。
+- 组合 jobs 消费 **明确 run ID+artifact 名+SHA256** 或 HTTPS index+SHA256，跨 run 下载需 `actions:read`；无 Zig/setup-node/对方 rebuild。manager 在六个对应原生 runner 测已验收 runtime，runtime 在12个原生 target（含 musl 容器）测已验收 manager。缺 target、摘要不符、退出非零直接失败。发布需组合 job success。
+- `publish-release.mjs` 保留 immutable-release 保护、逐资产哈希验证、attestation 验证；支持新 manager/runtime/addon tag 和 prerelease。prerelease 和 manager 发布都不是 GitHub Latest；不通过 Latest 发现 runtime。认证/不可变性受阻时失败，不降保护。
+- `publish-index.sh manager|runtime` 单次 fast-forward push，仅写 `releases` 分支 `manager-index.json` 或 `runtime-index.json`；并发写冲突报错，禁止合并重试/force。两工作流沿用 `releases-index` concurrency 避免正常冲突。旧 `index.json` 字节保持不变，不改 Scoop bucket/ebuild、不删旧发布。
+- `build.yml` 保留旧入口，仅加明确注释说明新入口及 9.2 暂停边界。注意：本切片开始前旧工作流已仍用 schemaVersion:2/append-addon，但现存 index writer 已只支持 schema:1/append-bundle；保留文件与旧分支不等于证明旧自动发布可用。旧 upstream-poll 的 main push/schedule 尚在，不能把新工作流 path filters 的独立性描述为所有旧路径都已暂停；9.2 负责切换。
+
+### Red / Green 与实际执行
+
+所有临时输入/输出在 `/var/tmp/dsh-83`，无真实安装/用户配置修改。
+
+1. 新 release 测试首轮：`TMPDIR=/var/tmp/dsh-83/tmp bun test dsh-manager/test/release.test.ts` → 5 pass / 58 assertions；补完发布/preflight 检查后 7 pass / 74 assertions（合并定向检查共 24 pass / 219 assertions）。测试确实执行 manager/runtime 两种 index publisher 对隔离 bare Git remote 的写入，验证 counterpart index 和旧 index 逐字节相同；同版/冲突内容拒绝、坏 CRC/重复 marker/错误 SemVer 拒绝。
+2. Red：临时将 publisher 的 `make_latest: String(latest)` 改成 `make_latest: "true"`，新 release 测试 → 6 pass / **1 fail**（prerelease/manager 不准成为 Latest）；恢复原实现 → 7 pass / 0 fail。日志 `/var/tmp/dsh-83/{red-publish,green-publish}.log`；临时变更已恢复。
+3. 真实六目标 manager 构建：每个 `zig build -Dversion=1.0.0-rc.1 -Dtarget=<x86_64|aarch64>-<linux|macos|windows>`，随后 `release.mjs package`/`aggregate` → 六个 ZIP 均通过 header/marker/CRC/single-entry 验证。**这是 cross-build，不是其他平台 native execution**。输出 `/var/tmp/dsh-83/release/`。
+4. 实际本机运行包：`bun dsh-bun-build/scripts/local-build.mjs /var/tmp/dsh-83/real-runtime release 83` → 真实上游 `0.1.7-rc.2`、runtime ID `0.1.7-rc.2-b83.1.g032ef4ec`，ZIP 123332978 bytes、SHA256 `fd23690da1c92b523bcd6a24f535298b13dd90b90188edd23cd469d94dabd1aa`。此一次构建独立于组合测试，之后组合入口不重编任何一边。
+5. 双向组合入口实际执行：manager 1.0.0-rc.1 + 上述同一份 runtime ZIP，Linux x64 modern，空 PATH/隔离 HOME，公开 `--version/--help` 通过；manager 字节保持不变。命令：
+   ```sh
+   TMPDIR=/var/tmp/dsh-83/tmp bun dsh-bun-build/scripts/artifact-e2e.mjs manager /var/tmp/dsh-83/release /var/tmp/dsh-83/real-runtime 0d81a1cb6eb3556cda80b7c071af327997be436077359f637855337368cb8886 linux-x64-modern
+   TMPDIR=/var/tmp/dsh-83/tmp bun dsh-bun-build/scripts/artifact-e2e.mjs runtime /var/tmp/dsh-83/real-runtime /var/tmp/dsh-83/release 83f39773bc2824626eecbc99e2907c359f5733950b8155163a0821db23f08b76 linux-x64-modern
+   ```
+   两次均输出 `RL-ARTIFACT-E2E passed ... no counterpart rebuild`。这不是线上制品、插件、首次下载或完整 8.1 验收。
+6. 最终定向：`TMPDIR=/var/tmp/dsh-83/tmp PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH bun test dsh-manager/test/{release,gentoo,scoop}.test.ts dsh-bun-build/test/unit/{index,versioning}.test.ts` → **24 pass / 0 fail / 219 assertions**（真实 PowerShell hook 有执行，无 skip）。另前轮 `runtime-build.test.ts` → runtime-only checkout 构建成功，无 Zig/manager。未跑 full Bun suite；无 Zig 源码变更。
+7. YAML：Bun.YAML 与 Python PyYAML 均解析新文件；actionlint 1.7.7 + shellcheck 通过：
+   ```sh
+   /var/tmp/dsh-83/tools/actionlint -pyflakes= -ignore 'label "(macos-15-intel|windows-11-arm)" is unknown' .github/workflows/manager-release.yml .github/workflows/runtime-release.yml
+   bash -n dsh-bun-build/scripts/publish-index.sh
+   ```
+   actionlint 内置旧 runner 清单不认识原项目已使用的 macos-15-intel/windows-11-arm，两条 runner-label 诊断明确排除；未排除其他诊断。
+
+### 父会话待执行的真实工作流命令
+
+新 workflow 可能须先出现在默认分支才可被 GitHub `workflow_dispatch` 注册；仅推 feature branch 不保证 GitHub 接受新 workflow 文件的 dispatch。父会话处理注册/推送/审查，不由 worker 外部操作。
+
+先 build-only bootstrap（无 counterpart，此时组合跳过必须如实记录）：
+```sh
+gh workflow run manager-release.yml --ref feat/split-dsh-manager -f version=1.0.0-rc.1 -f prerelease=true -f publish=false
+gh workflow run runtime-release.yml --ref feat/split-dsh-manager -f channel=release -f upstream=dsh-v0.1.7-rc.2 -f prerelease=true -f publish=false
+```
+
+父会话下载/核验/验收 ZIP 后，对 artifact 内 index 求 SHA256。明确记录 run ID，不使用模糊“最新”：
+```sh
+gh run download "$RUNTIME_RUN" -n runtime-release -D "$RUNTIME_DIR"
+gh run download "$MANAGER_RUN" -n manager-release -D "$MANAGER_DIR"
+RUNTIME_INDEX_SHA=$(sha256sum "$RUNTIME_DIR/runtime-index.json" | cut -d' ' -f1)
+MANAGER_INDEX_SHA=$(sha256sum "$MANAGER_DIR/manager-index.json" | cut -d' ' -f1)
+gh workflow run manager-release.yml --ref feat/split-dsh-manager -f version=1.0.0-rc.1 -f prerelease=true -f publish=false -f accepted_run="$RUNTIME_RUN" -f accepted_artifact=runtime-release -f accepted_sha256="$RUNTIME_INDEX_SHA"
+gh workflow run runtime-release.yml --ref feat/split-dsh-manager -f channel=release -f upstream=dsh-v0.1.7-rc.2 -f prerelease=true -f publish=false -f accepted_run="$MANAGER_RUN" -f accepted_artifact=manager-release -f accepted_sha256="$MANAGER_INDEX_SHA"
+```
+
+审查/native CI/相互组合通过之后，父会话真实 prerelease dispatch（版本/运行身份不可复用改写，runtime 每个 run 都有独立 identity）：
+```sh
+gh workflow run manager-release.yml --ref feat/split-dsh-manager -f version=1.0.0-rc.1 -f prerelease=true -f publish=true -f accepted_run="$RUNTIME_RUN" -f accepted_artifact=runtime-release -f accepted_sha256="$RUNTIME_INDEX_SHA"
+# 先修 addon 发布入口并发布新 addon，否则以下命令明确拒绝。
+gh workflow run runtime-release.yml --ref feat/split-dsh-manager -f channel=release -f upstream=dsh-v0.1.7-rc.2 -f prerelease=true -f publish=true -f accepted_run="$MANAGER_RUN" -f accepted_artifact=manager-release -f accepted_sha256="$MANAGER_INDEX_SHA"
+```
+
+真实发布/index 路径：`manager-v<SemVer>` 的 `manager-<target>.zip`，以及 D10 `runtime-v<upstream>-b<run>.<attempt>.g<sha8>` 的 `runtime-<target>.zip`；索引分别为 `https://raw.githubusercontent.com/xz-dev/dsh-bin/releases/manager-index.json`、`.../runtime-index.json`。若 GitHub immutable-release setting/token/attestation 不满足，发布阻塞，不绕过。
+
+### 仍待父会话验收
+
+- 独立审查、父会话 full suite、native ubuntu-24.04/macos-15/windows-2022 CI；新 release 工作流真实 dry-run/跨-run artifact 下载/六或十二原生组合 job 尚未执行。
+- 线上资产/索引/包安装/真实 self-update 不在本机 local 组合证据中；9.3 和 8.1 必须实际执行，不以 YAML/fixture/cross-build 代替。
+- 已知 addon 发布入口 blocker 与旧 auto-publish 暂停归后续切片；旧发布删除仍须单独精确清单确认。
