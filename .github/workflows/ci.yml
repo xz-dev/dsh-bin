@@ -15,6 +15,7 @@ on:
       accepted_runtime_run: { description: "Accepted runtime dry-run workflow run ID", type: string }
       accepted_runtime_artifact: { description: "Accepted runtime artifact name (runtime-release)", type: string }
       accepted_runtime_sha256: { description: "SHA256 of accepted runtime-index.json", type: string }
+      e2e_runs: { description: 'Verified dry-run IDs as JSON {"a":"...","b":"...","addon":"..."}', type: string }
 
 permissions: { contents: read }
 
@@ -45,6 +46,61 @@ jobs:
       accepted_run: ${{ inputs.accepted_manager_run }}
       accepted_artifact: ${{ inputs.accepted_manager_artifact }}
       accepted_sha256: ${{ inputs.accepted_manager_sha256 }}
+  combined-artifact-e2e:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run && inputs.e2e_runs != ''
+    permissions: { contents: read, actions: read }
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "1.4.2" }
+      - name: Validate exact artifact run IDs
+        env: { E2E_RUNS: "${{ inputs.e2e_runs }}" }
+        run: >-
+          bun -e 'try { const r = JSON.parse(process.env.E2E_RUNS); if (!["a", "b", "addon"].every(k => typeof r[k] === "string" && /^[0-9]+$/.test(r[k]))) throw new Error(); } catch { console.error("e2e_runs must contain decimal run-ID strings for a, b and addon"); process.exit(1); }'
+      - uses: actions/download-artifact@v4
+        with:
+          name: manager-release
+          run-id: ${{ fromJSON(inputs.e2e_runs).a }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/combined-artifacts/a/manager
+      - uses: actions/download-artifact@v4
+        with:
+          name: runtime-release
+          run-id: ${{ fromJSON(inputs.e2e_runs).a }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/combined-artifacts/a/runtime
+      - uses: actions/download-artifact@v4
+        with:
+          name: manager-release
+          run-id: ${{ fromJSON(inputs.e2e_runs).b }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/combined-artifacts/b/manager
+      - uses: actions/download-artifact@v4
+        with:
+          name: runtime-release
+          run-id: ${{ fromJSON(inputs.e2e_runs).b }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/combined-artifacts/b/runtime
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: addon-office-*
+          merge-multiple: true
+          run-id: ${{ fromJSON(inputs.e2e_runs).addon }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/combined-artifacts/addon
+      - name: Two-version combined acceptance (CI artifacts only)
+        env:
+          DSH_COMBINED_ARTIFACTS: ${{ runner.temp }}/combined-artifacts
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: bun test ./dsh-manager/test/artifact-e2e-combined.test.ts
   scoop:
     uses: ./.github/workflows/scoop-check.yml
   test:
