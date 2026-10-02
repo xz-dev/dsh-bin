@@ -1243,7 +1243,7 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
 - **Scoop**：`bucket/dsh.json` 切到 manager 1.0.0（scoop 分支提交 156b17d，只改这一个文件；推送前看过 diff）。没有使用 `publish-scoop-bucket.sh`，因为它会重建整个 bucket 并删除 dsh-live/dsh-office，而用户选择的是这两个文件留到 9.4。已有 Scoop 用户下次 `scoop update dsh` 时会得到只含管理器的新包，没有迁移，旧数据不动。
 - **真实验证**（published-check.yml，只读；新 workflow 只能从默认分支 dispatch，因此经 PR #2 和 #3 合入）：
   - Scoop（run 37017913881，windows-2022）：真实 Scoop 克隆已发布的 bucket，`scoop install dsh-bin/dsh` 下载 manager-v1.0.0；install mode 为 scoop；`dsh manager update` 安装 0.2.0-rc.2-b4；`dsh manager self-update` 拒绝并提示改用 `scoop update dsh`；`scoop uninstall` 成功。
-  - 首次下载（同一次 run）：Linux x64 和 macOS arm64 从已发布 manager-index 取最新 manager，校验大小和哈希，首次运行应用命令后安装了 runtime-index 中最新的 0.2.0-rc.2-b4，`--use … --version` 通过。windows-x64 这个 job 在 Git Bash 步骤中没有任何输出就以 exit 1 结束，原因没有查明；同一 run 里真实 Windows 已经从已发布 bucket 下载 manager 1.0.0、安装最新 runtime 并运行成功，所以 Windows 的首次下载能力有证据覆盖，这个 job 记为检查脚本问题，未关闭。
+  - 首次下载（同一次 run）：Linux x64 和 macOS arm64 从已发布 manager-index 取最新 manager，校验大小和哈希，首次运行应用命令后安装了 runtime-index 中最新的 0.2.0-rc.2-b4，`--use … --version` 通过。windows-x64 这个 job 在 Git Bash 步骤中没有任何输出就以 exit 1 结束，原因当时没有查明；同一 run 里真实 Windows 已经从已发布 bucket 下载 manager 1.0.0、安装最新 runtime 并运行成功。该结果覆盖 Scoop 托管安装，不替代 Windows 便携模式首次下载验收；这个失败仍待定位和复验。
   - 本机 Linux 也做了同样的首次下载：manager 1.0.0 安装 0.2.0-rc.2-b4。
   - Gentoo：从已发布 manager-index 生成 `dsh-bin-1.0.0.ebuild` 和 Manifest。Manifest 中的 DIST 大小和 SHA256 与已下载的已发布 zip 一致。在本机以 uid 1000 非 root 跑真实 Portage，`DSH_GENTOO_MANAGER_ZIP` 指向已发布的 manager-linux-x64.zip：install → upgrade → unmerge，6 pass / 0 fail，数据、凭据、会话保留。按用户选择，文件放在 `/var/tmp/dsh-bin-gentoo-1.0.0/app-misc/dsh-bin/`，由用户加入自己的 overlay。
 - 发布后的修正（都经 PR 和三平台 CI）：
@@ -1283,13 +1283,27 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
 - 删除之后新安装和更新仍然可用（published-check run 37019461210）：
   - Scoop（windows-2022）：从已发布 bucket install → `manager update` 安装 0.2.0-rc.2-b4 → 运行 → self-update 拒绝并提示 scoop → uninstall，通过；
   - 首次下载：Linux x64 和 macOS arm64 通过；
-  - windows-x64 首次下载 job 与删除前一样，在 Git Bash 步骤中无输出就 exit 1（删除前的 run 37017913881 也是如此）。Windows 上的下载、安装和运行已由 Scoop job 证明，这一项作为检查脚本的遗留问题列入残余风险。
+  - windows-x64 首次下载 job 与删除前一样，在 Git Bash 步骤中无输出就 exit 1（删除前的 run 37017913881 也是如此）。Windows 上的托管下载、安装和运行已由 Scoop job 证明，但不能据此认定便携首次下载失败属于检查脚本，也不能替代该路径的复验。
 - 没有项目被权限或不可变规则阻塞，冻结清单已经全部清空。
 - 勾选 **9.5**。
 
 ### 9.6 交付与验收
 
 - 交付报告（2026-10-02）已逐项给出：实现范围；各切片 red/green 证据的位置（本文件）；跨平台 CI、原生组合、shell 矩阵、组合 E2E、真实 Portage、真实 Scoop 和首次下载的记录；新发布地址（manager-v1.0.0、runtime-v0.1.7-rc.2-b3、runtime-v0.2.0-rc.2-b4、addon-office-v0.1.1-b2、releases 分支两份索引、scoop 分支 dsh.json、Gentoo 文件路径）；旧发布清理结果（7 个删除，90 个 URL 返回 404）。
-- 报告中明确列出的残余风险和未执行检查：windows-x64 首次下载 job 无输出失败（检查脚本问题，Windows 能力由 Scoop job 覆盖）；ARM64 Portage 和 Scoop、Windows ConPTY 交互、addon 的 PDF 转换、TUI 交互重启都没有执行；深度 E2E 只覆盖 Linux 和 Windows x64；此前接受的残余风险（最终身份检查到 unlink 之间的窗口、浅层原生 header 检查、断电持久性、初始化残留需手动恢复）；macOS 快照并发修复没有在实机上复现根因；schedule 尚未在真实 cron 下运行。
+- 报告中明确列出的残余风险和未执行检查：windows-x64 首次下载 job 无输出失败（原因未定位；Scoop 只覆盖托管路径，便携首次下载复验待完成）；ARM64 Portage 和 Scoop、Windows ConPTY 交互、addon 的 PDF 转换、TUI 交互重启都没有执行；深度 E2E 只覆盖 Linux 和 Windows x64；此前接受的残余风险（最终身份检查到 unlink 之间的窗口、浅层原生 header 检查、断电持久性、初始化残留需手动恢复）；macOS 快照并发修复没有在实机上复现根因；schedule 尚未在真实 cron 下运行。
 - 用户回复 “ok”，确认验收（2026-10-02）。Gentoo ebuild 由用户自行加入 overlay。
 - 勾选 **9.6**。
+
+### 2026-10-02 收尾：发布便携检查闭环与规范归档
+
+- 主人要求对完成结论负责，继续补齐实际缺口；本轮范围固定为 Windows 便携首次下载验收、主规范同步及归档，不将 live 首发、未来 cron 触发、临时文件清理或用户 overlay 集成扩展为新任务。
+- 原检查失败不能归为已知脚本问题，也不能用 Scoop 托管路径代替便携验收。保留 9.3–9.6 的历史结果，更正未经证实的归因，并在此追加闭环证据。
+- 根因及修复：原生 jq 的 CRLF 会在 Bash 读取的 SHA 和 runtime ID 尾部留下 `\r`；GNU checksum 按含反斜杠的原生 Windows 文件名输出时会在摘要前加转义标记。两个机制分别用真实工具与执行实际 workflow 的 fixture 复现。第一版 e1c790e 的 `--binary` 在真实 Ubuntu 上不支持，且 Windows 仍在 SHA 比较失败，发布检查 37024229018 被拒绝；未合并、未放宽断言。
+- 修正候选 **23da65c**：两处 jq 标量输出使用兼容旧版 jq 的 CRLF 规范化；sha256sum/shasum 从 stdin 计算摘要，避免文件名转义。大小、SHA-256、真实应用启动、已安装最新 runtime、显式 runtime 版本及隔离 HOME 断言全部保留，失败诊断指出目标/阶段/退出码而不打印凭据。
+- Red/green：新增旧版 jq 和反斜杠 RUNNER_TEMP 回归在第一版 workflow 上为 **5 pass / 2 fail**；修正后 first-download 与既有 release 测试为 **15 pass / 0 fail、133 assertions**。负例证明坏大小、坏哈希和输出后非零退出的 jq 都在管理器启动前失败。测试使用现有 Bun 框架，不新增依赖。
+- **真实已发布制品验收 37026525134（head 23da65c）四项全部成功**：Ubuntu/Linux x64、macOS arm64、Windows x64 便携首次下载及真实 Scoop。Windows job 110902456291 明确记录：从只有 manager 1.0.0 的空安装下载 `0.2.0-rc.2-b4.1.g243621d7`（windows-x64-modern），启动原始 plugin 命令，profile 位于隔离数据根内，本地 list 显示 selected/latest，`--use … --version` 返回 `0.2.0-rc.2`。本地 fixture 不冒充原生证据。
+- Windows 原生绿色日志：`/var/tmp/dsh-closeout/windows-native-green.log`；两阶段诊断与 red/green 日志：`/var/tmp/dsh-closeout/published-download-diagnosis/`。PR #5 合并前仍要求最终冻结差异的独立审查和三平台 CI，合并后由父会话再次运行 main 的发布检查。
+- 定时流程核对：真实上游 `upstream-check.mjs` 返回 `build:false`，最新 `dsh-v0.2.0-rc.2` 已在生产 runtime-index 中；发布流程测试 **8/8** 通过。仅此检测路径已实跑，真实 cron 首跑未发生，不声称已经观察。live 由明确 commit 手动发布，不擅自新增首发；双语发布说明补充定时 dry-run/手动 publish 的边界。
+- 主人明确选择 **同步并归档**。7 份 ADDED capability 作为主规格落地，**37 条需求、66 个场景和 Purpose 原文逐项保留**，没有新增行为约定；`openspec validate --specs --strict --no-interactive` 为 **7 passed / 0 failed**，change 严格校验通过。45 项任务全部已接受。归档目标为 `openspec/changes/archive/2026-10-02-split-dsh-manager/`，保留规划、规格、验收记录及 `.openspec.yaml`；另一会话的两个 change 不触碰。
+- 最终独立审查（reviewer-final run `1e5823e6-fa71-449d-a950-504178ee7099`）以冻结 `8517475` 对比 `aae1283`，结论 **Approved with notes / Merge verdict: OK with notes，无 P0/P1**。审查者独立重跑 15 项检查、正常/异常输出 mutation 和 shasum fallback，核对真实发布检查 37026525134、最终 CI 37027521710 及全部主规格/归档保留。早先审查超时不计为批准，本次恢复审查已明确交付最终结论。
+- 唯一 P2 文档建议已按实际 workflow 修正：`main` 上 `dsh-bun-build/` 或运行包流程文件改动会从 `master` 自动构建 live dry-run；手动 live 请求接受 commit 或 master；只有公开发布必须在 main 手动触发。双语表述修正不改变 workflow、测试或产品行为。
