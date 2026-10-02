@@ -3,6 +3,8 @@
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { Readable } from "node:stream";
+import { text } from "node:stream/consumers";
 import { extractZip } from "../runtime/zip.ts";
 import { parseIndex } from "./index.mjs";
 import { sha256, verifyZip } from "../../dsh-manager/scripts/release.mjs";
@@ -31,6 +33,7 @@ async function assetBytes(entry, asset, source, repo) {
 }
 export async function checkedProcess(command, cwd, env, timeoutMs = 90_000) {
 	const p = Bun.spawn(command, { cwd, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+	const stdout = Readable.fromWeb(p.stdout), stderr = Readable.fromWeb(p.stderr);
 	let timer;
 	const deadline = new Promise((_, reject) => {
 		timer = setTimeout(() => {
@@ -40,12 +43,12 @@ export async function checkedProcess(command, cwd, env, timeoutMs = 90_000) {
 	});
 	try {
 		const [code, out, err] = await Promise.race([
-			Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]),
+			Promise.all([p.exited, text(stdout), text(stderr)]),
 			deadline,
 		]);
 		if (code !== 0) throw new Error(`${command.join(" ")}: exit ${code}\n${out}\n${err}`);
 		return out;
-	} finally { clearTimeout(timer); if (p.exitCode === null) p.kill(); }
+	} finally { clearTimeout(timer); if (p.exitCode === null) p.kill(); stdout.destroy(); stderr.destroy(); }
 }
 function acceptance(record) {
 	const line = `DSH_NATIVE_ACCEPTANCE ${JSON.stringify(record)}`;
@@ -57,9 +60,10 @@ export async function artifactShells({ exe, home, bundle, runtime, target, env }
 	const description = JSON.parse(readFileSync(join(bundle, "completion.json"), "utf8"));
 	const command = description.commands?.find((c) => c.name)?.name;
 	if (!/^[a-z][a-z0-9-]*$/.test(command ?? "")) throw new Error("runtime completion needs a fixed command candidate");
-	// Keep shell host essentials (notably Windows), but no host Node/Bun on the tested PATH.
-	const host = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^DSH_|^(?:BASH_ENV|ENV)$/i.test(key)));
-	const shellEnv = { ...host, ...env, PATH: `${dirname(exe)}${delimiter}${env.PATH}`, ZDOTDIR: home, XDG_CONFIG_HOME: join(home, "config"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache") };
+	// Windows environment names are case-insensitive: inherited `Path` must not shadow our `PATH`.
+	const host = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^DSH_|^(?:BASH_ENV|ENV|PSModuleAnalysisCachePath)$/i.test(key)));
+	const inherited = Object.fromEntries(Object.entries({ ...host, ...env }).map(([key, value]) => [process.platform === "win32" ? key.toUpperCase() : key, value]));
+	const shellEnv = { ...inherited, PATH: `${dirname(exe)}${delimiter}${env.PATH}`, HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home, TMPDIR: home, TMP: home, TEMP: home, [process.platform === "win32" ? "PSMODULEANALYSISCACHEPATH" : "PSModuleAnalysisCachePath"]: join(home, "powershell-analysis-cache"), ZDOTDIR: home, XDG_CONFIG_HOME: join(home, "config"), XDG_DATA_HOME: join(home, "data"), XDG_CACHE_HOME: join(home, "cache") };
 	for (const shell of ["bash", "zsh", "fish", "pwsh", "powershell"]) {
 		const supported = process.platform === "win32" ? ["pwsh", "powershell"].includes(shell) : shell !== "powershell";
 		const binary = supported ? Bun.which(process.platform === "win32" ? `${shell}.exe` : shell) : null;
