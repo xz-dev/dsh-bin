@@ -13,7 +13,9 @@ export function scoopManifests(index, repo = "xz-dev/dsh-bin") {
 	const entries = [...index.versions].sort((a, b) => Bun.semver.order(b.version, a.version));
 	for (let i = 1; i < entries.length; i++) if (Bun.semver.order(entries[i - 1].version, entries[i].version) === 0) throw new Error("ambiguous manager version");
 	const manager = entries[0];
-	if (!manager.launchProtocols?.includes(1)) throw new Error("incompatible manager protocol");
+	const protocols = manager.launchProtocols;
+	if (!Array.isArray(protocols) || !protocols.every(Number.isSafeInteger)) throw new Error("invalid manager launchProtocols");
+	if (!protocols.includes(1)) throw new Error("incompatible manager protocol");
 	const architecture = Object.fromEntries([["64bit", "windows-x64"], ["arm64", "windows-arm64"]].map(([arch, target]) => {
 		const a = manager.assets?.[target];
 		if (!a || !/^[0-9A-Za-z][0-9A-Za-z._+-]*\.zip$/.test(a.name) || !Number.isSafeInteger(a.size) || a.size <= 0 || !/^[0-9a-fA-F]{64}$/.test(a.sha256)) throw new Error(`${target}: invalid manager asset`);
@@ -26,9 +28,14 @@ export function scoopManifests(index, repo = "xz-dev/dsh-bin") {
 		license: "MIT",
 		bin: "dsh.exe",
 		architecture,
+		// CreateNew never follows or overwrites an existing name (file, symlink or hardlink): a pre-existing
+		// marker is refused with a clear error instead of truncating whatever it points to. Read-only is set
+		// through the same handle's path only after we created the file ourselves.
 		post_install: [
-			`[System.IO.File]::WriteAllText((Join-Path $dir '.dsh-manager-install.json'), '{"schema":1,"owner":"scoop"}', [System.Text.UTF8Encoding]::new($false))`,
-			`(Get-Item -LiteralPath (Join-Path $dir '.dsh-manager-install.json') -Force).IsReadOnly = $true`,
+			`$marker = Join-Path $dir '.dsh-manager-install.json'`,
+			`try { $fs = [System.IO.FileStream]::new($marker, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None) } catch { throw "dsh: refusing to replace existing $marker; remove it and reinstall" }`,
+			`try { $b = [System.Text.UTF8Encoding]::new($false).GetBytes('{"schema":1,"owner":"scoop"}'); $fs.Write($b, 0, $b.Length) } finally { $fs.Dispose() }`,
+			`[System.IO.File]::SetAttributes($marker, [System.IO.FileAttributes]::ReadOnly)`,
 		],
 	} };
 }

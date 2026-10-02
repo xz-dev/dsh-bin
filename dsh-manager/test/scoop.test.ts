@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scoopManifests } from "../scripts/create-scoop-manifest.mjs";
@@ -37,8 +37,26 @@ describe("7.5: Scoop owns only the manager", () => {
 		} finally { rmSync(t, { recursive: true, force: true }); }
 	});
 
+	test.skipIf(!Bun.which("pwsh"))("7.5 review: post_install never follows or overwrites an existing marker (file, symlink, hardlink)", () => {
+		const manifest = scoopManifests(INDEX).dsh;
+		for (const kind of ["file", "symlink", "hardlink"]) {
+			const t = mkdtempSync(join(tmpdir(), "dsh-scoop-hook-")), outside = mkdtempSync(join(tmpdir(), "dsh-scoop-outside-"));
+			try {
+				const credential = join(outside, "credential"), marker = join(t, ".dsh-manager-install.json");
+				writeFileSync(credential, "SECRET KEEP");
+				if (kind === "file") writeFileSync(marker, "USER FILE"); else if (kind === "symlink") symlinkSync(credential, marker); else linkSync(credential, marker);
+				let failed = false;
+				try { execFileSync("pwsh", ["-NoProfile", "-Command", "$ErrorActionPreference = 'Stop'; $dir = $env:DSH_SCOOP_HOOK_DIR; " + manifest.post_install.join("; ")], { env: { ...process.env, DSH_SCOOP_HOOK_DIR: t }, stdio: "pipe" }); }
+				catch (e: any) { failed = true; expect(String(e.stderr)).toContain("refusing to replace existing"); }
+				expect(failed).toBe(true);
+				expect(readFileSync(credential, "utf8")).toBe("SECRET KEEP");
+				if (kind === "file") expect(readFileSync(marker, "utf8")).toBe("USER FILE");
+			} finally { rmSync(t, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+		}
+	});
+
 	test("7.5: invalid manager index, identity, protocol or asset refuses packaging", () => {
-		for (const e of [{ ...entry("1.0.0"), tag: "../bad" }, entry("01.0.0"), entry("1.0.0-rc.01"), entry("1.0.0+"), { ...entry("1.0.0"), launchProtocols: [2] }, { ...entry("1.0.0"), assets: {} },
+		for (const e of [{ ...entry("1.0.0"), tag: "../bad" }, entry("01.0.0"), entry("1.0.0-rc.01"), entry("1.0.0+"), { ...entry("1.0.0"), launchProtocols: [2] }, { ...entry("1.0.0"), launchProtocols: "91" }, { ...entry("1.0.0"), launchProtocols: ["1"] }, { ...entry("1.0.0"), assets: {} },
 			{ ...entry("1.0.0"), assets: { "windows-x64": { name: "$(touch bad).zip", size: 7, sha256: h("1") }, "windows-arm64": entry("1.0.0").assets["windows-arm64"] } }]) {
 			expect(() => scoopManifests({ schema: 1, versions: [e] })).toThrow();
 		}
