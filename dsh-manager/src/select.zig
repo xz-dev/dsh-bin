@@ -228,7 +228,7 @@ pub const Input = struct {
     opts: Options,
     /// Installed bundles (directory names under `bundles/`), with their parsed `bundle.json`.
     bundles: []const Bundle,
-    /// Recorded channel (`<root>/channel`, else the launcher's own channel).
+    /// Recorded channel (`<data>/state/channel`; `release` when missing or invalid).
     channel: []const u8,
     /// The selection's `use`; null when there is no selection (`latest`).
     selection_use: ?[]const u8 = null,
