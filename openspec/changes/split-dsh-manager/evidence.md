@@ -1266,3 +1266,23 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
   - 合计 90 个资产，9,453,669,026 bytes；新家族 0，未知 0。
   - 旧下载入口：releases 分支上的旧 `index.json`、scoop 分支上的 `bucket/dsh-live.json` 和 `bucket/dsh-office.json`。README 已在 28c2387 改为只指向新制品；`install.sh` 已经不存在。
 - 勾选 **9.2**。
+
+### 9.4 父会话验收
+
+- 用户在看过冻结清单（7 个 release ID 和 tag、90 个资产、约 9.45 GB、sha256 `398fa2a9…`、旧 index.json、Scoop dsh-live/dsh-office）以及不可逆后果后，明确回复 “confirm”（2026-10-02）。
+- 先跑 dry run（`/var/tmp/dsh-94/plan.json`）：摘要校验通过，计划恰好是这 7 个 ID，零 API 调用。
+- 正式删除：`bun dsh-bun-build/scripts/cutover-delete.mjs /var/tmp/dsh-94/frozen.json --expect-sha256 398fa2a9… --confirm`，exit 0。结果文件 `/var/tmp/dsh-94/frozen.json.results.json`：**done 7（399716292、399716693、399728621、399774675、399792727、399843429、399868698），failed 0，not-attempted 0**。每删一项前都按 ID 重新读取并核对 tag；整个过程没有重新列举 release；没有删除 Git tag。
+- 移除旧下载入口：releases 分支删除旧 `index.json`（a6f0685）；scoop 分支删除 `bucket/dsh-live.json` 和 `bucket/dsh-office.json`（deafd2f）。README 和 desc 此前已在 28c2387 只指向新制品；`install.sh` 早已不存在。
+- 没有动的东西：7 个旧 `dsh-*` Git tag 仍然存在（`git ls-remote` 显示 7 个），Git 历史不变；4 个新 release（manager-v1.0.0、runtime-v0.1.7-rc.2-b3、runtime-v0.2.0-rc.2-b4、addon-office-v0.1.1-b2）都在，immutable，资产数量不变；用户本地数据没有被触碰。
+- 勾选 **9.4**。
+
+### 9.5 父会话验收
+
+- 旧资产：冻结清单中 90 个旧资产的精确下载 URL 全部返回 **404**（`/var/tmp/dsh-94/old-url-status.txt`）。旧 `index.json`、`bucket/dsh-live.json`、`bucket/dsh-office.json`、`install.sh` 也都返回 404。
+- 新入口只提供新制品：runtime-index、manager-index 和 Scoop dsh.json 引用的 35 个资产 URL 全部返回 **200**（`/var/tmp/dsh-94/new-status.txt`），每一个都位于新 tag 家族（`runtime-v*`、`manager-v*`、`addon-office-v*`）下。runtime-index 中出现的 `dsh-v0.1.7-rc.2` / `dsh-v0.2.0-rc.2` 是 upstream 源码 tag（`upstream.tag` 字段），`dsh-addon-office-*.zip` 是 addon 资产文件名，都不指向已删除的 release。Scoop dsh.json 指向 manager-v1.0.0；GitHub Latest 是 runtime-v0.2.0-rc.2-b4。
+- 删除之后新安装和更新仍然可用（published-check run 37019461210）：
+  - Scoop（windows-2022）：从已发布 bucket install → `manager update` 安装 0.2.0-rc.2-b4 → 运行 → self-update 拒绝并提示 scoop → uninstall，通过；
+  - 首次下载：Linux x64 和 macOS arm64 通过；
+  - windows-x64 首次下载 job 与删除前一样，在 Git Bash 步骤中无输出就 exit 1（删除前的 run 37017913881 也是如此）。Windows 上的下载、安装和运行已由 Scoop job 证明，这一项作为检查脚本的遗留问题列入残余风险。
+- 没有项目被权限或不可变规则阻塞，冻结清单已经全部清空。
+- 勾选 **9.5**。
