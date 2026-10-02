@@ -982,6 +982,7 @@ scoop uninstall dsh
 
 - 实现提交：`032ef4e`（独立发布工作流/打包器/索引写入/组合入口）、`a536fc0`（冻结 upstream commit、原始构建哈希核验、发布输入门禁）。只实现 8.3；不勾选 tasks.md，不推送、不调用 gh、不创建分支/tag/release，不触碰两份并行 change。
 - 父会话明确批准修改现存 `dsh-bun-build/scripts/{aggregate-release,publish-release,publish-index,index,build-target}.mjs|sh` 和对应测试；不新增根 common 层。现存 publisher 的旧 tag 分支保留，新写入只操作对应的新索引。
+- 发布授权边界：用户只同意**全部门禁通过后发布新体系（9.3）**，没有授权提前发布 prerelease；旧发布删除仍等待精确清单及明确确认。`prerelease` 仅是实现支持的工作流参数，不是当前执行授权。
 - 目前不存在可证明已验收的新格式 CI runtime artifact。首次 `publish=false` 且没有 accepted counterpart 时只构建/核验/上传，并输出 **`combination gate skipped: no accepted counterpart (bootstrap)`**；这不是组合验收成功。`publish=true` 缺 counterpart 则在构建前明确拒绝。父会话先人工验收一次 dry-run 的 ZIP/index，再把明确 run ID、artifact 名和 index SHA256 输入另一产品的 dry-run；不自动选择“最新”资产。
 - 非空 office slot 缺已发布新格式 addon 时：dry-run 保留合法 `slot`、`pinned=null`、`known=[]`，应用沿既有行为降级；publish 明确拒绝并要求先发布 addon，不顺带构建 addon。**9.3 阻塞：addon release path must be fixed and the addon published before the runtime publish**。现存 addon.yml 仍传 `launcherCommit`，而 addonDistribution 要求 `builderCommit`；父会话批准本切片不修它，留单独小修。
 
@@ -1018,7 +1019,7 @@ scoop uninstall dsh
    ```
    actionlint 内置旧 runner 清单不认识原项目已使用的 macos-15-intel/windows-11-arm，两条 runner-label 诊断明确排除；未排除其他诊断。
 
-### 父会话待执行的真实工作流命令
+### 父会话下一步：仅 dry-run 工作流与精确制品复验
 
 新 workflow 可能须先出现在默认分支才可被 GitHub `workflow_dispatch` 注册；仅推 feature branch 不保证 GitHub 接受新 workflow 文件的 dispatch。父会话处理注册/推送/审查，不由 worker 外部操作。
 
@@ -1038,12 +1039,9 @@ gh workflow run manager-release.yml --ref feat/split-dsh-manager -f version=1.0.
 gh workflow run runtime-release.yml --ref feat/split-dsh-manager -f channel=release -f upstream=dsh-v0.1.7-rc.2 -f prerelease=true -f publish=false -f accepted_run="$MANAGER_RUN" -f accepted_artifact=manager-release -f accepted_sha256="$MANAGER_INDEX_SHA"
 ```
 
-审查/native CI/相互组合通过之后，父会话真实 prerelease dispatch（版本/运行身份不可复用改写，runtime 每个 run 都有独立 identity）：
-```sh
-gh workflow run manager-release.yml --ref feat/split-dsh-manager -f version=1.0.0-rc.1 -f prerelease=true -f publish=true -f accepted_run="$RUNTIME_RUN" -f accepted_artifact=runtime-release -f accepted_sha256="$RUNTIME_INDEX_SHA"
-# 先修 addon 发布入口并发布新 addon，否则以下命令明确拒绝。
-gh workflow run runtime-release.yml --ref feat/split-dsh-manager -f channel=release -f upstream=dsh-v0.1.7-rc.2 -f prerelease=true -f publish=true -f accepted_run="$MANAGER_RUN" -f accepted_artifact=manager-release -f accepted_sha256="$MANAGER_INDEX_SHA"
-```
+两个 dry-run 都上传整个 release 目录：`manager-release` artifact 内含全部 manager ZIP、manager-index.json、manager-manifest.json 和 SHA256SUMS；`runtime-release` artifact 内含全部 runtime ZIP、runtime-index.json、release-manifest.json 和 SHA256SUMS。父会话固定 run ID 与逐资产哈希，在本地受控源服务这些**精确字节**，重跑 Gentoo、Scoop 和两版本 manager self-update；不重建替换被测制品。
+
+真实发布属于 9.3：必须先关闭 section 8 的完整门禁（包括 8.1/8.2/8.6，而不只本切片组合测试），完成相应审查/native CI/真实制品复验，并修复 addon 发布入口、先发布所需新 addon。此处不列任何 `publish=true` dispatch 命令，不将 prerelease 参数或干运行成功解释为提前发布授权。
 
 真实发布/index 路径：`manager-v<SemVer>` 的 `manager-<target>.zip`，以及 D10 `runtime-v<upstream>-b<run>.<attempt>.g<sha8>` 的 `runtime-<target>.zip`；索引分别为 `https://raw.githubusercontent.com/xz-dev/dsh-bin/releases/manager-index.json`、`.../runtime-index.json`。若 GitHub immutable-release setting/token/attestation 不满足，发布阻塞，不绕过。
 
