@@ -25,24 +25,40 @@ jobs:
         env: { TARGET: "${{ matrix.target }}", EXE: "${{ matrix.exe }}" }
         run: |
           set -euo pipefail
+          stage="setup"
+          trap 'status=$?; printf "::error::Published first-download (%s) failed during %s at line %s (exit %s)\n" "$TARGET" "$stage" "$LINENO" "$status" >&2; exit "$status"' ERR
           root="$RUNNER_TEMP/first-download"; mkdir -p "$root/tools" "$root/home"
+          stage="manager index download"
           curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/releases/manager-index.json" -o "$root/manager-index.json"
-          read -r tag name size sha < <(jq -r --arg t "$TARGET" '.versions[-1] | "\(.tag) \(.assets[$t].name) \(.assets[$t].size) \(.assets[$t].sha256)"' "$root/manager-index.json")
+          stage="manager asset metadata"
+          # Native jq.exe must emit LF for Bash read and command substitution, not CRLF.
+          metadata=$(jq --binary -r --arg t "$TARGET" '.versions[-1] | "\(.tag) \(.assets[$t].name) \(.assets[$t].size) \(.assets[$t].sha256)"' "$root/manager-index.json")
+          read -r tag name size sha <<< "$metadata"
+          stage="manager archive download"
           curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/$tag/$name" -o "$root/$name"
+          stage="manager archive size check"
           test "$(wc -c < "$root/$name" | tr -d ' ')" = "$size"
+          stage="manager archive SHA256 check"
           if command -v sha256sum >/dev/null; then got=$(sha256sum "$root/$name" | cut -d' ' -f1); else got=$(shasum -a 256 "$root/$name" | cut -d' ' -f1); fi
           test "$got" = "$sha"
+          stage="manager archive extraction"
           unzip -q "$root/$name" -d "$root/tools"
           chmod +x "$root/tools/$EXE" || true
           export HOME="$root/home" USERPROFILE="$root/home" LOCALAPPDATA="$root/home" APPDATA="$root/home" XDG_DATA_HOME="" XDG_CONFIG_HOME="$root/home/.config"
+          stage="manager version"
           "$root/tools/$EXE" manager --version
-          newest=$(curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/releases/runtime-index.json" | jq -r '.channels.release[-1].id')
+          stage="newest runtime identity"
+          newest=$(curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/releases/runtime-index.json" | jq --binary -r '.channels.release[-1].id')
           # Bare --version/--help are answered by the manager itself; an app command makes the first launch
           # install the newest published runtime, then the runtime answers --version through --use.
+          stage="first application launch"
           "$root/tools/$EXE" plugin --profile first --help </dev/null | tee "$root/out.txt"
+          stage="installed newest runtime check"
           "$root/tools/$EXE" manager list | tee "$root/list.txt"
           grep -F "$newest" "$root/list.txt"
+          stage="selected runtime version"
           "$root/tools/$EXE" --use "$newest" --version </dev/null | tee "$root/version.txt"
+          stage="summary"
           echo "first download installed $newest with $tag ($TARGET)" >> "$GITHUB_STEP_SUMMARY"
   scoop:
     runs-on: windows-2022
