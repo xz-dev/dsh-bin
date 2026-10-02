@@ -43,6 +43,8 @@ export async function freezeReleases(env = process.env, fetchImpl = fetch) {
 		if (!r.ok) throw new Error(`GitHub GET ${path}: HTTP ${r.status}`);
 		return r.json();
 	};
+	const permissions = (await get(""))?.permissions;
+	if (!["push", "admin", "maintain"].some((level) => permissions?.[level] === true)) throw new Error("push permission required to include draft releases; refusing incomplete freeze");
 	const pages = async (path) => {
 		const all = [];
 		for (let page = 1; ; page++) {
@@ -91,9 +93,10 @@ if (import.meta.main) {
 		const [out, ...extra] = process.argv.slice(2);
 		if (!out || extra.length) throw new Error("usage: cutover-freeze.mjs <out.json>");
 		githubContext();
-		// Reserve an exclusive file handle before network waits. Never replace a user file or link.
-		fd = openSync(resolve(out), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+		if (lstatSync(resolve(out), { throwIfNoEntry: false })) throw new Error(`output already exists: ${out}`);
 		const inventory = await freezeReleases();
+		// Create only after permission/inventory checks; O_EXCL refuses any name created during the wait.
+		fd = openSync(resolve(out), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
 		assertFileIdentity(fd, resolve(out));
 		writeFileSync(fd, `${JSON.stringify(inventory, null, 2)}\n`);
 		console.log(JSON.stringify({ repository: inventory.repository, sha256: inventory.sha256, counts: inventory.counts, unknown: inventory.unknown.map((r) => ({ id: r.id, tag: r.tag })) }));

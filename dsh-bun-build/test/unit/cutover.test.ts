@@ -1,7 +1,7 @@
 // DL-CUTOVER / DL-CLEANUP-BLOCKED: API fixture rehearsal; no real GitHub mutations.
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { freezeReleases, inventorySha256 } from "../../scripts/cutover-freeze.mjs";
@@ -15,7 +15,7 @@ const asset = (id: number) => ({ id, name: `file-${id}.zip`, size: 3, browser_do
 const releases = [release(1, "dsh-v1"), release(2, "dsh-live-old", { prerelease: true }), release(3, "dsh-addon-office-v1", { draft: true }), release(4, "manager-v1"), release(5, "runtime-v1"), release(6, "runtime-live-new"), release(7, "addon-office-v1"), release(8, "manual-note"), ...Array.from({ length: 94 }, (_, n) => release(9 + n, `manager-v${n + 2}`))];
 const assets = Array.from({ length: 101 }, (_, n) => asset(100 + n));
 
-function fixture({ order = releases, failures = {} as Record<string, number>, messages = {} as Record<string, string>, changed = {} as Record<number, object>, changedAssets = {} as Record<number, object[]>, gone = [] as number[], network = "" } = {}) {
+function fixture({ order = releases, permissions = { push: true } as object | undefined, failures = {} as Record<string, number>, messages = {} as Record<string, string>, changed = {} as Record<number, object>, changedAssets = {} as Record<number, object[]>, gone = [] as number[], network = "" } = {}) {
 	const calls: string[] = [], deleted: number[] = [];
 	const api = async (input: any, options: any = {}) => {
 		const url = new URL(String(input)), method = options.method ?? "GET", path = url.pathname.replace("/repos/fixture/repo", ""), call = `${method} ${path}`;
@@ -23,6 +23,7 @@ function fixture({ order = releases, failures = {} as Record<string, number>, me
 		expect(options.redirect).toBe("error");
 		if (call === network) throw new Error("fixture network failure");
 		if (failures[call]) return new Response(messages[call] ?? "blocked", { status: failures[call] });
+		if (path === "" && method === "GET") return Response.json({ permissions });
 		const page = Number(url.searchParams.get("page") ?? "1");
 		if (path === "/releases" && method === "GET") return Response.json(order.slice((page - 1) * 100, page * 100));
 		const items = path.match(/^\/releases\/(\d+)\/assets$/);
@@ -40,6 +41,24 @@ function fixture({ order = releases, failures = {} as Record<string, number>, me
 	return { api: api as typeof fetch, calls, deleted };
 }
 const frozen = async () => freezeReleases(env, fixture().api);
+
+test("DL-CUTOVER: freeze refuses missing draft visibility before listing any releases", async () => {
+	for (const permissions of [{ push: false }, {}, { push: "true" }, null]) {
+		const f = fixture({ permissions: permissions as any });
+		await expect(freezeReleases(env, f.api)).rejects.toThrow("push permission required to include draft releases");
+		expect(f.calls).toEqual(["GET "]);
+	}
+});
+
+test("DL-CUTOVER: freeze CLI leaves no output when draft visibility is refused", () => {
+	const out = join(root, "denied-freeze.json"), preload = join(root, "deny-freeze.mjs");
+	writeFileSync(preload, `globalThis.fetch = async (url, options) => {
+		if (options.method !== "GET" || String(url) !== "https://api.github.com/repos/fixture/repo") throw new Error("release listing must not run");
+		return Response.json({permissions:{push:false}});
+	};`);
+	const result = spawnSync(process.execPath, ["--preload", preload, resolve(import.meta.dir, "../../scripts/cutover-freeze.mjs"), out], { encoding: "utf8", timeout: 10_000, env: { ...process.env, ...env } });
+	expect(result.status).toBe(1); expect(result.stderr).toContain("push permission required"); expect(existsSync(out)).toBe(false);
+});
 
 test("DL-CUTOVER: freeze paginates releases/assets including drafts, sorts old IDs, protects new/unknown tags and hashes discovery", async () => {
 	const f = fixture(), inventory = await freezeReleases(env, f.api);
@@ -113,6 +132,7 @@ test("DL-CLEANUP-BLOCKED: 401/403/422 stop immediately without auth/settings fal
 	const brokenResponse = async (url: any, options: any) => options.method === "DELETE" && String(url).endsWith("/releases/1") ? { status: 403, text: async () => { throw new Error("response body disconnected"); } } as Response : badBody.api(url, options);
 	const disconnected = await deleteFrozen(inventory, inventory.sha256, env, brokenResponse as typeof fetch, true);
 	expect(disconnected.failed).toHaveLength(1); expect(disconnected.notAttempted).toHaveLength(2); expect(badBody.deleted).toEqual([]);
+	expect(disconnected.failed[0].reason).toBe("DELETE release 1: HTTP 403: response body read failed: response body disconnected");
 	const refusal = fixture({ failures: { "DELETE /releases/1": 409 }, messages: { "DELETE /releases/1": "Release immutable: deletion blocked" } });
 	const blocked = await deleteFrozen(inventory, inventory.sha256, env, refusal.api, true);
 	expect(blocked.failed[0].reason).toContain("immutable"); expect(blocked.notAttempted).toHaveLength(2); expect(refusal.deleted).toEqual([]);

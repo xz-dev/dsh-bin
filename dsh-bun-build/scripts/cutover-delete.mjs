@@ -32,7 +32,9 @@ export async function deleteFrozen(inventory, expected, env = process.env, fetch
 		let stop = false;
 		const refused = async (response, operation) => {
 			stop = [401, 403, 422].includes(response.status);
-			const message = (await response.text()).slice(0, 2000);
+			let message;
+			try { message = (await response.text()).slice(0, 2000); }
+			catch (e) { message = `response body read failed: ${e.message}`; }
 			stop ||= /immutable/i.test(message);
 			throw new Error(`${operation}: HTTP ${response.status}${message ? `: ${message}` : ""}`);
 		};
