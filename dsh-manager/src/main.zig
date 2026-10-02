@@ -62,4 +62,5 @@ test {
     _ = @import("target.zig");
     _ = @import("index.zig");
     _ = @import("manager_index.zig");
+    _ = @import("self_update_windows.zig");
 }

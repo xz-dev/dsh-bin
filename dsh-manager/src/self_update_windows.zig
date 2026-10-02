@@ -275,11 +275,21 @@ pub fn consume(ctx: *const Ctx) void {
     if (builtin.os.tag != .windows) return;
     var root = std.fs.cwd().openDir(ctx.data, .{ .no_follow = true }) catch return;
     defer root.close();
+    consumeIn(ctx, root);
+}
+
+fn consumeIn(ctx: *const Ctx, root: std.fs.Dir) void {
+    const context = @import("context.zig");
+    const marker = binary.openRegular(root, context.data_marker) catch return;
+    defer marker.close();
+    const marker_bytes = marker.readToEndAlloc(ctx.a, 4096) catch return;
+    defer ctx.a.free(marker_bytes);
+    if (!context.validDataMarker(ctx.a, marker_bytes)) return;
     var tmp = root.openDir("tmp", .{ .no_follow = true }) catch return;
     defer tmp.close();
     const file = binary.openRegular(tmp, result_name) catch return;
     defer file.close();
-    if ((info(file.handle) catch return).nNumberOfLinks != 1) return;
+    if (builtin.os.tag == .windows and (info(file.handle) catch return).nNumberOfLinks != 1) return;
     const bytes = file.readToEndAlloc(ctx.a, 4096) catch return;
     if (bytes.len > 2048 or !std.mem.endsWith(u8, bytes, "\n") or std.mem.indexOfScalar(u8, bytes[0 .. bytes.len - 1], '\n') != null) return;
     if (std.mem.startsWith(u8, bytes, "updated ")) {
@@ -290,6 +300,27 @@ pub fn consume(ctx: *const Ctx) void {
     if (!binary.sameFile(tmp, result_name, file)) return;
     tmp.deleteFile(result_name) catch return;
     util.warn("self-update result: {s}", .{std.mem.trim(u8, bytes, "\r\n")});
+}
+
+test "MC-SELF-FAIL review: result consumption leaves unowned or corrupt roots untouched" {
+    const t = std.testing;
+    var env = std.process.EnvMap.init(t.allocator);
+    defer env.deinit();
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const ctx = Ctx{ .a = arena.allocator(), .env = env, .exe = "", .dir = "", .mode = .portable, .data = "", .app_home = "", .exe_identity = null };
+    for ([_]?[]const u8{ null, "corrupt marker", "{\"kind\":\"user-data\",\"schema\":1}" }) |marker| {
+        var root = t.tmpDir(.{});
+        defer root.cleanup();
+        if (marker) |bytes| try root.dir.writeFile(.{ .sub_path = @import("context.zig").data_marker, .data = bytes });
+        try root.dir.makeDir("tmp");
+        const note = "failed: user note\n";
+        try root.dir.writeFile(.{ .sub_path = "tmp/" ++ result_name, .data = note });
+        consumeIn(&ctx, root.dir);
+        const kept = try root.dir.readFileAlloc(t.allocator, "tmp/" ++ result_name, 4096);
+        defer t.allocator.free(kept);
+        try t.expectEqualStrings(note, kept);
+    }
 }
 
 pub fn helperName(name: []const u8) bool {

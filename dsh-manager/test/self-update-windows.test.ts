@@ -1,7 +1,7 @@
 // Native Windows evidence only: real image mapping, inherited handles and TerminateProcess.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { writeZip } from "../../dsh-bun-build/runtime/zip.ts";
@@ -60,6 +60,24 @@ async function ready(control: string, stage: string) {
 // Node's SIGKILL on Windows uses TerminateProcess, not a POSIX signal simulation.
 function terminate(pid: number) { process.kill(pid, "SIGKILL"); }
 async function finish(u: ReturnType<typeof update>) { if (u.p.exitCode === null) u.p.kill("SIGKILL"); await u.done; }
+
+native(`MC-SELF-FAIL Windows review: result consumption never adopts unmarked or corrupt data roots${WIN ? "" : reason}`, () => {
+    for (const marker of [undefined, "corrupt marker", JSON.stringify({ kind: "user-data", schema: 1 })]) {
+        const i = newInstall(), path = resultPath(i), note = "failed: user note\n";
+        mkdirSync(join(i.data, "tmp"), { recursive: true }); writeFileSync(path, note);
+        if (marker !== undefined) writeFileSync(join(i.data, ".dsh-bin-data.json"), marker);
+        const before = tree(i.data), r = run(i, ["manager", "--version"]);
+        expect(r.status).toBe(0); expect(r.stdout).toContain(MANAGER_VERSION);
+        expect(r.stderr).not.toContain("self-update result"); expect(tree(i.data)).toEqual(before);
+        expect(readFileSync(path, "utf8")).toBe(note);
+        if (marker !== undefined) expect(readFileSync(join(i.data, ".dsh-bin-data.json"), "utf8")).toBe(marker);
+    }
+    const i = fixture(), path = resultPath(i);
+    mkdirSync(path, { recursive: true }); writeFileSync(join(path, "credential"), "KEEP");
+    const r = run(i, ["manager", "--version"]);
+    expect(r.status).toBe(0); expect(r.stderr).not.toContain("self-update result");
+    expect(readFileSync(join(path, "credential"), "utf8")).toBe("KEEP");
+});
 
 native(`MC-SELF-ONLY / MC-SELF-FAIL Windows: handoff is not success; next entry consumes result once; helper keeps original context${WIN ? "" : reason}`, async () => {
     const i = fixture(), before = protectedState(i), s = source(), control = tempDir("helper-control-"), u = update(i, s, control);

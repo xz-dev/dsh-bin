@@ -11,6 +11,14 @@ pub const data_marker = ".dsh-bin-data.json";
 pub const install_marker = ".dsh-manager-install.json";
 pub const Mode = enum { portable, portage, scoop };
 
+/// Shared read-only ownership predicate; callers decide whether an absent root may be initialized.
+pub fn validDataMarker(a: std.mem.Allocator, bytes: []const u8) bool {
+    const Marker = struct { kind: []const u8, schema: u32 };
+    const parsed = std.json.parseFromSlice(Marker, a, bytes, .{}) catch return false;
+    defer parsed.deinit();
+    return parsed.value.schema == 1 and std.mem.eql(u8, parsed.value.kind, "dsh-manager-data");
+}
+
 pub const ExeIdentity = struct { device: u64, inode: u64 };
 pub const Ctx = struct {
     a: std.mem.Allocator,
@@ -53,9 +61,7 @@ pub const Ctx = struct {
             const partial = std.mem.trim(u8, b, " \t\r\n");
             const complete = std.mem.trim(u8, marker_bytes, " \t\r\n");
             if (partial.len < complete.len and std.mem.startsWith(u8, complete, partial)) self.initializing();
-            const Marker = struct { kind: []const u8, schema: u32 };
-            const m = std.json.parseFromSliceLeaky(Marker, self.a, b, .{}) catch self.conflict();
-            if (m.schema != 1 or !std.mem.eql(u8, m.kind, "dsh-manager-data")) self.conflict();
+            if (!validDataMarker(self.a, b)) self.conflict();
         } else {
             var it = dir.iterate();
             if (it.next() catch |err| self.writeError(err)) |entry| {

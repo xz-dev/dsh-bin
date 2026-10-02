@@ -363,9 +363,7 @@ fn perform(ctx: *const Ctx) !void {
         util.warn("cannot clean unowned data root {s}: initialization may be interrupted; inspect it manually; no data adopted or removed", .{ctx.data});
         return error.Reported;
     };
-    const Marker = struct { kind: []const u8, schema: u32 };
-    const marker = std.json.parseFromSliceLeaky(Marker, ctx.a, bytes, .{}) catch return error.InvalidOwnershipMarker;
-    if (marker.schema != 1 or !eq(u8, marker.kind, "dsh-manager-data")) return error.InvalidOwnershipMarker;
+    if (!@import("context.zig").validDataMarker(ctx.a, bytes)) return error.InvalidOwnershipMarker;
     var c = Cleanup{ .ctx = ctx };
     defer c.deinit();
     try collect(&c, .{ .dir = root_dir, .path = "" });
