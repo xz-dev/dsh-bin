@@ -96,7 +96,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { name: runtime-index-snapshot, path: "${{ runner.temp }}/index" }
       - name: Build runtime only, using frozen addon index
-        env: { IMAGE: "${{ matrix.containerImage }}", COMMIT: "${{ needs.prepare.outputs.commit }}" }
+        env: { IMAGE: "${{ matrix.containerImage }}", COMMIT: "${{ needs.prepare.outputs.commit }}", GH_TOKEN: "${{ github.token }}" }
         run: |
           set -euo pipefail
           ref=$COMMIT; [[ "$CHANNEL" == release ]] && ref=$UPSTREAM
@@ -104,7 +104,7 @@ jobs:
           if [[ -z "$IMAGE" ]]; then
             bun scripts/build-target.mjs "${args[@]}"
           else
-            docker run --rm -v "$PWD:$PWD" -v "$RUNNER_TEMP:$RUNNER_TEMP" -w "$PWD" -e DSH_BUILDER_COMMIT -e OWNER="$(id -u):$(id -g)" "$IMAGE" sh -euc 'apk add --no-cache bash git curl nodejs nodejs-dev npm python3 build-base cmake linux-headers >/dev/null; ln -sf /usr/bin/gcc /usr/local/bin/musl-gcc; bun scripts/build-target.mjs "$@"; chown -R "$OWNER" "$RUNNER_TEMP"' sh "${args[@]}"
+            docker run --rm -v "$PWD:$PWD" -v "$RUNNER_TEMP:$RUNNER_TEMP" -w "$PWD" -e DSH_BUILDER_COMMIT -e GH_TOKEN -e RUNNER_TEMP -e OWNER="$(id -u):$(id -g)" "$IMAGE" sh -euc 'apk add --no-cache bash git curl nodejs nodejs-dev npm python3 build-base cmake linux-headers github-cli >/dev/null; ln -sf /usr/bin/gcc /usr/local/bin/musl-gcc; bun scripts/build-target.mjs "$@"; chown -R "$OWNER" "$RUNNER_TEMP"' sh "${args[@]}"
           fi
           rm -rf "$RUNNER_TEMP/out/addon-tree" "$RUNNER_TEMP/out"/.scratch-*
       - uses: actions/upload-artifact@v4
