@@ -5,7 +5,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { appendBundle, emptyIndex } from "../../scripts/index.mjs";
+import { appendAddon, appendBundle, emptyIndex } from "../../scripts/index.mjs";
 import { publishRelease } from "../../scripts/publish-release.mjs";
 
 const root = mkdtempSync(join(tmpdir(), "dsh-addon-release-"));
@@ -92,7 +92,11 @@ test("DL-CUTOVER: addon publication validates builder identity and hashes before
 		if (opts.method === "PATCH") { expect(JSON.parse(opts.body)).toEqual({ draft: false, prerelease: false, make_latest: "false" }); release = { ...release, draft: false, immutable: true }; }
 		return Response.json(release);
 	};
-	for (const data of [{ ...manifest(), builderCommit: "f".repeat(40) }, { ...manifest(), slot: { ...manifest().slot, commit: "bad" } }]) {
+	// Review P1: `targets` names a real, uploadable file while `assets` (what the index records) differs.
+	writeFileSync(join(dir, "actually-uploaded.zip"), "up!");
+	const mixed = { ...manifest(), channel: "release", targets: { "linux-x64-modern": { file: "actually-uploaded.zip", size: 3, sha256: sha256("up!") } } };
+	expect(() => appendAddon(emptyIndex(), mixed)).toThrow(/assets` only/);
+	for (const data of [{ ...manifest(), builderCommit: "f".repeat(40) }, { ...manifest(), slot: { ...manifest().slot, commit: "bad" } }, mixed, { ...manifest(), kind: "dsh-runtime" }]) {
 		writeFileSync(input, JSON.stringify(data));
 		await expect(publishRelease(input, env, api as typeof fetch)).rejects.toThrow();
 		expect(calls).toBe(0);

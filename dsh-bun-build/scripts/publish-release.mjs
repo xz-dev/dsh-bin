@@ -37,7 +37,7 @@ export async function publishRelease(manifestPath, env = process.env, fetchImpl 
 	const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 	if (!/^(?:dsh-(?:v|live-|addon-office-v)|runtime-(?:v|live-)|addon-office-v|manager-v)/.test(manifest.tag ?? "")) fail(`not a dsh-bin tag: ${manifest.tag}`);
 	const prerelease = env.DSH_RELEASE_PRERELEASE === "true";
-	const latest = !prerelease && manifest.channel === "release" && Boolean(manifest.targets);
+	const latest = !prerelease && manifest.channel === "release" && Boolean(manifest.targets) && !manifest.tag.startsWith("addon-");
 	if (manifest.kind === "dsh-runtime") {
 		const identity = distribution({ channel: manifest.channel, upstreamVersion: manifest.upstream?.version, upstreamCommit: manifest.upstream?.commit, run: manifest.run, attempt: manifest.attempt, builderCommit: manifest.builderCommit });
 		if (identity.tag !== manifest.tag || identity.id !== manifest.id) fail("runtime manifest identity mismatch");

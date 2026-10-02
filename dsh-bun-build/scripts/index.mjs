@@ -63,6 +63,9 @@ export function appendBundle(index, manifest) {
 }
 
 export function appendAddon(index, manifest) {
+	// One shape only: publish-release uploads exactly these `assets`, so a manifest that also carries
+	// bundle fields (`targets`, `kind`) is refused before any API call or index write.
+	if (manifest.targets !== undefined || manifest.kind !== undefined || !manifest.assets || typeof manifest.assets !== "object") throw new Error("addon manifest must list `assets` only (no `targets`/`kind`)");
 	const identity = addonDistribution({ kitVersion: manifest.slot?.kitVersion, run: manifest.run, attempt: manifest.attempt, builderCommit: manifest.builderCommit });
 	if (identity.tag !== manifest.tag || identity.version !== manifest.version) throw new Error("addon manifest identity mismatch");
 	const list = index.addons.office;
