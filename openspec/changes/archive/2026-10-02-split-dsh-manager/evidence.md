@@ -1305,4 +1305,3 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
 - Windows 原生绿色日志：`/var/tmp/dsh-closeout/windows-native-green.log`；两阶段诊断与 red/green 日志：`/var/tmp/dsh-closeout/published-download-diagnosis/`。PR #5 合并前仍要求最终冻结差异的独立审查和三平台 CI，合并后由父会话再次运行 main 的发布检查。
 - 定时流程核对：真实上游 `upstream-check.mjs` 返回 `build:false`，最新 `dsh-v0.2.0-rc.2` 已在生产 runtime-index 中；发布流程测试 **8/8** 通过。仅此检测路径已实跑，真实 cron 首跑未发生，不声称已经观察。live 由明确 commit 手动发布，不擅自新增首发；双语发布说明补充定时 dry-run/手动 publish 的边界。
 - 主人明确选择 **同步并归档**。7 份 ADDED capability 作为主规格落地，**37 条需求、66 个场景和 Purpose 原文逐项保留**，没有新增行为约定；`openspec validate --specs --strict --no-interactive` 为 **7 passed / 0 failed**，change 严格校验通过。45 项任务全部已接受。归档目标为 `openspec/changes/archive/2026-10-02-split-dsh-manager/`，保留规划、规格、验收记录及 `.openspec.yaml`；另一会话的两个 change 不触碰。
-
