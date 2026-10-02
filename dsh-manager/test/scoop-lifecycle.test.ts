@@ -2,7 +2,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { hostTargetId } from "../../dsh-bun-build/scripts/targets.mjs";
 import { writeZip } from "../../dsh-bun-build/runtime/zip.ts";
@@ -18,7 +18,11 @@ function files(dir: string) {
 }
 
 test.skipIf(!hasZig)(`PS-SCOOP / DL-MANAGED-UPDATE / DL-MANAGED-SELF / DL-MANAGED-REMOVE: ${real ? "real Windows Scoop install upgrade uninstall" : "isolated Scoop package lifecycle"}`, async () => {
-	if (real && (!WIN || !process.env.SCOOP || !process.env.DSH_SCOOP_TEST_HOME || !Bun.which("scoop"))) throw new Error("real Scoop requires the isolated Windows workflow setup");
+	if (real) {
+		if (!WIN || !process.env.RUNNER_TEMP || !Bun.which("scoop")) throw new Error("real Scoop requires the isolated Windows workflow setup");
+		const isolatedHome = resolve(process.env.RUNNER_TEMP, "dsh-scoop-user");
+		if (process.env.DSH_SCOOP_TEST_HOME !== isolatedHome || process.env.SCOOP !== join(isolatedHome, "scoop")) throw new Error("real Scoop refuses a non-workflow HOME or Scoop root");
+	}
 	const i = newInstall(), fixture = tempDir("dsh-scoop-lifecycle-");
 	if (real) i.home = process.env.DSH_SCOOP_TEST_HOME!;
 	const local = join(i.home, "local"), env = { ...baseEnv(i), LOCALAPPDATA: local };
