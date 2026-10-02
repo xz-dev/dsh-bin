@@ -121,7 +121,7 @@ export async function artifactE2E({ product, candidate, accepted, digest, target
 		const metadata = JSON.parse(readFileSync(join(bundle, "bundle.json"), "utf8"));
 		if (metadata.id !== runtime.id || metadata.target !== target || metadata.launchProtocol !== 1 || metadata.kind !== "dsh-runtime" || metadata.schemaVersion !== 1) throw new Error("runtime archive identity mismatch");
 		const native = join(bundle, process.platform === "win32" ? "dsh-native.exe" : "dsh-native"), nativeBefore = readFileSync(native);
-		const env = { PATH: empty, HOME: home, USERPROFILE: home, LOCALAPPDATA: home, TMPDIR: root, TMP: root, TEMP: root, NO_COLOR: "1", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) };
+		const env = { PATH: empty, HOME: home, USERPROFILE: home, LOCALAPPDATA: home, APPDATA: home, TMPDIR: root, TMP: root, TEMP: root, NO_COLOR: "1", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) };
 		const run = (args) => checkedProcess([exe, ...args], home, env);
 		const version = await run(["--use", runtime.id, "--version"]);
 		if (!version.includes(runtime.upstream.version)) throw new Error(`runtime version mismatch: ${version}`);
