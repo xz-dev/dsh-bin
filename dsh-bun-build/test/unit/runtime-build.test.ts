@@ -11,6 +11,11 @@ import { hostTargetId, target } from "../../scripts/targets.mjs";
 const ROOT = resolve(import.meta.dir, "../..");
 const REPO = resolve(ROOT, "..");
 
+test("RL-OWNERSHIP: root holds two product directories, desc/ and openspec/; no generic scripts/, docs/ or install.sh", () => {
+	for (const dir of ["dsh-manager", "dsh-bun-build", "desc", "openspec"]) expect(existsSync(join(REPO, dir))).toBe(true);
+	for (const retired of ["scripts", "docs", "install.sh"]) expect(existsSync(join(REPO, retired))).toBe(false);
+});
+
 test("RL-OWNERSHIP: manager packaging scripts belong to dsh-manager, not the runtime build", () => {
 	for (const name of ["create-scoop-manifest.mjs", "publish-scoop-bucket.sh", "gentoo-ebuild.mjs", "gentoo-layout-check.sh"]) {
 		expect(existsSync(join(REPO, "dsh-manager/scripts", name))).toBe(true);
