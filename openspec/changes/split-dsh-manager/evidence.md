@@ -1286,3 +1286,10 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
   - windows-x64 首次下载 job 与删除前一样，在 Git Bash 步骤中无输出就 exit 1（删除前的 run 37017913881 也是如此）。Windows 上的下载、安装和运行已由 Scoop job 证明，这一项作为检查脚本的遗留问题列入残余风险。
 - 没有项目被权限或不可变规则阻塞，冻结清单已经全部清空。
 - 勾选 **9.5**。
+
+### 9.6 交付与验收
+
+- 交付报告（2026-10-02）已逐项给出：实现范围；各切片 red/green 证据的位置（本文件）；跨平台 CI、原生组合、shell 矩阵、组合 E2E、真实 Portage、真实 Scoop 和首次下载的记录；新发布地址（manager-v1.0.0、runtime-v0.1.7-rc.2-b3、runtime-v0.2.0-rc.2-b4、addon-office-v0.1.1-b2、releases 分支两份索引、scoop 分支 dsh.json、Gentoo 文件路径）；旧发布清理结果（7 个删除，90 个 URL 返回 404）。
+- 报告中明确列出的残余风险和未执行检查：windows-x64 首次下载 job 无输出失败（检查脚本问题，Windows 能力由 Scoop job 覆盖）；ARM64 Portage 和 Scoop、Windows ConPTY 交互、addon 的 PDF 转换、TUI 交互重启都没有执行；深度 E2E 只覆盖 Linux 和 Windows x64；此前接受的残余风险（最终身份检查到 unlink 之间的窗口、浅层原生 header 检查、断电持久性、初始化残留需手动恢复）；macOS 快照并发修复没有在实机上复现根因；schedule 尚未在真实 cron 下运行。
+- 用户回复 “ok”，确认验收（2026-10-02）。Gentoo ebuild 由用户自行加入 overlay。
+- 勾选 **9.6**。
