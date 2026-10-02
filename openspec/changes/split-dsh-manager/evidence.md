@@ -917,3 +917,46 @@ ebuild /var/tmp/dsh-74-gentoo/overlay/app-misc/dsh-bin/dsh-bin-1.0.1.ebuild unme
 - 父会话在 9605bd9 上跑完整验证：Zig 48/48，Bun 249 pass / 25 skip / 0 fail。**CI 36947891848 三平台全绿**：windows 217 pass。8 项 Windows helper 测试（包括两项复审回归）全部实际执行并通过。
 - **Windows 证据 = GitHub windows-2022 runner。用户已于 2026-10-02 确认它算作「真实 Windows」**（适用于 7.3/7.5/8.2）。
 - 勾选 **7.3**。
+
+## 7.5 Scoop 仅托管管理器
+
+### 实现与本地自动化 Green（尚未验收）
+
+- 范围仅 7.5；未改 manager Zig 源码、未改任务勾选、未运行发布脚本针对真实 bucket。用户 2026-10-02 明确同意 windows-2022 算真实 Windows，本切片已接入该 runner 的真实 Scoop 生命周期门禁；**本 worker 尚未取得原生 Windows 运行结果，不能据本地模拟或 cross-build 宣称 7.5 已验收。**
+- Red：先替换 Scoop 用例、保留旧实现，`TMPDIR=/var/tmp bun test ./test/scoop.test.ts` → **0 pass / 3 fail**（`/var/tmp/dsh-75-red.log`）。旧 generator 不读 manager-index，返回空对象、不拒绝损坏输入；旧发布器没有生成新 manager 清单，也没有移除 root-level 旧清单。
+- d902220：`create-scoop-manifest.mjs` 改读 `manager-index.json` schema 1 / versions，校验严格 SemVer、对应 `manager-v<version>` 身份、launch protocol、Windows 资产名/大小/SHA-256，按独立 SemVer 选最新版本、拒绝相同优先级歧义。仅生成 `dsh.json`，资产使用 `windows-x64|windows-arm64` 和索引提供的名字；不再生成 `dsh-live.json` / `dsh-office.json`。
+- 清单只提供 `dsh.exe` shim 及 BOM-free UTF-8、只读 `.dsh-manager-install.json`（`{"schema":1,"owner":"scoop"}`），与 Gentoo 共用已接受的 marker 格式。没有 persist、runtime/addon/dependency 或卸载 hook；用户内容仍由现有管理器写到 `%LOCALAPPDATA%/dsh-bin`，包版本目录不拥有它。
+- `publish-scoop-bucket.sh` 改从 releases 分支读取 manager-index，仅在显式运行时发布新 bucket；生成树替换掉旧 bucket 清单，兼容移除旧 root-level dsh/dsh-live/dsh-office 清单。测试只向新建的本地 bare repo 发布并验证幂等，未触碰现有远程 scoop 分支。该脚本的生产调用仍归 8.3/9 的发布切换。
+- e2eff32：新增 `test/scoop-lifecycle.test.ts`，本地默认跑隔离 package-layout 测试；真实 Windows job 设 `DSH_SCOOP_TEST=1`，同一用例改用真实 Scoop install/update/uninstall，不把手工复制模拟混同真实包管理器证据。
+- f652894：真实 PowerShell 执行清单 post_install，发现 POSIX pwsh 默认隐藏 dotfile，使用 Get-Item -LiteralPath -Force 修复；实测输出 marker 字节精确且 IsReadOnly=True。严格 prerelease 数字段前导零和残缺 build metadata 的坏输入也有拒绝用例。
+- 9fafff0：真实 Scoop opt-in 检查 RUNNER_TEMP/dsh-scoop-user 与其 scoop 子目录完全匹配；非 runner scratch HOME/Scoop root 直接拒绝，避免误用真实用户安装。
+- 本地 Green：`TMPDIR=/var/tmp PATH=/var/tmp/dsh-section4.4-validation/pwsh:$PATH bun test ./test/scoop.test.ts ./test/scoop-lifecycle.test.ts` → **5 pass / 0 fail / 71 断言**（`/var/tmp/dsh-75-targeted.log`）。本地生命周期 1.0.0 → 1.0.1 → uninstall，**57 个用户数据路径前后字节哈希完全相同**；本地 HTTP fixture 共 6 次请求，两次 managed self-update 均零额外请求。
+- `zig fmt --check src build.zig test/fake-native.zig`、`zig build -Dtarget=x86_64-windows-gnu --prefix /var/tmp/dsh-75-windows`、`bash -n scripts/publish-scoop-bucket.sh`、`git diff --check` 全通过。PyYAML 解析 ci.yml / scoop-check.yml，pwsh AST parser 解析两个 workflow run block 通过；PowerShell JSON argv 传递实测保留含空格路径。无 manager 源码改动，按任务契约未另跑 Zig unit suite / 全量 Bun。
+
+### 真实 Windows Scoop 门禁入口（等待父会话运行并补证）
+
+`.github/workflows/ci.yml` 新增 reusable `scoop` job，调用同 commit 的 `scoop-check.yml`；父会话推送最终提交后 dispatch **ci.yml** 即同时执行原三平台测试和 windows-2022 真实 Scoop 门禁。也可单独 dispatch **scoop-check.yml**。worker 未 push / gh / dispatch。
+
+Workflow 使用 checkout 的 Zig 0.15.2 构建真实 Windows manager 1.0.0 / 1.0.1；在 RUNNER_TEMP 下隔离 HOME、USERPROFILE、LOCALAPPDATA、APPDATA、XDG_CONFIG_HOME、SCOOP 和 SCOOP_GLOBAL，下载官方 Scoop 安装器。Hosted Windows 账号具管理员权限，所以 bootstrap 使用 `-RunAsAdmin` 允许**用户本地**安装；从不使用 `scoop --global`，不是声称非管理员 Windows 账户验收。Scoop bootstrap 需要外网；dsh manager 的两个 ZIP、manifest 和 runtime/addon 索引/资产全部由本 checkout 的本地 fixture 提供，不要求提前发布 release。
+
+真实用例的包命令为：
+
+```powershell
+scoop install <scratch>/dsh.json  # manifest 1.0.0，file:// ZIP，正常 SHA-256 校验
+scoop prefix dsh
+# 验证下列场景并逐路径保存 data-root 哈希；原地改本地 manifest 为 1.0.1
+scoop update dsh                 # 从 install 记录中的本地 manifest 读取新版本，真实包版本目录改变
+scoop prefix dsh
+scoop uninstall dsh
+```
+
+不使用 `--force` / `--skip-hash-check`，原包命令退出非零即失败。用例通过 realpath 读取真实版本目录，断言 1.0.0 和 1.0.1 不同（不能只观察 Scoop current 链接），卸载后 shim/入口消失。
+
+| 场景 | 本地已执行断言 / Windows 待执行同一断言 |
+|---|---|
+| PS-SCOOP | manager info 为 scoop，shim info 也使用 LOCALAPPDATA/dsh-bin；包升级真实版本目录改变、数据根不变；两版独立 manager 的 --version 验证身份 |
+| DL-MANAGED-UPDATE | manager 从受控 HTTP 源原生 install 两版 runtime、install office addon、select 固定版本/addon、--use 临时切换、snapshot new --empty 成功；升级后本地 list/snapshot list 与实际启动仍见原选择和 addon；包树 hashes 不变、无相邻 data root 或 addon 目录 |
+| DL-MANAGED-SELF | 初始化前及包升级后 self-update 均非零且提示 scoop update dsh；请求记录零增量，初始化前不创建 data root |
+| DL-MANAGED-REMOVE | 升级/卸载前后 bundles/addons/snapshots/selection/home 配置、credential、session 文件及所有 data-root 路径的哈希完全相同；卸载只移除包与 shim |
+
+残余边界：本地 package layout 测试与 Windows cross-build 不是原生 Scoop 证据；必须父会话取得真实 Windows job green 和独立复审后才能勾选 7.5。该 Windows 门禁只运行 x64，arm64 仅清单覆盖。Runtime 是真实执行的 Zig fake-native bundle，office 是有效格式 addon fixture，不是 upstream 应用/LibreOffice；组合真实应用/plugin 留给 8.1。未验证尚未发布的 manager asset URL 或生产 bucket 切换；官方下载 Scoop bootstrap 的网络或上游变动可能让门禁失败，失败必须报告，不静默跳过。既有文件系统最后一次 identity-check 到 syscall 的同用户竞争/断电持久性边界维持 design.md 记录，不宣称消除。
