@@ -1293,3 +1293,16 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
 - 报告中明确列出的残余风险和未执行检查：windows-x64 首次下载 job 无输出失败（原因未定位；Scoop 只覆盖托管路径，便携首次下载复验待完成）；ARM64 Portage 和 Scoop、Windows ConPTY 交互、addon 的 PDF 转换、TUI 交互重启都没有执行；深度 E2E 只覆盖 Linux 和 Windows x64；此前接受的残余风险（最终身份检查到 unlink 之间的窗口、浅层原生 header 检查、断电持久性、初始化残留需手动恢复）；macOS 快照并发修复没有在实机上复现根因；schedule 尚未在真实 cron 下运行。
 - 用户回复 “ok”，确认验收（2026-10-02）。Gentoo ebuild 由用户自行加入 overlay。
 - 勾选 **9.6**。
+
+### 2026-10-02 收尾：发布便携检查闭环与规范归档
+
+- 主人要求对完成结论负责，继续补齐实际缺口；本轮范围固定为 Windows 便携首次下载验收、主规范同步及归档，不将 live 首发、未来 cron 触发、临时文件清理或用户 overlay 集成扩展为新任务。
+- 原检查失败不能归为已知脚本问题，也不能用 Scoop 托管路径代替便携验收。保留 9.3–9.6 的历史结果，更正未经证实的归因，并在此追加闭环证据。
+- 根因及修复：原生 jq 的 CRLF 会在 Bash 读取的 SHA 和 runtime ID 尾部留下 `\r`；GNU checksum 按含反斜杠的原生 Windows 文件名输出时会在摘要前加转义标记。两个机制分别用真实工具与执行实际 workflow 的 fixture 复现。第一版 e1c790e 的 `--binary` 在真实 Ubuntu 上不支持，且 Windows 仍在 SHA 比较失败，发布检查 37024229018 被拒绝；未合并、未放宽断言。
+- 修正候选 **23da65c**：两处 jq 标量输出使用兼容旧版 jq 的 CRLF 规范化；sha256sum/shasum 从 stdin 计算摘要，避免文件名转义。大小、SHA-256、真实应用启动、已安装最新 runtime、显式 runtime 版本及隔离 HOME 断言全部保留，失败诊断指出目标/阶段/退出码而不打印凭据。
+- Red/green：新增旧版 jq 和反斜杠 RUNNER_TEMP 回归在第一版 workflow 上为 **5 pass / 2 fail**；修正后 first-download 与既有 release 测试为 **15 pass / 0 fail、133 assertions**。负例证明坏大小、坏哈希和输出后非零退出的 jq 都在管理器启动前失败。测试使用现有 Bun 框架，不新增依赖。
+- **真实已发布制品验收 37026525134（head 23da65c）四项全部成功**：Ubuntu/Linux x64、macOS arm64、Windows x64 便携首次下载及真实 Scoop。Windows job 110902456291 明确记录：从只有 manager 1.0.0 的空安装下载 `0.2.0-rc.2-b4.1.g243621d7`（windows-x64-modern），启动原始 plugin 命令，profile 位于隔离数据根内，本地 list 显示 selected/latest，`--use … --version` 返回 `0.2.0-rc.2`。本地 fixture 不冒充原生证据。
+- Windows 原生绿色日志：`/var/tmp/dsh-closeout/windows-native-green.log`；两阶段诊断与 red/green 日志：`/var/tmp/dsh-closeout/published-download-diagnosis/`。PR #5 合并前仍要求最终冻结差异的独立审查和三平台 CI，合并后由父会话再次运行 main 的发布检查。
+- 定时流程核对：真实上游 `upstream-check.mjs` 返回 `build:false`，最新 `dsh-v0.2.0-rc.2` 已在生产 runtime-index 中；发布流程测试 **8/8** 通过。仅此检测路径已实跑，真实 cron 首跑未发生，不声称已经观察。live 由明确 commit 手动发布，不擅自新增首发；双语发布说明补充定时 dry-run/手动 publish 的边界。
+- 主人明确选择 **同步并归档**。7 份 ADDED capability 作为主规格落地，**37 条需求、66 个场景和 Purpose 原文逐项保留**，没有新增行为约定；`openspec validate --specs --strict --no-interactive` 为 **7 passed / 0 failed**，change 严格校验通过。45 项任务全部已接受。归档目标为 `openspec/changes/archive/2026-10-02-split-dsh-manager/`，保留规划、规格、验收记录及 `.openspec.yaml`；另一会话的两个 change 不触碰。
+
