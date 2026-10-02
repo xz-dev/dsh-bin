@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "versions": [
+    {
+      "version": "1.0.0",
+      "tag": "manager-v1.0.0",
+      "launchProtocols": [
+        1
+      ],
+      "assets": {
+        "linux-x64": {
+          "name": "manager-linux-x64.zip",
+          "size": 1188984,
+          "sha256": "eb8095a3472516f3aa0e91c82115ac9f982c4393622643d5876ad21eed94729d"
+        },
+        "linux-arm64": {
+          "name": "manager-linux-arm64.zip",
+          "size": 1097504,
+          "sha256": "b72d6d58ca80e2cce215ea2a9a263448851c5603c87675db4d50a67397df346a"
+        },
+        "darwin-x64": {
+          "name": "manager-darwin-x64.zip",
+          "size": 1351608,
+          "sha256": "27f406f913c7b287c026df61a12f288a0ccd8fe0f5ca3ee445936d53f5bf9356"
+        },
+        "darwin-arm64": {
+          "name": "manager-darwin-arm64.zip",
+          "size": 1343272,
+          "sha256": "592540f531dd4bc352af93ca2f6725a2ed75b9b53732d845d079dee7bc5f56c9"
+        },
+        "windows-x64": {
+          "name": "manager-windows-x64.zip",
+          "size": 1408624,
+          "sha256": "a360c80662e27fe87ea025202fa1ee2ddb3e6346e0e2afe3f92697d280b2d3e9"
+        },
+        "windows-arm64": {
+          "name": "manager-windows-arm64.zip",
+          "size": 1297008,
+          "sha256": "6dd7c5819df2ffe34125f8ae324ba46ae12c4a0bc7fc0b225dff5fdc1c93a3eb"
+        }
+      }
+    }
+  ]
+}
