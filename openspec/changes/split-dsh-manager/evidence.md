@@ -1178,7 +1178,32 @@ gh workflow run ci.yml --ref feat/split-dsh-manager -f release_dry_run=true -f a
 
 - 映射（reviewer 1f80465a，`/var/tmp/dsh-86/mapping.md`，源码快照 129fe38）：66 个场景全部映射，没有遗漏、重复或多余的 ID。分类：T 63 / P 0 / W 1 / G 0 / S9 2（DL-MANAGED-UPDATE 和 DL-REAL-E2E 的线上发布后复验留到第 9 节）。
 - 唯一的 W 是 RL-OWNERSHIP：原测试只检查打包脚本的归属。c5382e5 增加根目录布局断言（两个业务目录加 desc/、openspec/，且不存在根 scripts/、docs/、install.sh）；临时创建根 `scripts/` 时测试失败，删除后通过。
-- 待完成：一次跨切片的最终独立审查（不重复已验收切片的逐项复审），以及 CI。
+- **跨切片最终独立审查 07d710a4：结论 OK with notes。** 审查范围是 c920b31 相对 a0599a2，包含旧自动化的删除；按 8.6 的要求，只看单个切片复审覆盖不到的问题：
+  - manager 与 runtime 之间：启动协议（`DSH_MANAGER_LAUNCH`、launchProtocol=1、bundle.json v1）、runtime/manager/addon 三种索引的 schema、各 workflow 写出的资产名与 manager 和 Gentoo/Scoop 生成器读取的名字、D10 tag 家族，全部一致；
+  - 293 个相对源码引用全部有效；删除旧工作流和脚本后，除历史报告外没有残留引用；
+  - 抽查后续切片的句柄固定、可信哈希和原子替换边界，没有发现削弱前面切片的安全保护；
+  - 随机抽查 RB-COMPLETION、PS-OVERRIDE、MC-EMPTY、MC-SELF-FAIL、SC-CURRENT 五行映射，对应测试确实断言了 THEN；
+  - 本机测试：`zig build test` 48/48；manager Bun 258 pass / 33 skip / 0 fail（3514 assertions）；runtime Bun 99 pass / 18 skip / 0 fail（748 assertions）；另外独立重跑真实 CI 制品的组合 E2E，1 pass（62952 assertions）。
+  - P2 ×2 已由父会话在 db3ddbe 修复：删除不再被调用的 `guardInUse()`（runtime/usage-claim.ts）；更正 select.zig 中描述 channel 来源的注释。
+- skip 说明：跳过的测试都是 OS 不适用、缺少真实 app/addon，或需要显式 opt-in（组合 E2E 只在提供 `DSH_COMBINED_ARTIFACTS` 时运行，在 CI 中由 `combined-artifact-e2e` job 实际执行），均不计为通过。DL-MANAGED-UPDATE 和 DL-REAL-E2E 的线上发布后复验属于第 9 节（9.3/9.5）。
+- **CI 36992471820（db3ddbe）全绿，40 个 job**：三平台 test、Scoop、cross-fed release dry run（manager combination 6/6，runtime combination 12/12，8.2 shell 矩阵）、`combined-artifact-e2e` 的 Linux 和 Windows。
+- 勾选 **8.6**。
+
+### 9.1 父会话验收
+
+- 实现：ba45785（`cutover-freeze.mjs` 冻结旧 release，`cutover-delete.mjs` 按固定 ID 删除，加上 fixture 测试）、3a89bd1、ab47432；复审修复 d6caadf、0094ea0、5c1c289。
+- 行为：
+  - freeze 列出全部 release（含 draft 和 prerelease，按页翻完），只选旧家族 `dsh-v*`、`dsh-live-*`、`dsh-addon-*`。新家族永不选入；不认识的 tag 单独列出，不安排删除。同时把旧发现入口（旧 index.json、Scoop dsh-live/dsh-office、README 链接）作为数据记录下来。
+  - delete 只按冻结文件里的数字 ID 删除，删除过程中从不重新列举。每删一项前先按 ID 重新读取，tag 改变或变成新家族就拒绝。必须提供 `--expect-sha256`；默认是 dry run。遇到 401/403/422 或明确的 immutable 拒绝，立即停止破坏性步骤，记录 done/failed/not-attempted，不更换认证，也不改仓库设置。404 记为 already-deleted 后继续；单项 5xx 记录后继续，最后以非零退出。不删除 Git tag。
+- fixture 演练：分页超过 100 个 release、draft、未知 tag、新旧家族混合、ID 被改成新家族、404、500、403、422/immutable、摘要不符、dry run 零调用，都有测试。认证拒绝后的停止规则有 red/green（故意改坏时 7 pass / 2 fail）。修复后定向测试 26 pass / 0 fail（574 assertions）。
+- **对真实仓库的只读演练**（只用 GET，零 mutation）：7 个旧 release（release 4 / live 2 / addon 1），90 个资产，9,453,669,026 bytes；新家族 0，未知 tag 0；摘要 `fac1d952c9713b238cfa3e2040ae80a525835119a01a3c099841a7750d976647`，worker 与两位复审员各自独立得到相同结果。删除 dry run：计划 7 项，零 API 调用。**这只是演练清单，不是授权删除的清单**：9.2 在 main 上暂停旧自动化之后要重新冻结。
+- 独立复审 ec46665a：结论 BLOCK。
+  - P1：GitHub 只向有 push 权限的账号列出 draft，权限不足的 token 会悄悄产生不完整的清单。d6caadf 在列举前要求 `permissions.push/admin/maintain`，否则拒绝且不生成清单；0094ea0 改为全部检查完成后才以 `O_EXCL` 创建输出，已有同名文件保持原样。
+  - P2：拒绝响应的 body 读取失败时，原因里丢了 HTTP 状态。d6caadf 和 5c1c289 保留操作名和状态码。
+- 聚焦复审 980fc3f2（也覆盖新增的 schedule）：结论 OK with notes。确认上述两项已关闭；schedule 下所有 job 只读，publish 只能由 main 上的 `workflow_dispatch` 触发。两项 P2 由父会话在 cefceac 修复：
+  - 上游 tag 改为严格 SemVer，格式不合法的 tag（如 `dsh-v99.99.99-rc..1`、`dsh-v01.0.0`）不能盖过真正的最新版本，回归测试去掉修复时失败（7 pass / 1 fail）、恢复后通过；
+  - runtime-index.json 尚未发布时，schedule 只输出“需要先手动发布”，不再每 6 小时重建全部 target。对真实仓库运行，当前返回 `bootstrap:true`、`upstream:dsh-v0.2.0-rc.2`。
+- 勾选 **9.1**。
 
 ### 9.2 准备：上游跟踪决定（用户 2026-10-02）
 
