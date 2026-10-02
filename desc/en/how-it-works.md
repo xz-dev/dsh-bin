@@ -30,7 +30,7 @@ The manager's controlled application environment directs known caches and tempor
 
 ## Release identities
 
-**These new release families are not published yet.** Do not substitute an existing old archive. Their independently generated indexes live on the `releases` branch:
+Their independently generated indexes live on the `releases` branch:
 
 | Product | Identity | Index |
 |---|---|---|

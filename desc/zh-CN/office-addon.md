@@ -2,7 +2,7 @@
 
 [README](../../README.zh-CN.md) · [English](../en/office-addon.md)
 
-`office-to-pdf` 和 `skill-office` 插件需要 LibreOffice Kit，它作为单独 addon 发布。没有兼容的已安装 addon 时，这两个插件不可用，其他应用功能仍可用。新格式 office addon 尚未发布，以下命令用于运行包索引提供兼容 addon 后。
+`office-to-pdf` 和 `skill-office` 插件需要 LibreOffice Kit，它作为单独 addon 发布。没有兼容的已安装 addon 时，这两个插件不可用，其他应用功能仍可用。
 
 ## 安装、查看和卸载
 

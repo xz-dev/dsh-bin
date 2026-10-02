@@ -2,10 +2,6 @@
 
 [README](../../README.zh-CN.md) · [English](../en/install.md)
 
-## 发布状态
-
-新的 `manager-v*`、`runtime-v*` / `runtime-live-*` 和 `addon-office-v*` 发布尚未上线；仅含管理器的 Gentoo/Scoop 包也待发布。现有 Releases 和 bucket 清单不提供新布局。以下步骤描述新制品发布后的安装，不是旧发布的有效下载步骤。
-
 ## 下载单个管理器
 
 1. 在 [Releases 页面](https://github.com/xz-dev/dsh-bin/releases)选择 `manager-v<semver>` 发布。不要用仓库全局 Latest 标签判断运行包版本。
@@ -63,7 +59,7 @@ dsh manager info
 
 ## 托管包
 
-以下命令用于仅含管理器的新包发布后。包只安装管理器、拥有权标记和入口/shim，**不捆绑运行包或 addon**。
+这些包只安装管理器、拥有权标记和入口/shim，**不捆绑运行包或 addon**。
 
 ### Gentoo
 
@@ -78,7 +74,7 @@ emerge --ask --update app-misc/dsh-bin
 
 ### Scoop
 
-新的 `dsh.json` 发布到 `scoop` bucket 分支后：
+bucket 位于本仓库的 `scoop` 分支：
 
 ```powershell
 $scoopRoot = (Resolve-Path (Join-Path (scoop prefix scoop) '..\..\..')).Path

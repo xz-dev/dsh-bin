@@ -11,7 +11,7 @@ English | [简体中文](README.zh-CN.md)
 
 ## Install
 
-**Release status:** the new manager/runtime release families and manager-only Gentoo/Scoop packages are not published yet. Existing releases and bucket manifests are not the new installation described here. Use the instructions below once the new assets are published.
+**Windows (Scoop):** `scoop install dsh-bin/dsh` after adding the bucket ([details](desc/en/install.md#scoop)). **Gentoo:** `emerge app-misc/dsh-bin` from your overlay ([details](desc/en/install.md#gentoo)).
 
 Download `manager-<target>.zip` from a **`manager-v<semver>`** [release](https://github.com/xz-dev/dsh-bin/releases), verify its size and SHA-256 against `manager-index.json`, then extract its single `dsh` file (`dsh.exe` on Windows) into a directory you own. Targets: `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`, `windows-x64`, `windows-arm64`.
 
