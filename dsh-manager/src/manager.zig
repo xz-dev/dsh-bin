@@ -23,7 +23,7 @@ pub const help_text =
     \\  snapshot new [--use <version>] [--target <id> | --empty] [--name <alias>] | remove <id>... | list [--json]
     \\                                                            plugin-runtime snapshots
     \\  clean                                                     remove interrupted downloads and leftovers (offline)
-    \\  self-update [--force]                                     prepare a verified manager candidate (not installed yet)
+    \\  self-update [--force]                                     update this manager (Windows: hands off to a helper)
     \\  completion script|install|uninstall <bash|zsh|fish|pwsh|powershell>
     \\                                                            shell completion (--dry-run; PowerShell: --profile <path>)
     \\  info                                                      install mode, data root and application home
