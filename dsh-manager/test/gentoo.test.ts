@@ -4,34 +4,33 @@ import { join } from "node:path";
 import { gentooEbuild, gentooVersion } from "../scripts/gentoo-ebuild.mjs";
 
 const TPL = readFileSync(join(import.meta.dir, "../packaging/gentoo/dsh-bin-9999.ebuild.in"), "utf8");
-const a = (name: string, c: string) => ({ name, size: 7, sha256: c.repeat(64) });
+const asset = (name: string, c: string) => ({ name, size: 7, sha256: c.repeat(64) });
+const entry = (version: string) => ({ version, tag: `manager-v${version}`, launchProtocols: [1], assets: {
+	"linux-x64": asset("manager-linux-x64.zip", "1"), "linux-arm64": asset("manager-linux-arm64.zip", "2"),
+} });
 
-test("9.2: release versions map to ordered Gentoo versions", () => {
-	expect(gentooVersion("0.1.7-rc.2-xz.5.1.gabcdef12")).toBe("0.1.7_rc2_p5");
-	expect(gentooVersion("0.2.0-xz.9.2.gabcdef12")).toBe("0.2.0_p9");
-	expect(() => gentooVersion("live.4878cda-xz.1.1.gabcdef12")).toThrow();
+test("7.4: manager SemVer maps to Gentoo PV independently of runtime builds", () => {
+	expect(gentooVersion("1.2.0-rc.2")).toBe("1.2.0_rc2");
+	expect(gentooVersion("1.10.0+repair")).toBe("1.10.0");
+	expect(() => gentooVersion("1.0.0-xz.9.1.gabcdef12")).toThrow();
+	expect(() => gentooVersion("01.0.0")).toThrow();
 });
 
-test("9.2: ebuild pins the newest release and its pinned office addon; Manifest lists every SRC_URI file", () => {
-	const index = {
-		channels: {
-			release: [
-				{ seq: 1, tag: "dsh-v0.1.7-rc.2-xz.1.1.g00000001", version: "0.1.7-rc.2-xz.1.1.g00000001", addons: { office: { pinned: "0.1.1-xz.1.1.g00000001" } }, assets: {} },
-				{ seq: 2, tag: "dsh-v0.1.7-rc.2-xz.4.1.g00000004", version: "0.1.7-rc.2-xz.4.1.g00000004", addons: { office: { pinned: "0.1.1-xz.1.1.g00000001" } }, assets: { "linux-x64-baseline": a("dsh-linux-x64-baseline.zip", "1"), "linux-arm64": a("dsh-linux-arm64.zip", "2") } },
-			],
-			live: [],
-		},
-		addons: { office: [{ seq: 1, tag: "dsh-addon-office-v0.1.1-xz.1.1.g00000001", version: "0.1.1-xz.1.1.g00000001", assets: { linux: a("dsh-addon-office-linux.zip", "3") } }] },
-	};
-	const r = gentooEbuild(index, TPL);
-	expect(r.pv).toBe("0.1.7_rc2_p4");
-	expect(r.ebuild).toContain('MY_TAG="dsh-v0.1.7-rc.2-xz.4.1.g00000004"');
-	expect(r.ebuild).toContain('OFFICE_VERSION="0.1.1-xz.1.1.g00000001"');
-	expect(r.ebuild).toContain("IUSE=\"office\"");
-	expect(r.ebuild).toContain(".portage.managed.lock");
+test("PS-MANAGED / DL-MANAGED-UPDATE: Gentoo package owns only newest manager, marker and entry", () => {
+	const r = gentooEbuild({ schema: 1, versions: [entry("1.9.0"), entry("1.10.0-rc.1"), entry("1.10.0")] }, TPL);
+	expect(r.pv).toBe("1.10.0"); expect(r.ebuild).toContain('MY_TAG="manager-v1.10.0"');
+	expect(r.ebuild).toContain(".dsh-manager-install.json"); expect(r.ebuild).toContain('"owner":"portage"');
+	expect(r.ebuild).toContain("doexe root/dsh"); expect(r.ebuild).toContain("dosym -r /usr/lib/dsh-bin/dsh /usr/bin/dsh");
+	for (const old of ["OFFICE", ".portage.managed.lock", "linux-x64-baseline", 'IUSE="office"', "cp -a root/."]) expect(r.ebuild).not.toContain(old);
 	expect(r.ebuild).not.toContain("@");
-	const srcNames = [...r.ebuild.matchAll(/-> (\S+)/g)].map((m) => m[1].replace("${MY_TAG}", "dsh-v0.1.7-rc.2-xz.4.1.g00000004").replace("${OFFICE_TAG}", "dsh-addon-office-v0.1.1-xz.1.1.g00000001"));
-	const distNames = r.manifest.trim().split("\n").map((l) => l.split(" ")[1]);
-	expect(distNames.sort()).toEqual(srcNames.sort());
-	expect(r.manifest).toContain(`SHA256 ${"3".repeat(64)}`);
+	const srcNames = [...r.ebuild.matchAll(/-> (\S+)/g)].map(m => m[1].replace("${MY_TAG}", "manager-v1.10.0"));
+	expect(r.manifest.trim().split("\n").map(l => l.split(" ")[1]).sort()).toEqual(srcNames.sort());
+	expect(r.manifest.trim().split("\n")).toHaveLength(2);
+});
+
+test("7.4: invalid manager identity or missing Linux asset refuses packaging", () => {
+	for (const e of [{ ...entry("1.0.0"), tag: "../bad" }, { ...entry("1.0.0"), launchProtocols: [2] }, { ...entry("1.0.0"), assets: {} },
+		{ ...entry("1.0.0"), assets: { "linux-x64": asset("$(touch bad).zip", "1"), "linux-arm64": asset("ok.zip", "2") } }]) {
+		expect(() => gentooEbuild({ schema: 1, versions: [e] }, TPL)).toThrow();
+	}
 });

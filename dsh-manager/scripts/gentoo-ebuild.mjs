@@ -1,38 +1,40 @@
-// Fill packaging/gentoo/dsh-bin-9999.ebuild.in for the newest release-channel entry (9.2): writes
-// `dsh-bin-<pv>.ebuild` and the matching `Manifest` DIST lines (SHA-256 from the index; Gentoo Manifests
-// also want BLAKE2B/SHA512, which `ebuild … manifest` adds after downloading).
-// usage: bun scripts/gentoo-ebuild.mjs <index.json> <out-dir>
+// Fill the manager-only Gentoo template from manager-index.json (schema 1).
+// Asset filenames come from the index, not a runtime asset naming convention.
+// usage: bun scripts/gentoo-ebuild.mjs <manager-index.json> <out-dir>
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-/** Gentoo PV from a dsh-bin release version: 0.1.7-rc.2-xz.5.1.gabcdef12 → 0.1.7_rc2_p5 */
+/** Gentoo PV for release / alpha.N / beta.N / rc.N manager SemVer; other prereleases refuse. */
 export function gentooVersion(version) {
-	const m = /^(\d+\.\d+\.\d+)(?:-(alpha|beta|rc)\.?(\d+))?-xz\.(\d+)\.\d+\.g[0-9a-f]{8}$/.exec(version);
+	const n = "(0|[1-9][0-9]*)";
+	const m = new RegExp(`^${n}\\.${n}\\.${n}(?:-(alpha|beta|rc)\\.${n})?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$`).exec(version);
 	if (!m) throw new Error(`cannot map ${version} to a Gentoo version`);
-	return `${m[1]}${m[2] ? `_${m[2]}${m[3]}` : ""}_p${m[4]}`;
+	return `${m[1]}.${m[2]}.${m[3]}${m[4] ? `_${m[4]}${m[5]}` : ""}`;
 }
 
 export function gentooEbuild(index, template) {
-	const rel = [...index.channels.release].sort((a, b) => b.seq - a.seq)[0];
-	if (!rel) throw new Error("no release-channel entry");
-	const addon = index.addons.office.find((a) => a.version === rel.addons?.office?.pinned);
-	if (!addon) throw new Error(`pinned office addon ${rel.addons?.office?.pinned} is not in the index`);
-	const pv = gentooVersion(rel.version);
-	const ebuild = template.replaceAll("@TAG@", rel.tag).replaceAll("@OFFICE_TAG@", addon.tag).replaceAll("@OFFICE_VERSION@", addon.version);
-	const dist = [
-		[`${rel.tag}-linux-x64-baseline.zip`, rel.assets["linux-x64-baseline"]],
-		[`${rel.tag}-linux-arm64.zip`, rel.assets["linux-arm64"]],
-		[`${addon.tag}-linux.zip`, addon.assets.linux],
-	].map(([name, a]) => {
-		if (!a) throw new Error(`${name}: asset missing from the index`);
-		return `DIST ${name} ${a.size} SHA256 ${a.sha256}`;
+	if (index.schema !== 1 || !Array.isArray(index.versions) || !index.versions.length) throw new Error("no manager-index schema 1 versions");
+	for (const e of index.versions) {
+		gentooVersion(e.version);
+		if (e.tag !== `manager-v${e.version}` || !/^manager-v[0-9A-Za-z.+-]+$/.test(e.tag)) throw new Error("invalid manager identity");
+	}
+	const entries = [...index.versions].sort((a, b) => Bun.semver.order(b.version, a.version));
+	for (let i = 1; i < entries.length; i++) if (Bun.semver.order(entries[i - 1].version, entries[i].version) === 0) throw new Error("ambiguous manager version");
+	const manager = entries[0], pv = gentooVersion(manager.version);
+	if (!manager.launchProtocols?.includes(1)) throw new Error("incompatible manager protocol");
+	let ebuild = template.replaceAll("@TAG@", manager.tag);
+	const dist = [["linux-x64", "AMD64"], ["linux-arm64", "ARM64"]].map(([target, arch]) => {
+		const a = manager.assets?.[target];
+		if (!a || !/^[0-9A-Za-z][0-9A-Za-z._+-]*\.zip$/.test(a.name) || !Number.isSafeInteger(a.size) || a.size <= 0 || !/^[0-9a-fA-F]{64}$/.test(a.sha256)) throw new Error(`${target}: invalid manager asset`);
+		ebuild = ebuild.replaceAll(`@${arch}_ASSET@`, a.name);
+		return `DIST ${manager.tag}-${target}.zip ${a.size} SHA256 ${a.sha256}`;
 	});
 	return { pv, ebuild, manifest: `${dist.join("\n")}\n` };
 }
 
 if (import.meta.main) {
 	const [indexPath, out] = process.argv.slice(2);
-	if (!indexPath || !out) throw new Error("usage: gentoo-ebuild.mjs <index.json> <out-dir>");
+	if (!indexPath || !out) throw new Error("usage: gentoo-ebuild.mjs <manager-index.json> <out-dir>");
 	const tpl = readFileSync(join(import.meta.dir, "../packaging/gentoo/dsh-bin-9999.ebuild.in"), "utf8");
 	const r = gentooEbuild(JSON.parse(readFileSync(indexPath, "utf8")), tpl);
 	mkdirSync(out, { recursive: true });
