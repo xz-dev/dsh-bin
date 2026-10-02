@@ -15,14 +15,14 @@ const asset = (id: number) => ({ id, name: `file-${id}.zip`, size: 3, browser_do
 const releases = [release(1, "dsh-v1"), release(2, "dsh-live-old", { prerelease: true }), release(3, "dsh-addon-office-v1", { draft: true }), release(4, "manager-v1"), release(5, "runtime-v1"), release(6, "runtime-live-new"), release(7, "addon-office-v1"), release(8, "manual-note"), ...Array.from({ length: 94 }, (_, n) => release(9 + n, `manager-v${n + 2}`))];
 const assets = Array.from({ length: 101 }, (_, n) => asset(100 + n));
 
-function fixture({ order = releases, failures = {} as Record<string, number>, changed = {} as Record<number, object>, changedAssets = {} as Record<number, object[]>, gone = [] as number[], network = "" } = {}) {
+function fixture({ order = releases, failures = {} as Record<string, number>, messages = {} as Record<string, string>, changed = {} as Record<number, object>, changedAssets = {} as Record<number, object[]>, gone = [] as number[], network = "" } = {}) {
 	const calls: string[] = [], deleted: number[] = [];
 	const api = async (input: any, options: any = {}) => {
 		const url = new URL(String(input)), method = options.method ?? "GET", path = url.pathname.replace("/repos/fixture/repo", ""), call = `${method} ${path}`;
 		calls.push(call);
 		expect(options.redirect).toBe("error");
 		if (call === network) throw new Error("fixture network failure");
-		if (failures[call]) return new Response("blocked", { status: failures[call] });
+		if (failures[call]) return new Response(messages[call] ?? "blocked", { status: failures[call] });
 		const page = Number(url.searchParams.get("page") ?? "1");
 		if (path === "/releases" && method === "GET") return Response.json(order.slice((page - 1) * 100, page * 100));
 		const items = path.match(/^\/releases\/(\d+)\/assets$/);
@@ -109,6 +109,9 @@ test("DL-CLEANUP-BLOCKED: 401/403/422 stop immediately without auth/settings fal
 		expect(f.deleted).toEqual([]); expect(result.failed).toHaveLength(1); expect(result.failed[0].reason).toContain(`HTTP ${status}`);
 		expect(result.notAttempted.map((r: any) => r.id)).toEqual([2, 3]); expect(f.calls).toEqual(method === "GET" ? ["GET /releases/1"] : ["GET /releases/1", "GET /releases/1/assets", "GET /releases/1/assets", "DELETE /releases/1"]);
 	}
+	const refusal = fixture({ failures: { "DELETE /releases/1": 409 }, messages: { "DELETE /releases/1": "Release immutable: deletion blocked" } });
+	const blocked = await deleteFrozen(inventory, inventory.sha256, env, refusal.api, true);
+	expect(blocked.failed[0].reason).toContain("immutable"); expect(blocked.notAttempted).toHaveLength(2); expect(refusal.deleted).toEqual([]);
 	const f = fixture({ changed: { 1: release(1, "dsh-v1", { immutable: true }) } });
 	const result = await deleteFrozen(inventory, inventory.sha256, env, f.api, true);
 	expect(result.failed).toEqual([]); expect(f.deleted).toEqual([1, 2, 3]); expect(result.notAttempted).toEqual([]);

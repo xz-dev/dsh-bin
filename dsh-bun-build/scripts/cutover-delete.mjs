@@ -30,13 +30,16 @@ export async function deleteFrozen(inventory, expected, env = process.env, fetch
 	for (const frozen of inventory.releases) {
 		const item = result.notAttempted.shift();
 		let stop = false;
+		const refused = async (response, operation) => {
+			const message = (await response.text()).slice(0, 2000);
+			stop = [401, 403, 422].includes(response.status) || /immutable/i.test(message);
+			throw new Error(`${operation}: HTTP ${response.status}${message ? `: ${message}` : ""}`);
+		};
 		try {
 			const current = await request(frozen.id, "GET");
 			if (current.status === 404) result.done.push({ id: frozen.id, tag: frozen.tag, status: "already-deleted" });
-			else if (!current.ok) {
-				stop = [401, 403, 422].includes(current.status);
-				throw new Error(`GET release ${frozen.id}: HTTP ${current.status}`);
-			} else {
+			else if (!current.ok) await refused(current, `GET release ${frozen.id}`);
+			else {
 				const release = await current.json();
 				if (release.id !== frozen.id || release.tag_name !== frozen.tag || !["release", "live", "addon"].includes(releaseFamily(release.tag_name))) {
 					stop = true;
@@ -48,7 +51,7 @@ export async function deleteFrozen(inventory, expected, env = process.env, fetch
 				const assets = [];
 				for (let page = 1; ; page++) {
 					const response = await request(`${frozen.id}/assets?per_page=100&page=${page}`, "GET");
-					if (!response.ok) { stop = [401, 403, 422].includes(response.status); throw new Error(`GET assets for release ${frozen.id}: HTTP ${response.status}`); }
+					if (!response.ok) await refused(response, `GET assets for release ${frozen.id}`);
 					const batch = await response.json();
 					if (!Array.isArray(batch)) throw new Error(`invalid assets for release ${frozen.id}`);
 					assets.push(...batch.map(listedAsset));
@@ -58,7 +61,7 @@ export async function deleteFrozen(inventory, expected, env = process.env, fetch
 				if (snapshot(assets) !== snapshot(frozen.assets)) { stop = true; throw new Error(`release ${frozen.id} assets changed; refusing deletion outside frozen list`); }
 				const deleted = await request(frozen.id, "DELETE");
 				if (deleted.status === 204 || deleted.status === 404) result.done.push({ id: frozen.id, tag: frozen.tag, status: deleted.status === 404 ? "already-deleted" : "deleted" });
-				else { stop = [401, 403, 422].includes(deleted.status); throw new Error(`DELETE release ${frozen.id}: HTTP ${deleted.status}`); }
+				else await refused(deleted, `DELETE release ${frozen.id}`);
 			}
 		} catch (e) {
 			result.failed.push({ id: item.id, tag: item.tag, reason: e.message });
