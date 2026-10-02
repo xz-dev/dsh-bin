@@ -109,6 +109,10 @@ test("DL-CLEANUP-BLOCKED: 401/403/422 stop immediately without auth/settings fal
 		expect(f.deleted).toEqual([]); expect(result.failed).toHaveLength(1); expect(result.failed[0].reason).toContain(`HTTP ${status}`);
 		expect(result.notAttempted.map((r: any) => r.id)).toEqual([2, 3]); expect(f.calls).toEqual(method === "GET" ? ["GET /releases/1"] : ["GET /releases/1", "GET /releases/1/assets", "GET /releases/1/assets", "DELETE /releases/1"]);
 	}
+	const badBody = fixture();
+	const brokenResponse = async (url: any, options: any) => options.method === "DELETE" && String(url).endsWith("/releases/1") ? { status: 403, text: async () => { throw new Error("response body disconnected"); } } as Response : badBody.api(url, options);
+	const disconnected = await deleteFrozen(inventory, inventory.sha256, env, brokenResponse as typeof fetch, true);
+	expect(disconnected.failed).toHaveLength(1); expect(disconnected.notAttempted).toHaveLength(2); expect(badBody.deleted).toEqual([]);
 	const refusal = fixture({ failures: { "DELETE /releases/1": 409 }, messages: { "DELETE /releases/1": "Release immutable: deletion blocked" } });
 	const blocked = await deleteFrozen(inventory, inventory.sha256, env, refusal.api, true);
 	expect(blocked.failed[0].reason).toContain("immutable"); expect(blocked.notAttempted).toHaveLength(2); expect(refusal.deleted).toEqual([]);
