@@ -77,7 +77,7 @@ test.skipIf(!hasZig || process.platform !== "linux")(`PS-MANAGED / DL-MANAGED-UP
 		finally { clearTimeout(timer); }
 	}
 	async function portage(action: "upgrade" | "unmerge") {
-		const args = action === "upgrade" ? ["--skip-manifest", `${realBase}/overlay/app-misc/dsh-bin/dsh-bin-1.0.1.ebuild`, "clean", "install", "merge"] : ["--skip-manifest", `${realBase}/overlay/app-misc/dsh-bin/dsh-bin-1.0.1.ebuild`, "unmerge"];
+		const args = action === "upgrade" ? [`${realBase}/overlay/app-misc/dsh-bin/dsh-bin-1.0.1.ebuild`, "clean", "install", "merge"] : [`${realBase}/overlay/app-misc/dsh-bin/dsh-bin-1.0.1.ebuild`, "unmerge"];
 		const p = Bun.spawn(["/usr/bin/ebuild", ...args], { env: { PATH: "/usr/bin:/bin", HOME: i.home, ROOT: realRoot!, PORTAGE_CONFIGROOT: `${realBase}/config`, TMPDIR: `${realBase}/tmp` }, stdout: "pipe", stderr: "pipe" });
 		const timer = setTimeout(() => p.kill("SIGKILL"), 120_000);
 		try { const [status, stdout, stderr] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]); writeFileSync(`${realBase}/logs/${action}.log`, stdout + stderr); expect({ status, stderr }).toMatchObject({ status: 0 }); }
