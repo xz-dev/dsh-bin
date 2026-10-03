@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { readZipEntries } from "../../runtime/zip.ts";
-import { PROFILE_SITES, RULES } from "../../scripts/transform-app.mjs";
+import { CONFIG_SITES, PROFILE_SITES, RULES } from "../../scripts/transform-app.mjs";
 import { hostTargetId, target } from "../../scripts/targets.mjs";
 
 const ROOT = resolve(import.meta.dir, "../..");
@@ -31,7 +31,7 @@ test("RL-RUNTIME-BUILD / RB-CONTENTS: runtime-only checkout builds one v1 archiv
 		for (const name of ["scripts", "runtime", "package.json"]) cpSync(join(ROOT, name), join(dir, name), { recursive: true });
 		const put = (path: string, text: string) => { mkdirSync(join(path, ".."), { recursive: true }); writeFileSync(path, text); };
 		const app = join(dir, "work/app");
-		put(join(app, "package.json"), '{"name":"runtime-build-fixture","type":"module"}');
+		put(join(app, "package.json"), '{"name":"runtime-build-fixture","version":"0.2.0-rc.2","type":"module"}');
 		put(join(app, "lib/bin.js"), `${readFileSync(join(ROOT, "test/fixtures/fixed-cli.js"), "utf8")}\nexport async function runCli() {}\n`);
 		mkdirSync(join(app, "node_modules"), { recursive: true });
 		for (const rule of RULES) for (const file of rule.files) put(join(app, file), rule.marker === "stripTypeScriptTypes" ? 'import { stripTypeScriptTypes } from "node:module";\n' : 'import { isSea } from "node:sea";\n');
@@ -43,6 +43,12 @@ test("RL-RUNTIME-BUILD / RB-CONTENTS: runtime-only checkout builds one v1 archiv
 				...Array(sites.file ?? 0).fill('join(dir, PROFILE_PATCH_FILENAME);'),
 			].join("\n"));
 		}
+		// Synthetic build-only site fixture; authentic service proof lives in runtime/config-io.test.ts.
+		for (const { file, from, count } of CONFIG_SITES) {
+			const path = join(app, file);
+			put(path, (existsSync(path) ? readFileSync(path, "utf8") : "") + "\n" + Array(count).fill(from).join("\n"));
+		}
+
 		const t = target(hostTargetId());
 		put(join(dir, `work/pnpm-${t.os === "windows" ? "windows" : t.os}-${t.arch}/dist/pnpm.mjs`), "// fixture pnpm\n");
 		const path = join(dir, "path");

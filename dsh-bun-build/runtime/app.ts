@@ -4,6 +4,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { delimiter, dirname, join, relative } from "node:path";
 import { dshArgv, userArgs } from "./argv.ts";
 import { officeWiring, SKILL_OFFICE, withOfficeNode } from "./compat/addons.ts";
+import { installConfigPaths } from "./compat/config-paths.ts";
 import { degradedPlugin, HMR_DEGRADATION } from "./compat/degradations.ts";
 import { installHostPackages } from "./compat/host-packages.ts";
 import { installNodeModuleCompat } from "./compat/node-module-compat.ts";
@@ -87,6 +88,7 @@ const host = installHostPackages(appDir, {
 });
 installRequireBuiltin(join(appDir, "lib"), host.specifiers);
 installNodeModuleCompat();
+installConfigPaths(launch?.snapshot.dir, launch?.configSnapshot.dir, launch?.home);
 
 process.argv = dshArgv([process.argv[0]!, process.argv[1]!, ...user], process.execPath, binJs);
 const { runCli } = (await import(binJs)) as { runCli(): Promise<void> };

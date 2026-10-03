@@ -2,7 +2,7 @@
 // (work/app, or DSH_BIN_TEST_APP). Hermetic: temp DSH_HOME, no API key, PATH without node.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { degradationDetail, HMR_DEGRADATION, officeDegradations } from "../../runtime/compat/degradations.ts";
@@ -93,8 +93,16 @@ describe.skipIf(!built)("compiled entry startup", () => {
 	let n = 0;
 	const launch = (home: string, office?: object) => {
 		const id = `V1@${++n}`, plugins = join(root, "snapshots", id), config = join(root, "config-snapshots", id);
-		for (const dir of [plugins, config]) { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, ".usage.lock"), ""); }
+		for (const dir of [plugins, config]) { mkdirSync(dir, { recursive: true, mode: 0o700 }); writeFileSync(join(dir, ".usage.lock"), ""); }
 		cpSync(join(home, "profiles"), join(plugins, "profiles"), { recursive: true });
+		// Protocol 2: user patch is config content, not shared HOME or plugin inventory.
+		for (const name of readdirSync(join(home, "profiles"))) {
+			const dest = join(config, "profiles", name);
+			mkdirSync(dest, { recursive: true, mode: 0o700 });
+			cpSync(join(home, "profiles", name, "cordis.patch.yml"), join(dest, "cordis.patch.yml"));
+			chmodSync(join(dest, "cordis.patch.yml"), 0o600);
+			rmSync(join(plugins, "profiles", name, "cordis.patch.yml"));
+		}
 		return JSON.stringify({ protocol: 2, runtime: "V1", dataRoot: root, home, snapshot: { id, dir: plugins }, configSnapshot: { id, dir: config }, addons: office ? { office } : {}, cache: join(root, "cache"), tmp: join(root, "tmp"), manager: "t" });
 	};
 	const NO_OFFICE = "the office addon is not installed for this dsh; run `dsh manager install --addon office`";

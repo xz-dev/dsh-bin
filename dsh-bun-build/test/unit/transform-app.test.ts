@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { COMPAT_SPECIFIER, RULES, rewriteProfileSites, transformApp } from "../../scripts/transform-app.mjs";
+import { COMPAT_SPECIFIER, CONFIG_SITES, PROFILE_SITES, RULES, rewriteProfileSites, transformApp } from "../../scripts/transform-app.mjs";
 
 const IMPORT = 'import { stripTypeScriptTypes } from "node:module";\n';
 
@@ -78,57 +78,35 @@ export const rootOf = (dir) => join(dir, PROFILE_ROOT_FILENAME);
 `;
 const BOOT_REL = "node_modules/@deepseek-ai/dsh-app-boot/lib/index.js";
 
-test("RB-HOME: profile paths follow the snapshot; only cordis.patch.yml is shared, from $DSH_HOME, wherever the snapshot is", async () => {
+test("RB-HOME/CS-PLUGIN-BASE: validated process mapping splits patch from plugin base, standalone stays upstream", async () => {
 	const app = fixture({ [BOOT_REL]: BOOT, "node_modules/express/lib/view.js": "const p = join(dir, file);\n" });
-	expect(transformApp(app, [], { [BOOT_REL]: { dir: 1, root: 1, file: 2 } })).toEqual([BOOT_REL]);
+	const sites = { [BOOT_REL]: { dir: 1, root: 1, file: 2 } };
+	expect(transformApp(app, [], sites)).toEqual([BOOT_REL]);
+	const before = readFileSync(join(app, BOOT_REL), "utf8");
+	transformApp(app, [], sites); expect(readFileSync(join(app, BOOT_REL), "utf8")).toBe(before);
 	expect(readFileSync(join(app, "node_modules/express/lib/view.js"), "utf8")).toBe("const p = join(dir, file);\n");
-	// The snapshot lives in the manager's data root; the application home is elsewhere (an explicit DSH_HOME).
 	const home = mkdtempSync(join(tmpdir(), "snap-home-"));
-	const snap = join(mkdtempSync(join(tmpdir(), "snap-data-")), "snapshots", "1.0.0@1");
-	const env = { ...process.env, DSH_HOME: home, DSH_BIN_SNAPSHOT_DIR: snap };
-	const probe = `const m = await import(${JSON.stringify(join(app, BOOT_REL))}); const d = m.resolveProfileDir("tui", ${JSON.stringify(home)});
+	const snap = mkdtempSync(join(tmpdir(), "plugins-"));
+	const config = mkdtempSync(join(tmpdir(), "config-"));
+	const helper = new URL("../../runtime/compat/config-paths.ts", import.meta.url).pathname;
+	const probe = (managed: boolean) => `import { installConfigPaths } from ${JSON.stringify(helper)};
+		installConfigPaths(${managed ? [snap, config, home].map(v => JSON.stringify(v)).join(",") : ""});
+		const m = await import(${JSON.stringify(join(app, BOOT_REL))}); const d = m.resolveProfileDir("tui", ${JSON.stringify(home)});
 		console.log(JSON.stringify([d, m.tree(${JSON.stringify(home)}), m.patchOf(d), m.rootOf(d)]));`;
-	const run = async (e: Record<string, string | undefined>) => {
-		const p = Bun.spawn([process.execPath, "-e", probe], { env: e, stdout: "pipe" });
-		return JSON.parse(await new Response(p.stdout).text());
-	};
-	expect(await run(env)).toEqual([
-		join(snap, "profiles", "tui"),
-		join(snap, "profiles"),
-		join(home, "profiles", "tui", "cordis.patch.yml"),
-		join(snap, "profiles", "tui", "cordis.yml"),
-	]);
-	const { DSH_BIN_SNAPSHOT_DIR: _s, ...bare } = env;
-	expect(await run(bare)).toEqual([
-		join(home, "profiles", "tui"),
-		join(home, "profiles"),
-		join(home, "profiles", "tui", "cordis.patch.yml"),
-		join(home, "profiles", "tui", "cordis.yml"),
-	]);
-	// Re-running on an already transformed tree is a no-op, not a double prelude.
-	expect(rewriteProfileSites(readFileSync(join(app, BOOT_REL), "utf8")).counts).toBeNull();
+	for (const managed of [true, false]) {
+		const p = Bun.spawnSync([process.execPath, "-e", probe(managed)], { env: { ...process.env, DSH_BIN_CONFIG_SNAPSHOT_DIR: "/untrusted" } });
+		expect(p.exitCode, p.stderr.toString()).toBe(0);
+		expect(JSON.parse(p.stdout.toString())).toEqual(managed ? [join(snap, "profiles/tui"), join(snap, "profiles"), join(config, "profiles/tui/cordis.patch.yml"), join(snap, "profiles/tui/cordis.yml")] : [join(home, "profiles/tui"), join(home, "profiles"), join(home, "profiles/tui/cordis.patch.yml"), join(home, "profiles/tui/cordis.yml")]);
+	}
 });
 
-test("RB-HOME: rebuilding an already transformed app replaces the old snapshot-relative shared path", async () => {
-	const sites = { [BOOT_REL]: { dir: 1, root: 1, file: 4 } };
-	const app = fixture({ [BOOT_REL]: BOOT + '\nexport const otherPatch = (dir) => join(dir, PROFILE_PATCH_FILENAME);\nexport const otherRoot = (dir) => join(dir, PROFILE_ROOT_FILENAME);\n' });
-	transformApp(app, [], sites);
+test("changed transformed counts and retired shared-home transforms fail closed on re-run", () => {
+	const sites = { [BOOT_REL]: { dir: 1, root: 1, file: 2 } };
+	const app = fixture({ [BOOT_REL]: BOOT }); transformApp(app, [], sites);
 	const file = join(app, BOOT_REL);
-	writeFileSync(file, readFileSync(file, "utf8").replace('__dshBinJoin(home, "profiles")', '__dshBinJoin(process.env.DSH_BIN_SNAPSHOT_DIR, "..", "..", "profiles")'));
-	transformApp(app, [], sites);
-	const home = mkdtempSync(join(tmpdir(), "external-home-"));
-	const data = mkdtempSync(join(tmpdir(), "manager-data-"));
-	const snap = join(data, "snapshots", "runtime@1");
-	const probe = `import { readFileSync, writeFileSync } from "node:fs";
-		const m = await import(${JSON.stringify(file)});
-		const path = m.patchOf(m.resolveProfileDir("custom", ${JSON.stringify(home)}));
-		writeFileSync(path, "shared config");
-		console.log(readFileSync(path, "utf8"));`;
-	const p = Bun.spawn([process.execPath, "-e", probe], { env: { ...process.env, DSH_HOME: home, DSH_BIN_SNAPSHOT_DIR: snap }, stdout: "pipe", stderr: "pipe" });
-	expect(await p.exited).toBe(0);
-	expect(await new Response(p.stdout).text()).toContain("shared config");
-	expect(readFileSync(join(home, "profiles/custom/cordis.patch.yml"), "utf8")).toBe("shared config");
-	expect(existsSync(join(data, "profiles"))).toBe(false);
+	writeFileSync(file, readFileSync(file, "utf8").replace('__dshBinPaths.profileFile(dir, PROFILE_PATCH_FILENAME)', 'join(dir, "changed.yml")'));
+	expect(() => transformApp(app, [], sites)).toThrow(/profile path sites changed/);
+	expect(() => rewriteProfileSites("const __dshBinProfiles = {};" )).toThrow(/retired profile adaptation/);
 });
 
 test("LibreOffice Kit packages are not profile code: their look-alike joins are left alone", () => {
@@ -143,4 +121,33 @@ test("LibreOffice Kit packages are not profile code: their look-alike joins are 
 test("a changed profile site list fails the build", () => {
 	const app = fixture({ [BOOT_REL]: BOOT });
 	expect(() => transformApp(app, [], { [BOOT_REL]: { dir: 1, root: 1, file: 3 } })).toThrow(/profile path sites changed/);
+});
+
+function configurationFixture() {
+	const files: Record<string, string> = { "package.json": '{"version":"0.2.0-rc.2"}' };
+	for (const { file, from, count } of CONFIG_SITES) files[file] = (files[file] ?? "") + "\n" + Array(count).fill(from).join("\n");
+	return fixture(files);
+}
+test("configuration site table fails closed for every changed known site; no partial writes", () => {
+	for (const { file, from } of CONFIG_SITES) {
+		const app = configurationFixture(), path = join(app, file);
+		writeFileSync(path, readFileSync(path, "utf8").replace(from, "upstream changed site"));
+		const before = readFileSync(path, "utf8");
+		expect(() => transformApp(app, [], {}, CONFIG_SITES)).toThrow(/configuration path site changed/);
+		expect(readFileSync(path, "utf8")).toBe(before);
+	}
+});
+test("unknown config path in another first-party file and unsupported upstream version fail closed", () => {
+	const app = configurationFixture();
+	writeFileSync(join(app, "node_modules/@deepseek-ai/dsh-settings/lib/new.js"), 'const path = join(home, "settings.yaml");');
+	expect(() => transformApp(app, [], {}, CONFIG_SITES)).toThrow(/unknown configuration path site/);
+	const unknown = fixture({ "package.json": '{"version":"0.2.0-rc.3"}' });
+	expect(() => transformApp(unknown, [], PROFILE_SITES)).toThrow(/unsupported configuration path version/);
+});
+test("configuration transform re-run preserves counts instead of trusting old marker", () => {
+	const app = configurationFixture(); transformApp(app, [], {}, CONFIG_SITES);
+	const file = join(app, CONFIG_SITES[0].file), first = readFileSync(file, "utf8");
+	transformApp(app, [], {}, CONFIG_SITES); expect(readFileSync(file, "utf8")).toBe(first);
+	writeFileSync(file, first.replace(CONFIG_SITES[0].to, "changed-after-transform"));
+	expect(() => transformApp(app, [], {}, CONFIG_SITES)).toThrow(/configuration path site changed/);
 });
