@@ -11,17 +11,17 @@ const Ctx = @import("context.zig").Ctx;
 pub const help_text =
     \\Usage: dsh manager <command> [options]
     \\
-    \\Manage dsh runtimes, plugin snapshots, addons and this manager. Management never starts dsh.
+    \\Manage dsh runtimes, plugin/config snapshots, addons and this manager. Management never starts dsh.
     \\
     \\  install <version> [--channel <live|release>] [--force]   install a dsh runtime next to the others
     \\  install --addon office[:<version>] [--force]              install an office addon version
     \\  update [--channel <live|release>] [--force]               install the channel's newest dsh runtime
     \\  uninstall <version>... | --addon office[:<version>]       remove runtimes or addon versions (data is kept)
     \\  list [--available] [--json]                               installed runtimes (--available: also the index)
-    \\  select [--use <version|latest>] [--snapshot <id>] [--addon office:<version>]
+    \\  select [--use <version|latest>] [--snapshot <id>] [--config-snapshot <id>] [--addon office:<version>]
     \\                                                            choose what a plain `dsh` starts
-    \\  snapshot new [--use <version>] [--target <id> | --empty] [--name <alias>] | remove <id>... | list [--json]
-    \\                                                            plugin-runtime snapshots
+    \\  snapshot <plugins|config> new [--use <version>] [--target <id> | --empty] [--name <alias>] | remove <id>... | list [--json]
+    \\                                                            independent plugin/config snapshots
     \\  clean                                                     remove interrupted downloads and leftovers (offline)
     \\  self-update [--force]                                     update this manager (Windows: hands off to a helper)
     \\  completion script|install|uninstall <bash|zsh|fish|pwsh|powershell>
@@ -29,7 +29,7 @@ pub const help_text =
     \\  info                                                      install mode, data root and application home
     \\  --version, --help
     \\
-    \\Launch options (before the dsh arguments; for one run): dsh --use <version> --snapshot <id> --addon office:<v> ...
+    \\Launch options (before the dsh arguments; for one run): dsh --use <version> --snapshot <id> --config-snapshot <id> --addon office:<v> ...
     \\
 ;
 
@@ -54,7 +54,7 @@ pub fn run(ctx: *Ctx, opts: select.Options, args: []const []const u8) u8 {
     if (std.mem.eql(u8, cmd, "select")) return manage.selection(ctx, args[1..]);
     if (std.mem.eql(u8, cmd, "uninstall")) return manage.uninstall(ctx, args[1..]);
     if (std.mem.eql(u8, cmd, "list")) return manage.list(ctx, args[1..], opts);
-    if (std.mem.eql(u8, cmd, "snapshot")) return @import("snapshot.zig").run(ctx, args[1..]);
+    if (std.mem.eql(u8, cmd, "snapshot")) return @import("snapshot.zig").run(ctx, args[1..], opts);
     if (std.mem.eql(u8, cmd, "info")) {
         util.print("Install mode: {s}\nData root: {s}\nApp home: {s}\n", .{ @tagName(ctx.mode), ctx.data, ctx.home() });
         if (ctx.mode != .portable) util.print("Managed user data is an exception to the portable executable-adjacent layout.\n", .{});

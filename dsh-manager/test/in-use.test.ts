@@ -17,7 +17,7 @@ function fixture(addon = false) {
 	const i = newInstall();
 	for (const [id, n] of [[A, 1], [B, 2], [C, 3]] as const) {
 		addRuntime(i.data, id, { run: n, patch: addon ? { addons: { office: { slot, known: [], pinned: null } } } : {} });
-		expect(run(i, ["manager", "snapshot", "new", "--use", id, "--empty"]).status).toBe(0);
+		expect(run(i, ["manager", "snapshot", "plugins", "new", "--use", id, "--empty"]).status).toBe(0);
 	}
 	if (addon) for (const [version, seq] of [[O, 1], [P, 2]] as const) {
 		const dir = join(i.data, "addons", "office", version); mkdirSync(join(dir, "node_modules"), { recursive: true });
@@ -37,12 +37,12 @@ test.skipIf(!hasZig)("MC-IN-USE: runtime, snapshot and addon batch removal refus
 	const i = fixture(true), roots = ["bundles", "snapshots", "addons"].map(p => join(i.data, p));
 	const saved = roots.map(bytes), session = await holdSession(i, ["--use", A, "--snapshot", `${A}@1`, "--addon", `office:${O}`, "probe"]);
 	try {
-		for (const args of [["uninstall", B, A], ["snapshot", "remove", `${B}@1`, `${A}@1`], ["uninstall", "--addon", "office"]]) {
+		for (const args of [["uninstall", B, A], ["snapshot", "plugins", "remove", `${B}@1`, `${A}@1`], ["uninstall", "--addon", "office"]]) {
 			const r = refused(i, args, [args[0] === "snapshot" ? `${A}@1` : args.includes("--addon") ? O : A]);
 			expect(r.stderr).toContain("in use"); expect(roots.map(bytes)).toEqual(saved);
 		}
 	} finally { expect(await session.finish()).toBe(0); }
-	for (const args of [["uninstall", B, A], ["snapshot", "remove", `${B}@1`, `${A}@1`], ["uninstall", "--addon", "office"]]) expect(run(i, ["manager", ...args]).status).toBe(0);
+	for (const args of [["uninstall", B, A], ["snapshot", "plugins", "remove", `${B}@1`, `${A}@1`], ["uninstall", "--addon", "office"]]) expect(run(i, ["manager", ...args]).status).toBe(0);
 	expect(existsSync(join(i.data, "bundles", A))).toBe(false); expect(existsSync(join(i.data, "snapshots", `${A}@1`))).toBe(false); expect(existsSync(join(i.data, "addons", "office", O))).toBe(false);
 });
 
@@ -52,7 +52,7 @@ test.skipIf(!hasZig)("MC-IN-USE: runtime and snapshot preflight reports every mi
 	try {
 		const runtime = refused(i, ["uninstall", C, "missing-one", B, A, "missing-two"], ["missing-one", B, A, "missing-two"]);
 		expect(runtime.stderr).toContain("selection"); expect(runtime.stderr).toContain("in use"); expect(roots.map(bytes)).toEqual(saved);
-		const snap = refused(i, ["snapshot", "remove", `${C}@1`, "missing@1", `${B}@1`, `${A}@1`, "another@1"], ["missing@1", `${B}@1`, `${A}@1`, "another@1"]);
+		const snap = refused(i, ["snapshot", "plugins", "remove", `${C}@1`, "missing@1", `${B}@1`, `${A}@1`, "another@1"], ["missing@1", `${B}@1`, `${A}@1`, "another@1"]);
 		expect(snap.stderr).toContain("selection"); expect(snap.stderr).toContain("in use"); expect(roots.map(bytes)).toEqual(saved);
 	} finally { expect(await session.finish()).toBe(0); }
 });
@@ -66,10 +66,10 @@ test.skipIf(!hasZig)("RB-RESTART / MC-IN-USE: changing default during a session 
 		expect(run(i, ["manager", "select", "--use", B, "--snapshot", `${B}@1`, "--addon", `office:${P}`]).status).toBe(0);
 		session.proc.stdin.write("r"); await session.wait("2");
 		expect(launchOf(i, "2")).toEqual(first);
-		for (const args of [["uninstall", A], ["snapshot", "remove", `${A}@1`], ["uninstall", "--addon", `office:${O}`]]) expect(refused(i, args, [args[0] === "snapshot" ? `${A}@1` : args.includes("--addon") ? O : A]).stderr).toContain("in use");
+		for (const args of [["uninstall", A], ["snapshot", "plugins", "remove", `${A}@1`], ["uninstall", "--addon", `office:${O}`]]) expect(refused(i, args, [args[0] === "snapshot" ? `${A}@1` : args.includes("--addon") ? O : A]).stderr).toContain("in use");
 		expect(run(i, ["probe"]).status).toBe(0); expect(launchOf(i)).toMatchObject({ runtime: B, snapshot: { id: `${B}@1` }, addons: { office: { version: P } } });
 	} finally { expect(await session.finish()).toBe(0); }
-	for (const args of [["uninstall", A], ["snapshot", "remove", `${A}@1`], ["uninstall", "--addon", `office:${O}`]]) expect(run(i, ["manager", ...args]).status).toBe(0);
+	for (const args of [["uninstall", A], ["snapshot", "plugins", "remove", `${A}@1`], ["uninstall", "--addon", `office:${O}`]]) expect(run(i, ["manager", ...args]).status).toBe(0);
 });
 
 test.skipIf(!hasZig)("MC-IN-USE: a busy runtime launch fails fast; missing runtime guard refuses, missing addon guard degrades", () => {

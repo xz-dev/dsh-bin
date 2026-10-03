@@ -290,6 +290,7 @@ fn collect(c: *Cleanup, root: Store) !void {
     const addons = try c.open(root, "addons");
     const office = if (addons) |s| try c.open(s, "office") else null;
     const snapshots = try c.open(root, "snapshots");
+    const config_snapshots = try c.open(root, "config-snapshots");
     if (try c.open(root, "tmp")) |tmp| {
         var it = tmp.dir.iterate();
         while (try it.next()) |entry| {
@@ -313,18 +314,20 @@ fn collect(c: *Cleanup, root: Store) !void {
             }
         }
     }
-    if (snapshots) |s| {
+    for ([_]?Store{ snapshots, config_snapshots }) |optional| if (optional) |s| {
         var it = s.dir.iterate();
         while (try it.next()) |entry| if (namedNonce(entry.name, ".staging-") and treeEntry(entry.kind)) try c.add(s, entry);
-    }
+    };
     try protectHome(c.ctx, c.items.items);
     const work = c.items.items.len != 0;
     // With no residue, still check existing mutexes/claims, but create nothing.
     if (work) root.dir.makeDir("state") catch |err| if (err != error.PathAlreadyExists) return err;
     if (try c.open(root, "state")) |state| try c.hold(state, "manager.lock", work);
     if (snapshots) |s| try c.hold(s, ".lock", work);
+    if (config_snapshots) |s| try c.hold(s, ".lock", work);
     try c.live(bundles);
     try c.live(snapshots);
+    try c.live(config_snapshots);
     try c.live(office);
     // Recheck recovery eligibility under maintenance: never delete the only surviving generation.
     var n: usize = 0;

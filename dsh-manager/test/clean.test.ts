@@ -18,7 +18,7 @@ function put(i: Install, path: string, data = "residue") {
 }
 function fixture() {
 	const i = newInstall(); addRuntime(i.data, A);
-	expect(run(i, ["manager", "snapshot", "new", "--use", A, "--empty"]).status).toBe(0);
+	expect(run(i, ["manager", "snapshot", "plugins", "new", "--use", A, "--empty"]).status).toBe(0);
 	put(i, `snapshots/${A}@1/profiles/plugin`, "plugin installed by user");
 	put(i, "home/profiles/cordis.patch.yml", "user config"); put(i, "home/credentials.json", "secret");
 	put(i, "user-file", "unrecognised user bytes"); put(i, "state/custom", "user state");

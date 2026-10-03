@@ -143,7 +143,8 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
     if (exists) try recognized(ctx, bundles, e.id, e.id);
     if (exists and !force) {
         _ = validate(ctx, dest, e, host) catch return error.IncompleteRuntimeUseForce;
-        _ = try snapshot.ensure(ctx, e.id, e.bundle().meta.?, "install");
+        _ = try snapshot.ensure(ctx, .plugins, e.id, e.bundle().meta.?, "install");
+        _ = try snapshot.ensure(ctx, .config, e.id, e.bundle().meta.?, "install");
         try state.write(ctx, "channel", try std.fmt.allocPrint(ctx.a, "{s}\n", .{channel}));
         if (automatic) util.warn("dsh {s} is already installed", .{e.id}) else util.print("dsh {s} is already installed.\n", .{e.id});
         return e.id;
@@ -164,7 +165,8 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
     if (existsIn(tmp, backup)) try recognized(ctx, tmp, backup, e.id);
     try activate(ctx, tmp, staging, bundles, e.id, backup, exists);
     crashPoint(ctx, "after-activation");
-    _ = try snapshot.ensure(ctx, e.id, meta, "install");
+    _ = try snapshot.ensure(ctx, .plugins, e.id, meta, "install");
+    _ = try snapshot.ensure(ctx, .config, e.id, meta, "install");
     try state.write(ctx, "channel", try std.fmt.allocPrint(ctx.a, "{s}\n", .{channel}));
     if (automatic) util.warn("installed dsh {s} ({s}); starting original command", .{ e.id, host }) else util.print("Installed dsh {s} ({s}); selection unchanged.\n", .{ e.id, host });
     return e.id;

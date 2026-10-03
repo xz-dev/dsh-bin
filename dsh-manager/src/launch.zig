@@ -53,6 +53,8 @@ fn reportResolution(f: select.Failure) noreturn {
 /// Decide which runtime runs the arguments `args` (leading options included).
 pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
     const opts = parseLeading(ctx.a, args);
+    // Protocol 1 has no config-root contract. Never consume then silently discard this option.
+    if (opts.config_snapshot != null) util.fatal("config snapshots require launch protocol 2; this manager still implements protocol 1", .{});
     var bundles = runtimes.list(ctx);
     const sel = state.readSelection(ctx);
     const selection = switch (sel) {
@@ -60,9 +62,11 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
         .ok => |s| s,
         .invalid => |why| util.fatal("cannot use the selection {s} ({s}); run `dsh manager select --use latest` to reset it", .{ state.selectionPath(ctx), why }),
     };
+    if (selection != null and @import("manage.zig").snapshotChoice(selection.?, .config) != null)
+        util.fatal("selected config snapshot requires launch protocol 2; this manager still implements protocol 1", .{});
     const stored_snapshot: ?snapshot.Snapshot = if (opts.use == null and opts.snapshot == null and selection != null) blk: {
-        const id = @import("manage.zig").snapshotChoice(selection.?) orelse break :blk null;
-        break :blk snapshot.existing(ctx, id) catch |err|
+        const id = @import("manage.zig").snapshotChoice(selection.?, .plugins) orelse break :blk null;
+        break :blk snapshot.existing(ctx, .plugins, id) catch |err|
             util.fatal("cannot use selected snapshot {s}: {s}; run `dsh manager select --use latest` to reset it", .{ id, @errorName(err) });
     } else null;
     if (bundles.len == 0 and opts.use == null and opts.snapshot == null and
@@ -73,7 +77,7 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
     }
     const explicit_snapshot = if (opts.snapshot) |id| blk: {
         if (select.snapshotVersion(id) == null) reportResolution(.{ .bad_snapshot_id = id });
-        break :blk snapshot.existing(ctx, id) catch |err| {
+        break :blk snapshot.existing(ctx, .plugins, id) catch |err| {
             // Preserve the missing-runtime diagnostic before reporting a missing snapshot.
             const preliminary = select.resolve(.{ .opts = opts, .bundles = bundles, .channel = state.channel(ctx) });
             if (preliminary == .err) reportResolution(preliminary.err);
@@ -96,7 +100,9 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
         else => |p| runtimes.report(resolved.version, p),
     };
     const snap = explicit_snapshot orelse stored_snapshot orelse
-        snapshot.prepare(ctx, resolved.version, runtimes.metaOf(bundles, resolved.version).?);
+        snapshot.prepare(ctx, .plugins, resolved.version, runtimes.metaOf(bundles, resolved.version).?);
+    // Store initialization only. Config I/O/protection awaits protocol 2; no payload claim here.
+    _ = snapshot.prepare(ctx, .config, resolved.version, runtimes.metaOf(bundles, resolved.version).?);
     var resolved_addons = @import("addons.zig").resolve(ctx, resolved.version, opts.addons, selection);
     if (resolved_addons.office) |office| {
         const addon_claim: ?lock.Lock = lock.tryAcquire(util.join(ctx.a, &.{ office.dir, runtimes.guard_name }), .shared, false) catch |err| blk: {
@@ -112,7 +118,7 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
         .source = @tagName(resolved.source),
         .dataRoot = ctx.data,
         .home = ctx.home(),
-        .snapshot = snap,
+        .snapshot = .{ .id = snap.id, .dir = snap.dir },
         .addons = resolved_addons,
         .cache = ctx.path(&.{"cache"}),
         .tmp = ctx.path(&.{"tmp"}),

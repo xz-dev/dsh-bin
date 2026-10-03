@@ -12,6 +12,7 @@ pub const protocol: u32 = 1;
 pub const Options = struct {
     use: ?[]const u8 = null,
     snapshot: ?[]const u8 = null,
+    config_snapshot: ?[]const u8 = null,
     addons: []const []const u8 = &.{},
     /// Number of leading arguments consumed by the options.
     consumed: usize = 0,
@@ -24,7 +25,7 @@ pub const ParseError = struct {
 
 pub const Parsed = union(enum) { ok: Options, err: ParseError };
 
-/// `--use/--snapshot/--addon` as leading arguments only (`--opt value` or `--opt=value`); parsing stops at
+/// `--use/--snapshot/--config-snapshot/--addon` as leading arguments only (`--opt value` or `--opt=value`); parsing stops at
 /// the first other argument, which is passed on unchanged with everything after it.
 pub fn parseLeading(allocator: Allocator, args: []const []const u8) Allocator.Error!Parsed {
     var opts = Options{};
@@ -32,7 +33,7 @@ pub fn parseLeading(allocator: Allocator, args: []const []const u8) Allocator.Er
     var i: usize = 0;
     while (i < args.len) {
         const arg = args[i];
-        const name = for ([_][]const u8{ "--use", "--snapshot", "--addon" }) |n| {
+        const name = for ([_][]const u8{ "--use", "--snapshot", "--config-snapshot", "--addon" }) |n| {
             if (std.mem.eql(u8, arg, n) or (std.mem.startsWith(u8, arg, n) and arg.len > n.len and arg[n.len] == '=')) break n;
         } else break;
         var value: []const u8 = undefined;
@@ -48,7 +49,7 @@ pub fn parseLeading(allocator: Allocator, args: []const []const u8) Allocator.Er
         if (std.mem.eql(u8, name, "--addon")) {
             try addons.append(allocator, value);
         } else {
-            const slot = if (std.mem.eql(u8, name, "--use")) &opts.use else &opts.snapshot;
+            const slot = if (std.mem.eql(u8, name, "--use")) &opts.use else if (std.mem.eql(u8, name, "--snapshot")) &opts.snapshot else &opts.config_snapshot;
             if (slot.* != null) return .{ .err = .{ .kind = .repeated, .option = name } };
             slot.* = value;
         }
@@ -457,4 +458,17 @@ test "Windows command-line tail after the leading options" {
         defer tt.allocator.free(got);
         try tt.expectEqualStrings(c.tail, got);
     }
+}
+
+test "MC-TYPED / MC-ARGS: independent config leading option, boundary and repeats" {
+    const o = try parseOk(&.{ "--snapshot=A@1", "--config-snapshot", "A@1", "--profile", "tui", "--config-snapshot", "B@2" });
+    defer tt.allocator.free(o.addons);
+    try tt.expectEqualStrings("A@1", o.snapshot.?);
+    try tt.expectEqualStrings("A@1", o.config_snapshot.?);
+    try tt.expectEqual(@as(usize, 3), o.consumed);
+    const missing = try parseLeading(tt.allocator, &.{"--config-snapshot="});
+    try tt.expectEqualStrings("--config-snapshot", missing.err.option);
+    try tt.expectEqual(@as(@TypeOf(@as(ParseError, undefined).kind), .missing_value), missing.err.kind);
+    const repeated = try parseLeading(tt.allocator, &.{ "--config-snapshot", "A@1", "--config-snapshot=B@1" });
+    try tt.expectEqual(@as(@TypeOf(@as(ParseError, undefined).kind), .repeated), repeated.err.kind);
 }

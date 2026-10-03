@@ -12,7 +12,7 @@ const commands = [_]Command{
     .{ .name = "update", .options = &.{ "--channel", "--force" } },
     .{ .name = "uninstall", .options = &.{"--addon"} },
     .{ .name = "list", .options = &.{ "--available", "--json" } },
-    .{ .name = "select", .options = &.{ "--use", "--snapshot", "--addon" } },
+    .{ .name = "select", .options = &.{ "--use", "--snapshot", "--config-snapshot", "--addon" } },
     .{ .name = "snapshot", .options = &.{ "--target", "--empty", "--name", "--json" } },
     .{ .name = "clean" },
     .{ .name = "self-update" },
@@ -70,6 +70,32 @@ fn localDirs(ctx: *Ctx, prefix: []const u8, parts: []const []const u8, name_pref
         }
     }.lt);
     for (words.items) |w| if (localWord(w) and std.mem.startsWith(u8, w, prefix)) util.print("{s}\n", .{w});
+}
+
+fn snapshotWords(ctx: *Ctx, prefix: []const u8, kind: @import("snapshot.zig").Kind) void {
+    var root = std.fs.cwd().openDir(ctx.path(&.{kind.root()}), .{ .iterate = true, .no_follow = true }) catch return;
+    defer root.close();
+    var words: std.ArrayList([]const u8) = .empty;
+    var it = root.iterate();
+    while (it.next() catch null) |entry| {
+        if (entry.kind != .directory or entry.name[0] == '.') continue;
+        const version = select.snapshotVersion(entry.name) orelse continue;
+        if (!safeWord(entry.name)) continue;
+        var dir = root.openDir(entry.name, .{ .no_follow = true }) catch continue;
+        defer dir.close();
+        const bytes = dir.readFileAlloc(ctx.a, "snapshot.json", 1 << 20) catch continue;
+        const Meta = struct { id: []const u8, alias: ?[]const u8 = null };
+        const meta = std.json.parseFromSliceLeaky(Meta, ctx.a, bytes, .{ .ignore_unknown_fields = true }) catch continue;
+        if (!eq(meta.id, entry.name)) continue;
+        words.append(ctx.a, ctx.a.dupe(u8, entry.name) catch util.oom()) catch util.oom();
+        if (meta.alias) |alias| words.append(ctx.a, std.fmt.allocPrint(ctx.a, "{s}@{s}", .{ version, alias }) catch util.oom()) catch util.oom();
+    }
+    std.mem.sort([]const u8, words.items, {}, struct {
+        fn less(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.less);
+    for (words.items) |word| emit(prefix, word);
 }
 
 fn addons(ctx: *Ctx, prefix: []const u8) void {
@@ -146,8 +172,15 @@ pub fn query(ctx: *Ctx, inherited: select.Options, args: []const []const u8) u8 
         versions(ctx, prefix, bundles);
         return 0;
     }
-    if (eq(last, "--snapshot") or eq(last, "--target")) {
-        localDirs(ctx, prefix, &.{"snapshots"}, "");
+    if (eq(last, "--snapshot") or eq(last, "--config-snapshot") or eq(last, "--target")) {
+        var kind: @import("snapshot.zig").Kind = if (eq(last, "--config-snapshot")) .config else .plugins;
+        if (eq(last, "--target")) {
+            kind = for (prior, 0..) |word, at| {
+                if (eq(word, "snapshot") and at > 0 and eq(prior[at - 1], "manager") and at + 1 < prior.len)
+                    break std.meta.stringToEnum(@import("snapshot.zig").Kind, prior[at + 1]) orelse return 0;
+            } else return 0;
+        }
+        snapshotWords(ctx, prefix, kind);
         return 0;
     }
     if (eq(last, "--addon")) {
@@ -160,6 +193,7 @@ pub fn query(ctx: *Ctx, inherited: select.Options, args: []const []const u8) u8 
     };
     if (opts.use == null) opts.use = inherited.use;
     if (opts.snapshot == null) opts.snapshot = inherited.snapshot;
+    if (opts.config_snapshot == null) opts.config_snapshot = inherited.config_snapshot;
     const rest = prior[opts.consumed..];
     if (rest.len > 0 and eq(rest[0], "manager")) {
         if (eq(last, "--channel")) {
@@ -179,8 +213,12 @@ pub fn query(ctx: *Ctx, inherited: select.Options, args: []const []const u8) u8 
             };
             if (eq(rest[1], "install") or eq(rest[1], "uninstall")) versions(ctx, prefix, bundles);
             if (eq(rest[1], "snapshot")) {
-                if (rest.len == 2) for ([_][]const u8{ "new", "remove", "list" }) |w| emit(prefix, w);
-                if (rest.len > 2 and eq(rest[2], "remove")) localDirs(ctx, prefix, &.{"snapshots"}, "");
+                if (rest.len == 2) for (std.enums.values(@import("snapshot.zig").Kind)) |kind| emit(prefix, @tagName(kind));
+                if (rest.len >= 3) {
+                    const kind = std.meta.stringToEnum(@import("snapshot.zig").Kind, rest[2]) orelse return 0;
+                    if (rest.len == 3) for ([_][]const u8{ "new", "remove", "list" }) |w| emit(prefix, w);
+                    if (rest.len > 3 and eq(rest[3], "remove")) snapshotWords(ctx, prefix, kind);
+                }
             }
             if (eq(rest[1], "completion")) {
                 if (rest.len == 2) for ([_][]const u8{ "script", "install", "uninstall" }) |w| emit(prefix, w);
@@ -190,7 +228,7 @@ pub fn query(ctx: *Ctx, inherited: select.Options, args: []const []const u8) u8 
         emit(prefix, "--help");
         emit(prefix, "--version");
     } else {
-        if (rest.len == 0) for ([_][]const u8{ "manager", "--use", "--snapshot", "--addon", "--help", "--version" }) |w| emit(prefix, w);
+        if (rest.len == 0) for ([_][]const u8{ "manager", "--use", "--snapshot", "--config-snapshot", "--addon", "--help", "--version" }) |w| emit(prefix, w);
         runtimeWords(ctx, prefix, rest, opts, bundles);
     }
     return 0;

@@ -75,6 +75,7 @@ test.skipIf(!hasZig)("SC-LOCAL: local versions/tags, snapshots and addons stay f
 	const i = newInstall();
 	addRuntime(i.data, "1.0.0", { completion: description("--local-cli") });
 	mkdirSync(join(i.data, "snapshots/1.0.0@1"), { recursive: true });
+	writeFileSync(join(i.data, "snapshots/1.0.0@1/snapshot.json"), JSON.stringify({ id: "1.0.0@1", version: "1.0.0", n: 1, alias: null }));
 	mkdirSync(join(i.data, "addons/office/0.2.0"), { recursive: true });
 	mkdirSync(join(i.data, "state"));
 	writeFileSync(join(i.data, "state/manager.lock"), "");
@@ -90,7 +91,8 @@ test.skipIf(!hasZig)("SC-LOCAL: local versions/tags, snapshots and addons stay f
 		expect(candidates(i, ["manager", "install", "1"])).toEqual(["1.0.0"]);
 		expect(candidates(i, ["manager", "install", "--channel", ""])).toEqual(["release", "live"]);
 		expect(candidates(i, ["manager", "select", "--s"])).toEqual(["--snapshot"]);
-		expect(candidates(i, ["manager", "snapshot", ""])).toContain("new");
+		expect(candidates(i, ["manager", "snapshot", ""])).toContain("plugins");
+		expect(candidates(i, ["manager", "snapshot", "plugins", ""])).toContain("new");
 		expect(candidates(i, ["manager", "select", "--snapshot", ""])).toEqual(["1.0.0@1"]);
 		expect(candidates(i, ["--addon", ""])).toEqual(["office:0.2.0"]);
 		expect(candidates(i, ["manager", "uninstall", "--addon", "office:"])).toEqual(["office:0.2.0"]);
@@ -100,6 +102,7 @@ test.skipIf(!hasZig)("SC-LOCAL: local versions/tags, snapshots and addons stay f
 		expect(readFileSync(join(i.data, `bundles/1.0.0/dsh-native${EXE}`)).equals(entry)).toBe(true);
 		expect(tree(i.out)).toEqual([]);
 		mkdirSync(join(i.data, "snapshots/1.0.0@2"));
+		writeFileSync(join(i.data, "snapshots/1.0.0@2/snapshot.json"), JSON.stringify({ id: "1.0.0@2", version: "1.0.0", n: 2, alias: null }));
 		expect(candidates(i, ["--snapshot", ""])).toEqual(["1.0.0@1", "1.0.0@2"]);
 		rmSync(join(i.data, "snapshots/1.0.0@1"), { recursive: true });
 		expect(candidates(i, ["--snapshot", ""])).toEqual(["1.0.0@2"]);

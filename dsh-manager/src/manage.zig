@@ -39,7 +39,7 @@ pub fn selection(ctx: *Ctx, args: []const []const u8) u8 {
     if (opts.consumed != args.len) util.fatal("usage: dsh manager select [--use <version|latest>] [--snapshot <id>]", .{});
     if (args.len == 0) {
         const stored = selected(ctx);
-        printSelection(ctx, if (stored) |s| s.use else "latest", if (stored) |s| snapshotChoice(s) else null);
+        printSelection(ctx, if (stored) |s| s.use else "latest", if (stored) |s| snapshotChoice(s, .plugins) else null);
         return 0;
     }
     const query = opts.use orelse util.fatal("dsh manager select requires --use <version|latest>; add --use when selecting a snapshot", .{});
@@ -48,13 +48,15 @@ pub fn selection(ctx: *Ctx, args: []const []const u8) u8 {
     defer mutex.release();
     const bundles = runtimes.list(ctx);
     const use = if (std.mem.eql(u8, query, "latest")) query else require(bundles, query);
-    const snap: ?snapshot.Snapshot = if (opts.snapshot) |id| snapshot.existing(ctx, id) catch |err|
+    const snap: ?snapshot.Snapshot = if (opts.snapshot) |id| snapshot.existing(ctx, .plugins, id) catch |err|
         util.fatal("cannot select snapshot {s}: {s}; run `dsh manager snapshot list`", .{ id, @errorName(err) }) else null;
+    const config_snap: ?snapshot.Snapshot = if (opts.config_snapshot) |id| snapshot.existing(ctx, .config, id) catch |err|
+        util.fatal("cannot select config snapshot {s}: {s}; run `dsh manager snapshot config list`", .{ id, @errorName(err) }) else null;
     if (addon != null and !std.mem.eql(u8, addon.?, "none")) {
         const version = addons.runtime(ctx, .{ .use = use }) catch |err| util.fatal("cannot select addon: {s}", .{@errorName(err)});
         addons.validateChoice(ctx, version, addon) catch |err| util.fatal("cannot select addon: {s}", .{@errorName(err)});
     }
-    const bytes = std.json.Stringify.valueAlloc(ctx.a, .{ .schema = @as(u32, 1), .use = use, .snapshot = if (snap) |s| s.id else null, .addons = if (addon) |v| blk: {
+    const bytes = std.json.Stringify.valueAlloc(ctx.a, .{ .schema = @as(u32, 1), .use = use, .snapshot = if (snap) |s| s.id else null, .configSnapshot = if (config_snap) |s| s.id else null, .addons = if (addon) |v| blk: {
         var map = std.json.ObjectMap.init(ctx.a);
         map.put("office", .{ .string = v }) catch util.oom();
         break :blk std.json.Value{ .object = map };
@@ -65,8 +67,8 @@ pub fn selection(ctx: *Ctx, args: []const []const u8) u8 {
     return 0;
 }
 
-pub fn snapshotChoice(s: select.Selection) ?[]const u8 {
-    const value = s.value.object.get("snapshot") orelse return null;
+pub fn snapshotChoice(s: select.Selection, kind: snapshot.Kind) ?[]const u8 {
+    const value = s.value.object.get(if (kind == .plugins) "snapshot" else "configSnapshot") orelse return null;
     return if (value == .string and value.string.len > 0) value.string else null;
 }
 
@@ -74,6 +76,8 @@ fn printSelection(ctx: *const Ctx, use: []const u8, snap: ?[]const u8) void {
     util.print("selection: --use {s}\n  snapshot: {s}\n", .{ use, snap orelse "newest (default)" });
     const stored = selected(ctx);
     const addon = addons.storedChoice(stored) catch |err| util.fatal("invalid addon selection: {s}", .{@errorName(err)});
+    const config = if (stored) |s| snapshotChoice(s, .config) else null;
+    util.print("  config snapshot: {s}\n", .{config orelse "newest (default)"});
     util.print("  office: {s}\n", .{addon orelse "newest installed in-slot (default)"});
     const resolved = select.resolve(.{ .opts = .{}, .bundles = runtimes.list(ctx), .channel = state.channel(ctx), .selection_use = use });
     switch (resolved) {
