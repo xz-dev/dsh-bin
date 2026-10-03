@@ -30,7 +30,7 @@ function archive(id = ID, patch: Record<string, unknown> = {}, extra: ZipInput[]
 }
 function entry(id: string, bytes: Uint8Array, patch: Record<string, unknown> = {}) {
 	const meta = bundleMeta(id, { channel: id.startsWith("live-") ? "live" : "release" });
-	return { kind: "dsh-runtime", tag: `${meta.channel === "release" ? "runtime-v" : "runtime-"}${id}`, id, channel: meta.channel, upstream: meta.upstream, run: meta.run, attempt: meta.attempt, launchProtocol: 1, builderCommit: meta.builderCommit, addons: { office: { slot: null, pinned: null } }, assets: { [TARGET]: { name: `runtime-${TARGET}.zip`, size: bytes.length, sha256: sha(bytes) } }, seq: 1, ...patch };
+	return { kind: "dsh-runtime", tag: `${meta.channel === "release" ? "runtime-v" : "runtime-"}${id}`, id, channel: meta.channel, upstream: meta.upstream, run: meta.run, attempt: meta.attempt, launchProtocol: 2, builderCommit: meta.builderCommit, addons: { office: { slot: null, pinned: null } }, assets: { [TARGET]: { name: `runtime-${TARGET}.zip`, size: bytes.length, sha256: sha(bytes) } }, seq: 1, ...patch };
 }
 function source(entries: ReturnType<typeof entry>[], assets: Map<string, Uint8Array>, handler?: (req: Request, bytes: Uint8Array) => Response, tls = false) {
 	const requests: { path: string; range: string | null }[] = [];
@@ -92,7 +92,7 @@ test.skipIf(!hasZig)("FB-EMPTY / MC-EMPTY: manager-only install chooses runtime 
 
 test.skipIf(!hasZig)("RB-LEGACY: only legacy/protocol/target mismatches cause no asset request or install", async () => {
 	const bytes = archive().bytes;
-	for (const patch of [{ kind: undefined, launcherProtocol: 2 }, { launchProtocol: 2 }, { assets: {} }]) {
+	for (const patch of [{ kind: undefined, launcherProtocol: 2 }, { launchProtocol: 1 }, { assets: {} }]) {
 		const i = newInstall(), e = entry(ID, bytes, patch), s = source([e], new Map([[assetPath(entry(ID, bytes)), bytes]]));
 		try {
 			const res = await install(i, s.origin);
@@ -196,7 +196,7 @@ test.skipIf(!hasZig).each([
 	["legacy", { schemaVersion: 2, launcherProtocol: 2 }, "LegacyBundle"],
 	["wrong id", { id: "foreign" }, "BundleMismatch"],
 	["wrong target", { target: "foreign" }, "BundleMismatch"],
-	["protocol", { launchProtocol: 2 }, "BundleMismatch"],
+	["protocol", { launchProtocol: 1 }, "BundleMismatch"],
 	["wrong entry", { entry: "bundle.json" }, "BundleMismatch"],
 	["upstream mismatch", { upstream: { commit: "e".repeat(40), commitTime: "2026-09-01T00:00:00.000Z", version: "0.1.7" } }, "BundleMismatch"],
 	["builder mismatch", { builderCommit: "e".repeat(40) }, "BundleMismatch"],

@@ -21,9 +21,9 @@ function bytes(t: string, v = "1.2.3-rc.1") {
 	if (t.startsWith("linux")) { b.set([127, 69, 76, 70, 2, 1]); b.writeUInt16LE(2, 16); b.writeUInt16LE(x64 ? 62 : 183, 18); }
 	else if (t.startsWith("darwin")) { b.writeUInt32LE(0xfeedfacf); b.writeUInt32LE(x64 ? 0x01000007 : 0x0100000c, 4); b.writeUInt32LE(2, 12); }
 	else { b.write("MZ"); b.writeUInt32LE(64, 60); b.write("PE\0\0", 64); b.writeUInt16LE(x64 ? 0x8664 : 0xaa64, 68); b.writeUInt16LE(0x20b, 88); }
-	return Buffer.concat([b, Buffer.from(`DSH_MANAGER_VERSION=${v}\0DSH_MANAGER_LAUNCH_PROTOCOL=1\0`)]);
+	return Buffer.concat([b, Buffer.from(`DSH_MANAGER_VERSION=${v}\0DSH_MANAGER_LAUNCH_PROTOCOL=2\0`)]);
 }
-const manifest = () => ({ kind: "dsh-runtime", tag: "runtime-v0.1.7-b1.1.gdddddddd", id: "0.1.7-b1.1.gdddddddd", channel: "release", upstream: { commit: "c".repeat(40), commitTime: "2026-09-01T00:00:00.000Z", version: "0.1.7" }, run: 1, attempt: 1, builderCommit: "d".repeat(40), launchProtocol: 1, addons: { office: { slot: null, pinned: null } }, targets: { "linux-x64-modern": { file: "runtime-linux-x64-modern.zip", size: 3, sha256: sha256(Buffer.from("zip")) } } });
+const manifest = () => ({ kind: "dsh-runtime", tag: "runtime-v0.1.7-b1.1.gdddddddd", id: "0.1.7-b1.1.gdddddddd", channel: "release", upstream: { commit: "c".repeat(40), commitTime: "2026-09-01T00:00:00.000Z", version: "0.1.7" }, run: 1, attempt: 1, builderCommit: "d".repeat(40), launchProtocol: 2, addons: { office: { slot: null, pinned: null } }, targets: { "linux-x64-modern": { file: "runtime-linux-x64-modern.zip", size: 3, sha256: sha256(Buffer.from("zip")) } } });
 
 test("8.3: six single-entry manager ZIPs validate headers, markers, CRC and strict SemVer", () => {
 	const out = join(root, "manager"); mkdirSync(out);
@@ -131,7 +131,7 @@ test("Upstream tracking: unchanged release does nothing; new tag builds dry-run 
 	const old = manifest(), published = runtimeIndex();
 	appendBundle(published, { ...old, upstream: { ...old.upstream, tag: "dsh-v0.1.7" } });
 	const refs = `${"c".repeat(40)}\trefs/tags/dsh-v0.1.7\n`;
-	const manager = emptyIndex(); appendManager(manager, { kind: "dsh-manager", version: "1.2.3", tag: "manager-v1.2.3", launchProtocols: [1], assets: Object.fromEntries(Object.keys(TARGETS).map(target => [target, { name: `manager-${target}.zip`, size: 3, sha256: sha256("zip") }])) });
+	const manager = emptyIndex(); appendManager(manager, { kind: "dsh-manager", version: "1.2.3", tag: "manager-v1.2.3", launchProtocols: [2], assets: Object.fromEntries(Object.keys(TARGETS).map(target => [target, { name: `manager-${target}.zip`, size: 3, sha256: sha256("zip") }])) });
 	const managerText = JSON.stringify(manager), calls: string[] = [];
 	const source = (index: any, counterpart: string | null) => (async (url: any, options: any) => {
 		calls.push(String(url)); expect(options.redirect).toBe("error");

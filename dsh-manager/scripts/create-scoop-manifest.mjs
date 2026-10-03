@@ -15,7 +15,7 @@ export function scoopManifests(index, repo = "xz-dev/dsh-bin") {
 	const manager = entries[0];
 	const protocols = manager.launchProtocols;
 	if (!Array.isArray(protocols) || !protocols.every((n) => Number.isSafeInteger(n) && n >= 0)) throw new Error("invalid manager launchProtocols");
-	if (!protocols.includes(1)) throw new Error("incompatible manager protocol");
+	if (!protocols.includes(2)) throw new Error("incompatible manager protocol");
 	const architecture = Object.fromEntries([["64bit", "windows-x64"], ["arm64", "windows-arm64"]].map(([arch, target]) => {
 		const a = manager.assets?.[target];
 		if (!a || !/^[0-9A-Za-z][0-9A-Za-z._+-]*\.zip$/.test(a.name) || !Number.isSafeInteger(a.size) || a.size <= 0 || !/^[0-9a-fA-F]{64}$/.test(a.sha256)) throw new Error(`${target}: invalid manager asset`);

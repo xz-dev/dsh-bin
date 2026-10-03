@@ -11,7 +11,7 @@ afterAll(cleanup);
 
 const TPL = readFileSync(join(import.meta.dir, "../packaging/gentoo/dsh-bin-9999.ebuild.in"), "utf8");
 const asset = (name: string, c: string) => ({ name, size: 7, sha256: c.repeat(64) });
-const entry = (version: string) => ({ version, tag: `manager-v${version}`, launchProtocols: [1], assets: {
+const entry = (version: string) => ({ version, tag: `manager-v${version}`, launchProtocols: [2], assets: {
 	"linux-x64": asset("manager-linux-x64.zip", "1"), "linux-arm64": asset("manager-linux-arm64.zip", "2"),
 } });
 
@@ -35,7 +35,7 @@ test("PS-MANAGED / DL-MANAGED-UPDATE: Gentoo package owns only newest manager, m
 });
 
 test("7.4: invalid manager identity or missing Linux asset refuses packaging", () => {
-	for (const e of [{ ...entry("1.0.0"), tag: "../bad" }, { ...entry("1.0.0"), launchProtocols: [2] }, { ...entry("1.0.0"), assets: {} },
+	for (const e of [{ ...entry("1.0.0"), tag: "../bad" }, { ...entry("1.0.0"), launchProtocols: [1] }, { ...entry("1.0.0"), assets: {} },
 		{ ...entry("1.0.0"), assets: { "linux-x64": asset("$(touch bad).zip", "1"), "linux-arm64": asset("ok.zip", "2") } }]) {
 		expect(() => gentooEbuild({ schema: 1, versions: [e] }, TPL)).toThrow();
 	}

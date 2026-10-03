@@ -36,7 +36,7 @@ fn maintenance(ctx: *const Ctx) lock.Lock {
 pub fn selection(ctx: *Ctx, args: []const []const u8) u8 {
     const opts = @import("launch.zig").parseLeading(ctx.a, args);
     const addon = addons.option(opts.addons) catch |err| util.fatal("invalid addon selection: {s}", .{@errorName(err)});
-    if (opts.consumed != args.len) util.fatal("usage: dsh manager select [--use <version|latest>] [--snapshot <id>]", .{});
+    if (opts.consumed != args.len) util.fatal("usage: dsh manager select [--use <version|latest>] [--snapshot <id>] [--config-snapshot <id>]", .{});
     if (args.len == 0) {
         const stored = selected(ctx);
         printSelection(ctx, if (stored) |s| s.use else "latest", if (stored) |s| snapshotChoice(s, .plugins) else null);

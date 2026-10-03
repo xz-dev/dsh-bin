@@ -12,7 +12,7 @@ const manifest = (channel = "release", run = 1) => ({
 	kind: "dsh-runtime", id: channel === "release" ? `0.1.7-b${run}.1.gdeadbeef` : `live-cafebad-b${run}.1.gdeadbeef`,
 	tag: channel === "release" ? `runtime-v0.1.7-b${run}.1.gdeadbeef` : `runtime-live-cafebad-b${run}.1.gdeadbeef`, channel,
 	upstream: { commit: "cafebad" + "c".repeat(33), commitTime: "2026-09-01T00:00:00.000Z", version: "0.1.7" },
-	run, attempt: 1, launchProtocol: 1, builderCommit: "deadbeef" + "d".repeat(32), addons: { office: { slot: null, pinned: null } },
+	run, attempt: 1, launchProtocol: 2, builderCommit: "deadbeef" + "d".repeat(32), addons: { office: { slot: null, pinned: null } },
 	targets: { "linux-x64-modern": { file: "runtime-linux-x64-modern.zip", size: 123, sha256: "a".repeat(64) } },
 });
 const invoke = (args: string[]) => spawnSync(process.execPath, [script, ...args], { encoding: "utf8", timeout: 15_000 });
@@ -38,7 +38,7 @@ test("FB-EMPTY: local manifest produces schema 1 runtime-index with independent 
 	expect(index.channels.release.map((e: any) => e.seq)).toEqual([1, 2]);
 	expect(index.channels.live.map((e: any) => e.seq)).toEqual([1]);
 	expect(index.addons).toEqual({ office: [] });
-	expect(index.channels.release[0]).toMatchObject({ kind: "dsh-runtime", id: release.id, tag: release.tag, launchProtocol: 1, builderCommit: release.builderCommit, assets: { "linux-x64-modern": { name: "runtime-linux-x64-modern.zip", size: 123, sha256: "a".repeat(64) } } });
+	expect(index.channels.release[0]).toMatchObject({ kind: "dsh-runtime", id: release.id, tag: release.tag, launchProtocol: 2, builderCommit: release.builderCommit, assets: { "linux-x64-modern": { name: "runtime-linux-x64-modern.zip", size: 123, sha256: "a".repeat(64) } } });
 	const stable = readFileSync(file, "utf8");
 	for (const patch of [{ run: 9 }, { builderCommit: "e".repeat(40) }, { targets: { "linux-x64-modern": { ...release.targets["linux-x64-modern"], sha256: "b".repeat(64) } } }]) {
 		expect(append(file, { ...release, ...patch }).status).not.toBe(0);

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { scoopManifests } from "../scripts/create-scoop-manifest.mjs";
 
 const h = (c: string) => c.repeat(64);
-const entry = (version: string) => ({ version, tag: `manager-v${version}`, launchProtocols: [1], assets: {
+const entry = (version: string) => ({ version, tag: `manager-v${version}`, launchProtocols: [2], assets: {
 	"windows-x64": { name: "manager-windows-x64.zip", size: 7, sha256: h("1") },
 	"windows-arm64": { name: "manager-windows-arm64.zip", size: 7, sha256: h("2") },
 } });
@@ -55,7 +55,7 @@ describe("7.5: Scoop owns only the manager", () => {
 	});
 
 	test("7.5: invalid manager index, identity, protocol or asset refuses packaging", () => {
-		for (const e of [{ ...entry("1.0.0"), tag: "../bad" }, entry("01.0.0"), entry("1.0.0-rc.01"), entry("1.0.0+"), { ...entry("1.0.0"), launchProtocols: [2] }, { ...entry("1.0.0"), launchProtocols: "91" }, { ...entry("1.0.0"), launchProtocols: ["1"] }, { ...entry("1.0.0"), launchProtocols: [-1, 1] }, { ...entry("1.0.0"), assets: {} },
+		for (const e of [{ ...entry("1.0.0"), tag: "../bad" }, entry("01.0.0"), entry("1.0.0-rc.01"), entry("1.0.0+"), { ...entry("1.0.0"), launchProtocols: [1] }, { ...entry("1.0.0"), launchProtocols: "91" }, { ...entry("1.0.0"), launchProtocols: ["1"] }, { ...entry("1.0.0"), launchProtocols: [-1, 1] }, { ...entry("1.0.0"), assets: {} },
 			{ ...entry("1.0.0"), assets: { "windows-x64": { name: "$(touch bad).zip", size: 7, sha256: h("1") }, "windows-arm64": entry("1.0.0").assets["windows-arm64"] } }]) {
 			expect(() => scoopManifests({ schema: 1, versions: [e] })).toThrow();
 		}

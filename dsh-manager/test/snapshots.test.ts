@@ -201,11 +201,13 @@ test.skipIf(!hasZig).each(["plugins", "config"])("CS-CREATE / CS-GAPS: %s defaul
 	expect(typedRows(i, kind).map((s: any) => s.id)).toEqual([`${A}@1`, `${A}@4`, `${B}@1`]); expect(started(i)).toBe(false);
 });
 
-test.skipIf(!hasZig)("MC-ARGS / MC-NAMESPACE: config option leading boundary; protocol 1 cannot silently ignore selection", () => {
+test.skipIf(!hasZig)("MC-ARGS / MC-NAMESPACE: config option leading boundary; old protocol still refused", () => {
 	const i = install();
 	expect(run(i, ["--use", A, "--profile", "tui", "-p", "manager update --use latest --config-snapshot A@1"]).status).toBe(0);
 	expect(argvOf(i)).toEqual(["--profile", "tui", "-p", "manager update --use latest --config-snapshot A@1"]);
-	const r = run(i, ["--config-snapshot", `${A}@1`, "probe"]); expect(r.status).toBe(1); expect(r.stderr).toContain("protocol"); expect(started(i)).toBe(false);
+	const r = run(i, ["--config-snapshot", `${A}@1`, "probe"]); expect(r.status).toBe(0); expect(launchOf(i).configSnapshot.id).toBe(`${A}@1`);
+	addRuntime(i.data, B, { patch: { launchProtocol: 1 } });
+	const legacy = run(i, ["--use", B, "--config-snapshot", `${A}@1`]); expect(legacy.status).toBe(1); expect(legacy.stderr).toContain("protocol 1"); expect(started(i)).toBe(false);
 	expect(run(i, ["--use", A, "manager", "snapshot", "config", "new", "--empty"]).status).toBe(0); expect(started(i)).toBe(false);
 });
 

@@ -36,7 +36,8 @@ export function officeWiring(office: { version: string; dir: string; warning?: s
 	const extra = kitPackages(dir);
 	if (!extra.size) return degraded(`office addon ${version} is incomplete; run \`dsh manager install --addon office:${version} --force\``);
 	const guard = join(dir, USAGE_GUARD);
-	if (existsSync(guard) && holdSessionClaim(guard) === "busy") return degraded(`office addon ${version} is being removed; start dsh again`);
+	if (!existsSync(guard)) return degraded(`office addon ${version} lacks its usage guard; run \`dsh manager install --addon office:${version} --force\``);
+	if (holdSessionClaim(guard) === "busy") return degraded(`office addon ${version} is being removed; start dsh again`);
 	return { kind: "enabled", version, dir, extra, ...(warning ? { warning } : {}) };
 }
 

@@ -18,7 +18,7 @@ function binary(bytes, target, v) {
 		if (os === "windows") { const p = bytes.readUInt32LE(60); valid = bytes.toString("ascii", 0, 2) === "MZ" && p <= bytes.length - 26 && bytes.toString("ascii", p, p + 4) === "PE\0\0" && bytes.readUInt16LE(p + 4) === (arch === "x64" ? 0x8664 : 0xaa64) && bytes.readUInt16LE(p + 24) === 0x20b; }
 	}
 	if (!valid) throw new Error(`invalid native manager: ${target}`);
-	for (const [key, value] of [["DSH_MANAGER_VERSION=", v], ["DSH_MANAGER_LAUNCH_PROTOCOL=", "1"]]) {
+	for (const [key, value] of [["DSH_MANAGER_VERSION=", v], ["DSH_MANAGER_LAUNCH_PROTOCOL=", "2"]]) {
 		const prefix = Buffer.from(key), marker = Buffer.from(`${key}${value}\0`), at = bytes.indexOf(prefix);
 		if (at < 0 || bytes.indexOf(prefix, at + 1) >= 0 || !bytes.subarray(at, at + marker.length).equals(marker)) throw new Error(`invalid/ambiguous ${key}`);
 	}
@@ -46,7 +46,7 @@ export function emptyIndex() { return { schema: 1, versions: [] }; }
 export function appendManager(index, entry) {
 	if (index.schema !== 1 || !Array.isArray(index.versions)) throw new Error("invalid manager index");
 	version(entry.version);
-	if (entry.kind !== "dsh-manager" || entry.tag !== `manager-v${entry.version}` || JSON.stringify(entry.launchProtocols) !== "[1]") throw new Error("invalid manager identity/protocol");
+	if (entry.kind !== "dsh-manager" || entry.tag !== `manager-v${entry.version}` || JSON.stringify(entry.launchProtocols) !== "[2]") throw new Error("invalid manager identity/protocol");
 	if (Object.keys(entry.assets).sort().join() !== Object.keys(TARGETS).sort().join()) throw new Error("expected all six manager targets");
 	for (const [t, a] of Object.entries(entry.assets)) if (a.name !== `manager-${t}.zip` || !Number.isSafeInteger(a.size) || a.size <= 0 || !/^[0-9a-f]{64}$/.test(a.sha256)) throw new Error(`invalid manager asset: ${t}`);
 	const next = { version: entry.version, tag: entry.tag, launchProtocols: entry.launchProtocols, assets: entry.assets };
@@ -62,7 +62,7 @@ export function aggregate(dir, v) {
 		if (existing && (existing.version !== v || existing.assets?.[t]?.name !== name || existing.assets[t].size !== bytes.length || existing.assets[t].sha256 !== sha256(bytes))) throw new Error(`manager asset differs from original build manifest: ${t}`);
 		return [t, { name, size: bytes.length, sha256: sha256(bytes) }];
 	}));
-	const m = { kind: "dsh-manager", version: v, tag: `manager-v${v}`, launchProtocols: [1], assets };
+	const m = { kind: "dsh-manager", version: v, tag: `manager-v${v}`, launchProtocols: [2], assets };
 	writeFileSync(join(dir, "manager-manifest.json"), `${JSON.stringify(m, null, 2)}\n`);
 	writeFileSync(join(dir, "SHA256SUMS"), Object.values(assets).map((a) => `${a.sha256}  ${a.name}\n`).join(""));
 	const index = emptyIndex(); appendManager(index, m); writeFileSync(join(dir, "manager-index.json"), `${JSON.stringify(index, null, 2)}\n`); return m;

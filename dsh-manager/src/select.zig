@@ -5,7 +5,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 /// Launch protocol this manager implements; each runtime `bundle.json` declares `launchProtocol`.
-pub const protocol: u32 = 1;
+pub const protocol: u32 = 2;
 
 // ------------------------------------------------------------------------------------ leading options
 
@@ -16,6 +16,11 @@ pub const Options = struct {
     addons: []const []const u8 = &.{},
     /// Number of leading arguments consumed by the options.
     consumed: usize = 0,
+
+    /// Any single-shot runtime/snapshot choice discards unsupplied persisted snapshot dimensions.
+    pub fn overridesSnapshots(self: Options) bool {
+        return self.use != null or self.snapshot != null or self.config_snapshot != null;
+    }
 };
 
 pub const ParseError = struct {
@@ -217,6 +222,7 @@ pub const Failure = union(enum) {
     not_installed: struct { query: []const u8, source: Source },
     ambiguous: struct { query: []const u8, candidates: [2][]const u8 },
     bad_snapshot_id: []const u8,
+    conflicting_snapshots: [2][]const u8,
     /// `latest` found no installed runtime of the channel.
     none_installed: []const u8,
     /// A `latest` candidate whose `bundle.json` lacks the version-order fields.
@@ -249,21 +255,24 @@ fn newest(bundles: []const Bundle, channel: ?[]const u8) union(enum) { found: []
     return if (best) |b| .{ .found = b.version } else .none;
 }
 
-/// Runtime to start: `--use`, else the version of `--snapshot`, else the selection (`latest` by default).
-pub fn resolve(in: Input) Resolution {
-    var query: []const u8 = undefined;
-    var source: Source = undefined;
-    if (in.opts.use) |u| {
-        query = u;
-        source = .use;
-        if (in.opts.snapshot) |id| if (snapshotVersion(id) == null) return .{ .err = .{ .bad_snapshot_id = id } };
-    } else if (in.opts.snapshot) |id| {
-        query = snapshotVersion(id) orelse return .{ .err = .{ .bad_snapshot_id = id } };
-        source = .snapshot;
-    } else {
-        source = .selection;
-        query = in.selection_use orelse "latest";
-    }
+pub const Intent = struct {
+    query: []const u8,
+    source: Source,
+    /// Second implied version, checked against the first resolved version rather than raw prefixes.
+    other_query: ?[]const u8 = null,
+};
+
+/// Pure single-shot intent; callers canonicalize existing snapshot aliases before resolving.
+/// No ensure/bootstrap or state writes here; readonly queries reuse this same rule.
+pub fn intent(opts: Options, selection_use: ?[]const u8) union(enum) { ok: Intent, err: Failure } {
+    const plugins = if (opts.snapshot) |id| snapshotVersion(id) orelse return .{ .err = .{ .bad_snapshot_id = id } } else null;
+    const config = if (opts.config_snapshot) |id| snapshotVersion(id) orelse return .{ .err = .{ .bad_snapshot_id = id } } else null;
+    if (opts.use) |u| return .{ .ok = .{ .query = u, .source = .use } };
+    if (plugins orelse config) |v| return .{ .ok = .{ .query = v, .source = .snapshot, .other_query = if (plugins != null) config else null } };
+    return .{ .ok = .{ .query = selection_use orelse "latest", .source = .selection } };
+}
+
+fn resolveQuery(in: Input, query: []const u8, source: Source) Resolution {
     if (std.mem.eql(u8, query, "latest")) {
         return switch (newest(in.bundles, in.channel)) {
             .found => |v| .{ .ok = .{ .version = v, .source = source } },
@@ -276,6 +285,23 @@ pub fn resolve(in: Input) Resolution {
         .none => .{ .err = .{ .not_installed = .{ .query = query, .source = source } } },
         .ambiguous => |c| .{ .err = .{ .ambiguous = .{ .query = query, .candidates = c } } },
     };
+}
+
+/// `--use` > common implied single-shot snapshot version > persisted use/latest.
+pub fn resolve(in: Input) Resolution {
+    const choice = switch (intent(in.opts, in.selection_use)) {
+        .ok => |i| i,
+        .err => |f| return .{ .err = f },
+    };
+    const first = resolveQuery(in, choice.query, choice.source);
+    if (first == .err) return first;
+    if (choice.other_query) |query| {
+        const other = resolveQuery(in, query, .snapshot);
+        if (other == .err) return other;
+        if (!std.mem.eql(u8, first.ok.version, other.ok.version))
+            return .{ .err = .{ .conflicting_snapshots = .{ first.ok.version, other.ok.version } } };
+    }
+    return first;
 }
 
 // ------------------------------------------------------------------------------------ Windows arguments
@@ -471,4 +497,25 @@ test "MC-TYPED / MC-ARGS: independent config leading option, boundary and repeat
     try tt.expectEqual(@as(@TypeOf(@as(ParseError, undefined).kind), .missing_value), missing.err.kind);
     const repeated = try parseLeading(tt.allocator, &.{ "--config-snapshot", "A@1", "--config-snapshot=B@1" });
     try tt.expectEqual(@as(@TypeOf(@as(ParseError, undefined).kind), .repeated), repeated.err.kind);
+}
+
+test "MC-CONFIG-SELECT / MC-AMBIGUOUS: symmetric single-shot version intent" {
+    const all = [_]Bundle{ R2, R1, L };
+    const config = resolve(.{ .opts = .{ .config_snapshot = "0.1.7-rc.2@1" }, .bundles = &all, .channel = "release", .selection_use = R1.version });
+    try tt.expectEqualStrings(R2.version, config.ok.version);
+    const conflict = resolve(.{ .opts = .{ .snapshot = "0.1.7-rc.2@1", .config_snapshot = "0.2.0-rc.1@1" }, .bundles = &all, .channel = "release" });
+    try tt.expect(conflict == .err);
+    const explicit = resolve(.{ .opts = .{ .use = R1.version, .snapshot = "0.1.7-rc.2@1", .config_snapshot = "0.2.0-rc.1@1" }, .bundles = &all, .channel = "release" });
+    try tt.expectEqualStrings(R1.version, explicit.ok.version);
+}
+
+test "dual intent validates both IDs and override boundary without I/O" {
+    const bad = intent(.{ .use = R1.version, .config_snapshot = "bad" }, null);
+    try tt.expectEqualStrings("bad", bad.err.bad_snapshot_id);
+    const all = [_]Bundle{ R2, R1 };
+    const same = resolve(.{ .opts = .{ .snapshot = "0.1.7@keep", .config_snapshot = "0.1.7-rc.2@2" }, .bundles = &all, .channel = "release" });
+    try tt.expectEqualStrings(R2.version, same.ok.version);
+    try tt.expect(!(Options{}).overridesSnapshots());
+    try tt.expect(!(Options{ .addons = &.{"office:none"} }).overridesSnapshots());
+    try tt.expect((Options{ .config_snapshot = "A@1" }).overridesSnapshots());
 }

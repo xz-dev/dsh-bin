@@ -86,3 +86,19 @@ test.skipIf(!hasZig)("MC-IN-USE: a busy runtime launch fails fast; missing runti
 	const degraded = run(i, ["--use", B, "--addon", `office:${O}`, "probe"]);
 	expect(degraded.status).toBe(0); expect(degraded.stderr.trim().split("\n")).toHaveLength(1); expect(degraded.stderr).toContain(O); expect(launchOf(i).addons.office).toBeUndefined();
 });
+
+test.skipIf(!hasZig)("MC-IN-USE / RB-RESTART: config claims remain typed and frozen when persisted defaults change", async () => {
+	const i = fixture();
+	for (const version of [A, B]) expect(run(i, ["manager", "snapshot", "config", "new", "--use", version, "--empty"]).status).toBe(0);
+	expect(run(i, ["manager", "select", "--use", A, "--snapshot", `${A}@1`, "--config-snapshot", `${A}@1`]).status).toBe(0);
+	const session = await holdSession(i, ["probe"], { FAKE_RESTART_WAIT: "1", FAKE_RESTART_WRITE: join(i.out, "dual-restarted") });
+	try {
+		const first = launchOf(i), roots = ["snapshots", "config-snapshots"].map(p => join(i.data, p)), saved = roots.map(bytes);
+		expect(run(i, ["manager", "select", "--use", B, "--snapshot", `${B}@1`, "--config-snapshot", `${B}@1`]).status).toBe(0);
+		session.proc.stdin.write("r"); await session.wait("2");
+		expect(launchOf(i, "2")).toEqual(first);
+		for (const kind of ["plugins", "config"]) expect(refused(i, ["snapshot", kind, "remove", `${B}@1`, `${A}@1`], [`${A}@1`]).stderr).toContain("in use");
+		expect(roots.map(bytes)).toEqual(saved);
+	} finally { expect(await session.finish()).toBe(0); }
+	for (const kind of ["plugins", "config"]) expect(run(i, ["manager", "snapshot", kind, "remove", `${A}@1`]).status).toBe(0);
+});

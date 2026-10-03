@@ -1,7 +1,7 @@
-// Compiled entry (D1) loads the on-disk upstream app next to this executable. Under protocol v1,
-// consume manager-selected home/snapshot/addons only; direct starts retain upstream behavior.
+// Compiled entry (D1) loads the on-disk upstream app next to this executable. Under protocol v2,
+// consume manager-selected home/snapshots/addons only; direct starts retain upstream behavior.
 import { existsSync, realpathSync } from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, relative } from "node:path";
 import { dshArgv, userArgs } from "./argv.ts";
 import { officeWiring, SKILL_OFFICE, withOfficeNode } from "./compat/addons.ts";
 import { degradedPlugin, HMR_DEGRADATION } from "./compat/degradations.ts";
@@ -22,7 +22,7 @@ function fail(message: string): never {
 
 const launch = (() => {
 	try {
-		return readManagerLaunch();
+		return readManagerLaunch(process.env, bundleDir);
 	} catch (error) {
 		if (!(error instanceof LaunchError)) throw error;
 		fail(`${error.message}; start dsh through the dsh manager`);
@@ -30,21 +30,36 @@ const launch = (() => {
 })();
 
 // Reacquire claims after direct in-app respawn; no version/snapshot decisions here.
-const claim = (dir: string, label: string) => {
+const claim = (dir: string, label: string, required = false) => {
 	const guard = join(dir, USAGE_GUARD);
-	if (existsSync(guard) && holdSessionClaim(guard) === "busy") fail(`${label} is being removed by the dsh manager; start dsh again`);
-};
-claim(bundleDir, "this dsh runtime");
-if (launch) {
-	process.env.DSH_HOME = launch.home;
-	delete process.env.DSH_BIN_SNAPSHOT_DIR;
-	const snapshot = launch.snapshot;
-	if (snapshot) {
-		if (!existsSync(snapshot.dir)) fail(`plugin snapshot ${snapshot.id} does not exist; start dsh again`);
-		claim(snapshot.dir, `plugin snapshot ${snapshot.id}`);
-		process.env.DSH_BIN_SNAPSHOT_DIR = snapshot.dir;
+	if (!existsSync(guard)) {
+		if (required) fail(`${label} lacks its usage guard; start dsh through the dsh manager`);
+		return;
 	}
-}
+	try {
+		if (holdSessionClaim(guard) === "busy") fail(`${label} is being removed by the dsh manager; start dsh again`);
+	} catch (error) {
+		fail(`cannot claim ${label}: ${String(error)}`);
+	}
+};
+// Raw config bridges never authorize managed configuration, including direct starts.
+delete process.env.DSH_BIN_CONFIG_SNAPSHOT_DIR;
+if (launch) {
+	delete process.env.DSH_BIN_SNAPSHOT_DIR;
+	const root = realpathSync(launch.dataRoot);
+	for (const [dir, expected, label] of [
+		[bundleDir, join(root, "bundles", launch.runtime), "this dsh runtime"],
+		[launch.snapshot.dir, join(root, "snapshots", launch.snapshot.id), `plugin snapshot ${launch.snapshot.id}`],
+		[launch.configSnapshot.dir, join(root, "config-snapshots", launch.configSnapshot.id), `config snapshot ${launch.configSnapshot.id}`],
+	]) {
+		if (!existsSync(dir)) fail(`${label} does not exist; start dsh again`);
+		if (relative(realpathSync(dir), expected) !== "") fail(`${label} has a mismatched identity/root; start dsh through the dsh manager`);
+		claim(dir, label, true);
+	}
+	process.env.DSH_HOME = launch.home;
+	process.env.DSH_BIN_SNAPSHOT_DIR = launch.snapshot.dir;
+	process.env.DSH_BIN_CONFIG_SNAPSHOT_DIR = launch.configSnapshot.dir;
+} else claim(bundleDir, "this dsh runtime");
 
 const appDir = realpathSync(join(bundleDir, "app"));
 const binJs = join(appDir, "lib", "bin.js");

@@ -128,7 +128,7 @@ describe("assemble (6.1)", () => {
 		expect(r.meta.requiredPaths).toEqual(requiredPaths(target("linux-x64-modern")));
 		for (const p of r.meta.requiredPaths) expect(existsSync(join(r.out, p))).toBe(true);
 		const meta = JSON.parse(readFileSync(join(r.bundle, "bundle.json"), "utf8"));
-		expect(meta).toMatchObject({ kind: "dsh-runtime", schemaVersion: 1, id, channel: "release", target: "linux-x64-modern", run: 1, attempt: 1, launchProtocol: 1, entry: "dsh-native", builderCommit: "abcdef12".repeat(5) });
+		expect(meta).toMatchObject({ kind: "dsh-runtime", schemaVersion: 1, id, channel: "release", target: "linux-x64-modern", run: 1, attempt: 1, launchProtocol: 2, entry: "dsh-native", builderCommit: "abcdef12".repeat(5) });
 		for (const legacy of ["launcherProtocol", "launcherCommit", "name", "version"]) expect(meta[legacy]).toBeUndefined();
 		expect(meta.upstream.commitTime).toBe("2026-09-24T13:39:59.000Z");
 		expect(meta.addons.office.pinned).toBe("0.1.2-b3.1.g33333333");

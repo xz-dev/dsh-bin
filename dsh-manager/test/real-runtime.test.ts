@@ -149,7 +149,7 @@ test.skipIf(!available)(`RB-INDEPENDENT / MC-ARGS: same real archive through two
 			if (code !== 7 || !stdout.includes("DSH_PROBE ")) console.error(stdout, await stderr);
 			expect(code).toBe(7);
 			const report = JSON.parse(stdout.split("\n").find((l) => l.startsWith("DSH_PROBE "))!.slice(10));
-			expect(report).toMatchObject({ args, cwd, input, launch: { protocol: 1, runtime: id, home, snapshot: { id: `${id}@1`, dir: join(root, "tools/dsh-bin/snapshots", `${id}@1`) }, manager: n ? "2.0.0" : "1.0.0" } });
+			expect(report).toMatchObject({ args, cwd, input, launch: { protocol: 2, runtime: id, home, snapshot: { id: `${id}@1`, dir: join(root, "tools/dsh-bin/snapshots", `${id}@1`) }, manager: n ? "2.0.0" : "1.0.0" } });
 			expect(stdout).toContain("DSH_HELD");
 			expect(await stderr).not.toContain("failed to load");
 		} finally { clearTimeout(timer); if (proc.exitCode === null) { proc.kill("SIGKILL"); await proc.exited; } }

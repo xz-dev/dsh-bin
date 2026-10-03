@@ -1,5 +1,5 @@
 // Runtime usage claims (runtime-bundles "重启保持当前运行上下文"). Managed runtime processes hold
-// shared locks on the resolved runtime, snapshot and addon guards; manager retirement needs exclusive
+// shared locks on the resolved runtime, both typed snapshots and addon guards; manager retirement needs exclusive
 // locks. POSIX flock(2) and Windows LockFileEx release claims when their handles close, including process
 // exit. The runtime reacquires shared claims on application restart; it does not choose or delete objects.
 import { dlopen, FFIType, ptr } from "bun:ffi";

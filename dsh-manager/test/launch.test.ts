@@ -56,7 +56,7 @@ test.skipIf(!hasZig)("MC-ARGS: leading options select the runtime; the app gets 
 	expect(res.status).toBe(3);
 	expect(argvOf(i)).toEqual(args);
 	expect(cwdOf(i)).toBe(cwd);
-	expect(launchOf(i)).toMatchObject({ protocol: 1, runtime: R1, source: "use", manager: MANAGER_VERSION });
+	expect(launchOf(i)).toMatchObject({ protocol: 2, runtime: R1, source: "use", manager: MANAGER_VERSION });
 });
 
 test.skipIf(!hasZig)("MC-ARGS: `manager` after the first app argument is an app argument", () => {
@@ -142,8 +142,8 @@ test.skipIf(!hasZig)("RB-LEGACY: an old coupled bundle, another protocol, a miss
 	const i = install([R2]);
 	addRuntime(i.data, R1, { ...SPECS[R1], raw: JSON.stringify({ schemaVersion: 2, name: "dsh-bin", version: R1, channel: "release", launcherProtocol: 2, run: 10, attempt: 1, upstream: { commitTime: "2026-09-28T10:00:00.000Z" } }) });
 	refused(i, run(i, ["--use", R1]), R1, "not in the supported runtime format");
-	addRuntime(i.data, L1, { ...SPECS[L1], patch: { launchProtocol: 2 } });
-	refused(i, run(i, ["--use", L1]), "needs launch protocol 2", "self-update");
+	addRuntime(i.data, L1, { ...SPECS[L1], patch: { launchProtocol: 1 } });
+	refused(i, run(i, ["--use", L1]), "needs launch protocol 1", "self-update");
 	addRuntime(i.data, R2B, { ...SPECS[R2B], entry: false });
 	refused(i, run(i, ["--use", R2B]), "is incomplete", `dsh manager install ${R2B} --force`);
 	// latest never skips an unorderable runtime silently.
@@ -233,4 +233,41 @@ test.skipIf(!hasZig)("the running runtime holds the shared claim until it exits;
 	if (claim !== "busy") claim.release();
 	expect(run(i, ["manager", "list"]).status).toBe(0);
 	expect(started(i)).toBe(false);
+});
+
+test.skipIf(!hasZig)("MC-CONFIG-SELECT / MC-AMBIGUOUS: dual launch transport, symmetric version intent, no state writes", () => {
+	const i = install([R2, R1], { selection: { schema: 1, use: R1, snapshot: `${R1}@7`, configSnapshot: `${R1}@7`, addons: {} } });
+	for (const kind of ["snapshots", "config-snapshots"]) for (const [id, n] of [[R2, 2], [R1, 7]] as const) {
+		const dir = join(i.data, kind, `${id}@${n}`);
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "snapshot.json"), JSON.stringify({ id: `${id}@${n}`, version: id, n }));
+		writeFileSync(join(dir, ".usage.lock"), "");
+	}
+	const selectionPath = join(i.data, "state", "selection.json"), before = readFileSync(selectionPath);
+	expect(run(i, ["--config-snapshot", `${R2}@2`, "--profile", "tui", "--snapshot", "untouched"]).status).toBe(0);
+	expect(argvOf(i)).toEqual(["--profile", "tui", "--snapshot", "untouched"]);
+	expect(launchOf(i)).toMatchObject({ protocol: 2, runtime: R2, snapshot: { id: `${R2}@2`, dir: join(i.data, "snapshots", `${R2}@2`) }, configSnapshot: { id: `${R2}@2`, dir: join(i.data, "config-snapshots", `${R2}@2`) }, tmp: join(i.data, "tmp") });
+	refused(i, run(i, ["--snapshot", `${R2}@2`, "--config-snapshot", `${R1}@7`]), "different versions", "--use");
+	expect(run(i, ["--use", R1, "--snapshot", `${R2}@2`, "--config-snapshot", `${R1}@7`]).status).toBe(0);
+	expect(launchOf(i)).toMatchObject({ runtime: R1, snapshot: { id: `${R2}@2` }, configSnapshot: { id: `${R1}@7` } });
+	expect(readFileSync(selectionPath)).toEqual(before);
+});
+
+test.skipIf(!hasZig)("MC-TYPED: persisted dual pins, canonical aliases and dropped single-shot dimensions", () => {
+	const i = install([R2, R1]);
+	for (const root of ["snapshots", "config-snapshots"]) for (const [version, n, alias] of [[R2, 1, "keep"], [R2, 2, "new"], [R1, 1, "keep"]] as const) {
+		const dir = join(i.data, root, `${version}@${n}`); mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "snapshot.json"), JSON.stringify({ id: `${version}@${n}`, version, n, alias })); writeFileSync(join(dir, ".usage.lock"), "");
+	}
+	expect(run(i, ["manager", "select", "--use", R1, "--snapshot", `${R2}@keep`, "--config-snapshot", `${R2}@new`]).status).toBe(0);
+	const path = join(i.data, "state", "selection.json"), saved = readFileSync(path);
+	expect(run(i, ["probe"]).status).toBe(0);
+	expect(launchOf(i)).toMatchObject({ runtime: R1, snapshot: { id: `${R2}@1` }, configSnapshot: { id: `${R2}@2` } });
+	expect(run(i, ["--snapshot", "0.1.7@keep", "--config-snapshot", `${R2}@new`, "probe"]).status).toBe(0);
+	expect(launchOf(i)).toMatchObject({ runtime: R2, snapshot: { id: `${R2}@1` }, configSnapshot: { id: `${R2}@2` } });
+	expect(run(i, ["--use", R1, "probe"]).status).toBe(0);
+	expect(launchOf(i)).toMatchObject({ runtime: R1, snapshot: { id: `${R1}@1` }, configSnapshot: { id: `${R1}@1` } });
+	expect(run(i, ["--snapshot", `${R2}@keep`, "probe"]).status).toBe(0);
+	expect(launchOf(i)).toMatchObject({ runtime: R2, configSnapshot: { id: `${R2}@2` } });
+	expect(readFileSync(path)).toEqual(saved);
 });

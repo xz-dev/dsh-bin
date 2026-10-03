@@ -36,7 +36,7 @@ function source() {
     writeZip(path, [{ name: "dsh.exe", data: readFileSync(next), mode: 0o755 }]);
     const bytes = readFileSync(path);
     const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
-        if (new URL(req.url).pathname === "/manager-index.json") return Response.json({ schema: 1, versions: [{ version: NEXT, tag: `manager-v${NEXT}`, launchProtocols: [1], assets: { "windows-x64": { name: "manager-windows-x64.zip", size: bytes.length, sha256: hash(bytes) } } }] });
+        if (new URL(req.url).pathname === "/manager-index.json") return Response.json({ schema: 1, versions: [{ version: NEXT, tag: `manager-v${NEXT}`, launchProtocols: [2], assets: { "windows-x64": { name: "manager-windows-x64.zip", size: bytes.length, sha256: hash(bytes) } } }] });
         return new Response(bytes);
     } });
     return { origin: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };

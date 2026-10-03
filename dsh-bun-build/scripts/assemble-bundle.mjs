@@ -19,7 +19,7 @@ import { warmTranspilerCache } from "./warm-transpiler-cache.mjs";
 import { fixedCli } from "./completion.mjs";
 
 /** Launch protocol between the manager and this runtime (`DSH_MANAGER_LAUNCH`, runtime/launch.ts). */
-export const LAUNCH_PROTOCOL = 1;
+export const LAUNCH_PROTOCOL = 2;
 const isCommitTime = (s) => typeof s === "string" && !Number.isNaN(Date.parse(s)) && new Date(s).toISOString() === s;
 
 const FORMAT = { linux: "elf", darwin: "macho", windows: "pe" };

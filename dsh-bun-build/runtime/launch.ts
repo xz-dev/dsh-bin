@@ -1,41 +1,49 @@
-// Protocol v1: runtime consumes resolved paths; selection and snapshot creation belong to manager.
-import { isAbsolute } from "node:path";
+// Protocol v2: runtime consumes resolved paths; selection and snapshot creation belong to manager.
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 export const LAUNCH_VAR = "DSH_MANAGER_LAUNCH";
-export const LAUNCH_PROTOCOL = 1;
+export const LAUNCH_PROTOCOL = 2;
 export type ManagerLaunch = {
-	protocol: 1;
+	protocol: 2;
 	runtime: string;
 	dataRoot: string;
 	home: string;
-	snapshot: { id: string; dir: string } | null;
+	snapshot: { id: string; dir: string };
+	configSnapshot: { id: string; dir: string };
 	addons: { office?: { version: string; dir: string; warning?: string } };
-	cache: string | null;
+	cache: string;
+	tmp: string;
 	manager: string;
 };
 export class LaunchError extends Error {}
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const absolute = (v: unknown): v is string => typeof v === "string" && isAbsolute(v);
+const component = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9.+_-]*$/.test(v);
+const samePath = (a: string, b: string) => relative(resolve(a), resolve(b)) === "";
 
-export function readManagerLaunch(env: NodeJS.ProcessEnv = process.env): ManagerLaunch | undefined {
+export function readManagerLaunch(env: NodeJS.ProcessEnv = process.env, bundleDir?: string): ManagerLaunch | undefined {
 	const raw = env[LAUNCH_VAR];
 	if (raw === undefined) return undefined;
 	let v: unknown;
 	try { v = JSON.parse(raw); } catch { throw new LaunchError(`${LAUNCH_VAR} is not JSON`); }
 	if (!object(v)) throw new LaunchError(`${LAUNCH_VAR} is not an object`);
 	if (v.protocol !== LAUNCH_PROTOCOL) throw new LaunchError(`${LAUNCH_VAR} uses launch protocol ${String(v.protocol)}; this dsh runtime implements ${LAUNCH_PROTOCOL}`);
-	if (typeof v.runtime !== "string" || !v.runtime || !absolute(v.dataRoot) || !absolute(v.home)) throw new LaunchError(`${LAUNCH_VAR} lacks runtime, dataRoot or home`);
-	let snapshot: ManagerLaunch["snapshot"] = null;
-	if (v.snapshot != null) {
-		if (!object(v.snapshot) || typeof v.snapshot.id !== "string" || !absolute(v.snapshot.dir)) throw new LaunchError(`${LAUNCH_VAR} has an invalid snapshot`);
-		snapshot = { id: v.snapshot.id, dir: v.snapshot.dir };
-	}
-	if (v.addons !== undefined && !object(v.addons)) throw new LaunchError(`${LAUNCH_VAR} has invalid addons`);
+	if (!component(v.runtime) || !absolute(v.dataRoot) || !absolute(v.home) || !absolute(v.cache) || !absolute(v.tmp) || typeof v.manager !== "string" || !v.manager) throw new LaunchError(`${LAUNCH_VAR} lacks runtime, dataRoot, home, cache, tmp or manager`);
+	if (!samePath(v.cache, join(v.dataRoot, "cache")) || !samePath(v.tmp, join(v.dataRoot, "tmp"))) throw new LaunchError(`${LAUNCH_VAR} has mismatched cache or tmp roots`);
+	if (bundleDir && !samePath(bundleDir, join(v.dataRoot, "bundles", v.runtime))) throw new LaunchError(`${LAUNCH_VAR} has a mismatched runtime identity/root`);
+	const snapshot = (field: "snapshot" | "configSnapshot", root: string): ManagerLaunch["snapshot"] => {
+		const s = v[field];
+		if (!object(s) || typeof s.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9.+_-]*@[1-9][0-9]*$/.test(s.id) || !absolute(s.dir) || !samePath(s.dir, join(v.dataRoot as string, root, s.id))) throw new LaunchError(`${LAUNCH_VAR} has an invalid ${field} identity/root`);
+		return { id: s.id, dir: s.dir };
+	};
+	const plugins = snapshot("snapshot", "snapshots");
+	const config = snapshot("configSnapshot", "config-snapshots");
+	if (!object(v.addons)) throw new LaunchError(`${LAUNCH_VAR} has invalid addons`);
 	const addons: ManagerLaunch["addons"] = {};
-	const office = object(v.addons) ? v.addons.office : undefined;
+	const office = v.addons.office;
 	if (office != null) {
-		if (!object(office) || typeof office.version !== "string" || !absolute(office.dir)) throw new LaunchError(`${LAUNCH_VAR} has an invalid office addon`);
+		if (!object(office) || !component(office.version) || !absolute(office.dir) || !samePath(office.dir, join(v.dataRoot, "addons", "office", office.version))) throw new LaunchError(`${LAUNCH_VAR} has an invalid office addon`);
 		addons.office = { version: office.version, dir: office.dir, ...(typeof office.warning === "string" ? { warning: office.warning } : {}) };
 	}
-	return { protocol: 1, runtime: v.runtime, dataRoot: v.dataRoot, home: v.home, snapshot, addons, cache: absolute(v.cache) ? v.cache : null, manager: typeof v.manager === "string" ? v.manager : "" };
+	return { protocol: 2, runtime: v.runtime, dataRoot: v.dataRoot, home: v.home, snapshot: plugins, configSnapshot: config, addons, cache: v.cache, tmp: v.tmp, manager: v.manager };
 }

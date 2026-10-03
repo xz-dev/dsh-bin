@@ -25,7 +25,7 @@ function seededIndex() {
 	appendBundle(index, {
 		kind: "dsh-runtime", tag: "runtime-v0.1.7-b1.1.gdddddddd", id: "0.1.7-b1.1.gdddddddd", channel: "release",
 		upstream: { commit: "c".repeat(40), commitTime: "2026-09-01T00:00:00.000Z", version: "0.1.7" },
-		run: 1, attempt: 1, builderCommit: "d".repeat(40), launchProtocol: 1, addons: { office: { slot: null, pinned: null } },
+		run: 1, attempt: 1, builderCommit: "d".repeat(40), launchProtocol: 2, addons: { office: { slot: null, pinned: null } },
 		targets: { "linux-x64-modern": { file: "runtime-linux-x64-modern.zip", size: 3, sha256: sha256("zip") } },
 	});
 	return index;

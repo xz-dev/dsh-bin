@@ -20,10 +20,11 @@ pub const cleared_vars = [_][]const u8{ "DSH_TUI_STANDALONE", "DSH_TUI_STANDALON
 pub const Plan = struct {
     runtime: []const u8,
     entry: []const u8,
-    /// Leading arguments consumed by `--use/--snapshot/--addon`.
+    /// Leading arguments consumed by `--use/--snapshot/--config-snapshot/--addon`.
     consumed: usize,
     payload: []const u8,
     snapshot: snapshot.Snapshot,
+    config_snapshot: snapshot.Snapshot,
 };
 
 pub fn parseLeading(a: std.mem.Allocator, args: []const []const u8) select.Options {
@@ -45,6 +46,7 @@ fn reportResolution(f: select.Failure) noreturn {
         },
         .ambiguous => |m| util.fatal("version {s} is ambiguous ({s}, {s}, ...); give more of the version", .{ m.query, m.candidates[0], m.candidates[1] }),
         .bad_snapshot_id => |id| util.fatal("invalid snapshot id {s}; expected <version>@<n|name>", .{id}),
+        .conflicting_snapshots => |versions| util.fatal("explicit snapshots belong to different versions ({s}, {s}); choose the runtime with --use", .{ versions[0], versions[1] }),
         .none_installed => |c| util.fatal("no {s}-channel dsh runtime is installed; run `dsh manager update` to install one", .{c}),
         .unordered => |v| util.fatal("dsh {s} is not a runtime this manager can order; reinstall it with `dsh manager install {s} --force`, or remove it with `dsh manager uninstall {s}`", .{ v, v, v }),
     }
@@ -53,8 +55,6 @@ fn reportResolution(f: select.Failure) noreturn {
 /// Decide which runtime runs the arguments `args` (leading options included).
 pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
     const opts = parseLeading(ctx.a, args);
-    // Protocol 1 has no config-root contract. Never consume then silently discard this option.
-    if (opts.config_snapshot != null) util.fatal("config snapshots require launch protocol 2; this manager still implements protocol 1", .{});
     var bundles = runtimes.list(ctx);
     const sel = state.readSelection(ctx);
     const selection = switch (sel) {
@@ -62,30 +62,19 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
         .ok => |s| s,
         .invalid => |why| util.fatal("cannot use the selection {s} ({s}); run `dsh manager select --use latest` to reset it", .{ state.selectionPath(ctx), why }),
     };
-    if (selection != null and @import("manage.zig").snapshotChoice(selection.?, .config) != null)
-        util.fatal("selected config snapshot requires launch protocol 2; this manager still implements protocol 1", .{});
-    const stored_snapshot: ?snapshot.Snapshot = if (opts.use == null and opts.snapshot == null and selection != null) blk: {
-        const id = @import("manage.zig").snapshotChoice(selection.?, .plugins) orelse break :blk null;
-        break :blk snapshot.existing(ctx, .plugins, id) catch |err|
-            util.fatal("cannot use selected snapshot {s}: {s}; run `dsh manager select --use latest` to reset it", .{ id, @errorName(err) });
-    } else null;
-    if (bundles.len == 0 and opts.use == null and opts.snapshot == null and
+    const stored_snapshot = storedSnapshot(ctx, opts, selection, .plugins);
+    const stored_config = storedSnapshot(ctx, opts, selection, .config);
+    if (bundles.len == 0 and !opts.overridesSnapshots() and
         (selection == null or std.mem.eql(u8, selection.?.use, "latest")))
     {
         @import("install.zig").bootstrap(ctx);
         bundles = runtimes.list(ctx);
     }
-    const explicit_snapshot = if (opts.snapshot) |id| blk: {
-        if (select.snapshotVersion(id) == null) reportResolution(.{ .bad_snapshot_id = id });
-        break :blk snapshot.existing(ctx, .plugins, id) catch |err| {
-            // Preserve the missing-runtime diagnostic before reporting a missing snapshot.
-            const preliminary = select.resolve(.{ .opts = opts, .bundles = bundles, .channel = state.channel(ctx) });
-            if (preliminary == .err) reportResolution(preliminary.err);
-            util.fatal("cannot use snapshot {s}: {s}; run `dsh manager snapshot list`", .{ id, @errorName(err) });
-        };
-    } else null;
+    const explicit_snapshot = explicitSnapshot(ctx, opts, bundles, .plugins, opts.snapshot);
+    const explicit_config = explicitSnapshot(ctx, opts, bundles, .config, opts.config_snapshot);
     var effective = opts;
     if (explicit_snapshot) |s| effective.snapshot = s.id;
+    if (explicit_config) |s| effective.config_snapshot = s.id;
     const resolved = switch (select.resolve(.{
         .opts = effective,
         .bundles = bundles,
@@ -101,8 +90,8 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
     };
     const snap = explicit_snapshot orelse stored_snapshot orelse
         snapshot.prepare(ctx, .plugins, resolved.version, runtimes.metaOf(bundles, resolved.version).?);
-    // Store initialization only. Config I/O/protection awaits protocol 2; no payload claim here.
-    _ = snapshot.prepare(ctx, .config, resolved.version, runtimes.metaOf(bundles, resolved.version).?);
+    const config_snap = explicit_config orelse stored_config orelse
+        snapshot.prepare(ctx, .config, resolved.version, runtimes.metaOf(bundles, resolved.version).?);
     var resolved_addons = @import("addons.zig").resolve(ctx, resolved.version, opts.addons, selection);
     if (resolved_addons.office) |office| {
         const addon_claim: ?lock.Lock = lock.tryAcquire(util.join(ctx.a, &.{ office.dir, runtimes.guard_name }), .shared, false) catch |err| blk: {
@@ -119,17 +108,39 @@ pub fn plan(ctx: *Ctx, args: []const []const u8) Plan {
         .dataRoot = ctx.data,
         .home = ctx.home(),
         .snapshot = .{ .id = snap.id, .dir = snap.dir },
+        .configSnapshot = .{ .id = config_snap.id, .dir = config_snap.dir },
         .addons = resolved_addons,
         .cache = ctx.path(&.{"cache"}),
         .tmp = ctx.path(&.{"tmp"}),
         .manager = options.version,
     }, .{ .emit_null_optional_fields = false }) catch util.oom();
-    return .{ .runtime = resolved.version, .entry = entry, .consumed = opts.consumed, .payload = payload, .snapshot = snap };
+    return .{ .runtime = resolved.version, .entry = entry, .consumed = opts.consumed, .payload = payload, .snapshot = snap, .config_snapshot = config_snap };
+}
+
+fn storedSnapshot(ctx: *Ctx, opts: select.Options, selection: ?select.Selection, kind: snapshot.Kind) ?snapshot.Snapshot {
+    if (opts.overridesSnapshots()) return null;
+    const s = selection orelse return null;
+    const id = @import("manage.zig").snapshotChoice(s, kind) orelse return null;
+    return snapshot.existing(ctx, kind, id) catch |err|
+        util.fatal("cannot use selected {s}snapshot {s}: {s}; run `dsh manager select --use latest` to reset it", .{ if (kind == .plugins) "" else "config ", id, @errorName(err) });
+}
+
+fn explicitSnapshot(ctx: *Ctx, opts: select.Options, bundles: []const select.Bundle, kind: snapshot.Kind, query: ?[]const u8) ?snapshot.Snapshot {
+    const id = query orelse return null;
+    if (select.snapshotVersion(id) == null) reportResolution(.{ .bad_snapshot_id = id });
+    return snapshot.existing(ctx, kind, id) catch |err| {
+        // Preserve the missing-runtime diagnostic before reporting a missing snapshot.
+        const preliminary = select.resolve(.{ .opts = opts, .bundles = bundles, .channel = state.channel(ctx) });
+        if (preliminary == .err) reportResolution(preliminary.err);
+        util.fatal("cannot use {s} snapshot {s}: {s}; run `dsh manager snapshot {s} list`", .{ @tagName(kind), id, @errorName(err), @tagName(kind) });
+    };
 }
 
 fn childEnv(ctx: *Ctx, p: Plan) void {
     for (cleared_vars) |name| ctx.env.remove(name);
     ctx.env.remove("DSH_BIN_LAUNCH");
+    ctx.env.remove("DSH_BIN_SNAPSHOT_DIR");
+    ctx.env.remove("DSH_BIN_CONFIG_SNAPSHOT_DIR");
     ctx.env.put("DSH_HOME", ctx.home()) catch util.oom();
     ctx.env.put("DSH_MANAGER_LAUNCH", p.payload) catch util.oom();
     // Bun 1.4.2 and bundled pnpm honour these specific variables (real-runtime acceptance probes them).
@@ -167,8 +178,10 @@ pub fn run(ctx: *Ctx, args: []const []const u8) noreturn {
     @import("first_run.zig").run(ctx);
     const p = plan(ctx, args);
     claim(ctx, p.runtime);
-    _ = lock.tryAcquire(util.join(ctx.a, &.{ p.snapshot.dir, ".usage.lock" }), .shared, false) catch |err|
-        util.fatal("cannot claim snapshot {s}: {s}", .{ p.snapshot.id, @errorName(err) });
+    for ([_]snapshot.Snapshot{ p.snapshot, p.config_snapshot }) |s| {
+        _ = lock.tryAcquire(util.join(ctx.a, &.{ s.dir, ".usage.lock" }), .shared, false) catch |err|
+            util.fatal("cannot claim {s} snapshot {s}: {s}", .{ @tagName(s.kind), s.id, @errorName(err) });
+    }
     childEnv(ctx, p);
     if (is_windows) runWindows(ctx, p) else runPosix(ctx, p);
 }

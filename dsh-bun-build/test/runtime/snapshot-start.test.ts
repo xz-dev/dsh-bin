@@ -4,7 +4,7 @@
 // repairs anything.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { writeShims } from "../../scripts/shims.mjs";
@@ -23,9 +23,10 @@ const STUB_BIN = `import { spawnSync } from "node:child_process";
 export async function runCli() {
 	const launch = JSON.parse(process.env.DSH_MANAGER_LAUNCH ?? "null");
 	const shim = spawnSync("node", ["-e", "process.stdout.write(process.env.DSH_BIN_SNAPSHOT_DIR ?? '-')"], { encoding: "utf8" }).stdout;
-	process.stdout.write("REPORT " + JSON.stringify({ args: process.argv.slice(2), dir: process.env.DSH_BIN_SNAPSHOT_DIR ?? null, home: process.env.DSH_HOME ?? null, runtime: launch?.runtime ?? null, shim }) + "\\n");
-	if (process.env.STUB_HOLD) { process.stdout.write("HELD\\n"); await Bun.sleep(30000); }
+	process.stdout.write("REPORT " + JSON.stringify({ args: process.argv.slice(2), dir: process.env.DSH_BIN_SNAPSHOT_DIR ?? null, configDir: process.env.DSH_BIN_CONFIG_SNAPSHOT_DIR ?? null, home: process.env.DSH_HOME ?? null, runtime: launch?.runtime ?? null, shim }) + "\\n");
+	if (process.env.STUB_HOLD) { process.stdout.write("HELD\\n"); await new Response(Bun.stdin.stream()).text(); }
 	if (process.env.STUB_RESTART) {
+		await Bun.write(launch.dataRoot + "/state/selection.json", JSON.stringify({ schema: 1, use: "changed", snapshot: "changed@9", configSnapshot: "changed@9" }));
 		const env = { ...process.env };
 		delete env.STUB_RESTART;
 		const p = spawnSync(process.execPath, [...process.execArgv, ...process.argv.slice(1)], { env, stdio: "inherit" });
@@ -54,14 +55,15 @@ afterAll(() => {
 });
 
 const data = () => join(root, "data");
-function snapshot(id: string) {
-	const dir = join(data(), "snapshots", id);
+function snapshot(id: string, kind = "snapshots") {
+	const dir = join(data(), kind, id);
 	mkdirSync(join(dir, "profiles"), { recursive: true });
 	writeFileSync(join(dir, ".usage.lock"), "");
 	return dir;
 }
+const configOf = () => ({ id: `${RUNTIME}@1`, dir: snapshot(`${RUNTIME}@1`, "config-snapshots") });
 const launchOf = (home: string, snap: { id: string; dir: string } | null, extra: object = {}) =>
-	JSON.stringify({ protocol: 1, runtime: RUNTIME, dataRoot: data(), home, snapshot: snap, addons: {}, cache: null, manager: "9.9.9", ...extra });
+	JSON.stringify({ protocol: 2, runtime: RUNTIME, dataRoot: data(), home, snapshot: snap, configSnapshot: configOf(), addons: {}, cache: join(data(), "cache"), tmp: join(data(), "tmp"), manager: "9.9.9", ...extra });
 
 async function start(env: Record<string, string>, args: string[] = []) {
 	const proc = Bun.spawn([native, ...args], { env: { PATH: process.env.PATH ?? "", HOME: root, NO_COLOR: "1", ...env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
@@ -73,35 +75,39 @@ async function start(env: Record<string, string>, args: string[] = []) {
 test("RB-HOME: the snapshot from the launch is the plugin dir; DSH_HOME is the given home; nothing is created", async () => {
 	const home = mkdtempSync(join(root, "home-"));
 	const dir = snapshot(`${RUNTIME}@1`);
+	const config = configOf();
 	const before = readdirSync(data(), { recursive: true }).sort();
 	const r = await start({ DSH_HOME: home, DSH_MANAGER_LAUNCH: launchOf(home, { id: `${RUNTIME}@1`, dir }) }, ["--profile", "tui"]);
 	if (r.code !== 0) console.error(r.stderr);
 	expect(r.code).toBe(0);
-	expect(r.reports).toEqual([{ args: ["--profile", "tui"], dir, home, runtime: RUNTIME, shim: dir }]);
+	expect(r.reports).toEqual([{ args: ["--profile", "tui"], dir, configDir: config.dir, home, runtime: RUNTIME, shim: dir }]);
 	expect(readdirSync(data(), { recursive: true }).sort()).toEqual(before);
 	expect(readdirSync(home)).toEqual([]);
 }, 60_000);
 
-test("RB-HOME: the resolved launch home wins; a null snapshot does not inherit an old plugin directory", async () => {
-	const home = mkdtempSync(join(root, "resolved-home-"));
-	const r = await start({ DSH_HOME: join(root, "stale-home"), DSH_BIN_SNAPSHOT_DIR: join(root, "stale-snapshot"), DSH_MANAGER_LAUNCH: launchOf(home, null) });
+test("RB-HOME: validated roots and home win over stale environment; null snapshot refuses", async () => {
+	const home = mkdtempSync(join(root, "resolved-home-")), dir = snapshot(`${RUNTIME}@1`);
+	const r = await start({ DSH_HOME: join(root, "stale-home"), DSH_BIN_SNAPSHOT_DIR: join(root, "stale-snapshot"), DSH_BIN_CONFIG_SNAPSHOT_DIR: join(root, "stale-config"), DSH_MANAGER_LAUNCH: launchOf(home, { id: `${RUNTIME}@1`, dir }) });
 	expect(r.code).toBe(0);
-	expect(r.reports).toEqual([{ args: [], dir: null, home, runtime: RUNTIME, shim: "-" }]);
+	expect(r.reports).toEqual([{ args: [], dir, configDir: configOf().dir, home, runtime: RUNTIME, shim: dir }]);
+	const missing = await start({ DSH_MANAGER_LAUNCH: launchOf(home, null) });
+	expect(missing.code).toBe(1); expect(missing.stdout).toBe("");
 });
 
 test("RB-RESTART: an in-app restart keeps the launch, the snapshot and its claim", async () => {
 	const home = mkdtempSync(join(root, "home-"));
 	const dir = snapshot(`${RUNTIME}@2`);
+	mkdirSync(join(data(), "state"), { recursive: true });
 	const r = await start({ DSH_HOME: home, DSH_MANAGER_LAUNCH: launchOf(home, { id: `${RUNTIME}@2`, dir }), STUB_RESTART: "1" }, ["--profile", "tui"]);
 	expect(r.code).toBe(0);
 	expect(r.reports).toHaveLength(2);
-	for (const rep of r.reports) expect(rep).toMatchObject({ args: ["--profile", "tui"], dir, runtime: RUNTIME });
+	for (const rep of r.reports) expect(rep).toMatchObject({ args: ["--profile", "tui"], dir, configDir: configOf().dir, runtime: RUNTIME });
 }, 60_000);
 
-test("a running session holds the runtime's and the snapshot's claims until it exits", async () => {
+test("a running session holds runtime and both typed snapshot claims until exit without a manager parent", async () => {
 	const home = mkdtempSync(join(root, "home-"));
 	const dir = snapshot(`${RUNTIME}@3`);
-	const proc = Bun.spawn([native], { env: { PATH: process.env.PATH ?? "", HOME: root, DSH_HOME: home, DSH_MANAGER_LAUNCH: launchOf(home, { id: `${RUNTIME}@3`, dir }), STUB_HOLD: "1" }, stdin: "ignore", stdout: "pipe", stderr: "inherit" });
+	const proc = Bun.spawn([native], { env: { PATH: process.env.PATH ?? "", HOME: root, DSH_HOME: home, DSH_MANAGER_LAUNCH: launchOf(home, { id: `${RUNTIME}@3`, dir }), STUB_HOLD: "1" }, stdin: "pipe", stdout: "pipe", stderr: "inherit" });
 	const reader = proc.stdout.getReader();
 	let out = "";
 	while (!out.includes("HELD")) {
@@ -110,16 +116,12 @@ test("a running session holds the runtime's and the snapshot's claims until it e
 		out += new TextDecoder().decode(value);
 	}
 	expect(out).toContain("HELD");
-	const guards = [join(dir, ".usage.lock"), join(data(), "bundles", RUNTIME, ".usage.lock")];
+	const guards = [join(dir, ".usage.lock"), join(configOf().dir, ".usage.lock"), join(data(), "bundles", RUNTIME, ".usage.lock")];
 	for (const g of guards) expect(acquireClaim(g, "exclusive")).toBe("busy");
-	proc.kill("SIGKILL");
+	proc.stdin.end();
 	await proc.exited;
 	for (const g of guards) {
-		let c = acquireClaim(g, "exclusive");
-		for (let i = 0; i < 30 && c === "busy"; i++) {
-			await Bun.sleep(100);
-			c = acquireClaim(g, "exclusive");
-		}
+		const c = acquireClaim(g, "exclusive");
 		expect(c).not.toBe("busy");
 		if (c !== "busy") c.release();
 	}
@@ -145,14 +147,43 @@ test("a snapshot being removed or missing fails the launch with one diagnostic, 
 
 test("an invalid launch payload is an error, not a direct start; `manager` is an app argument", async () => {
 	const home = mkdtempSync(join(root, "home-"));
-	for (const bad of ["{", JSON.stringify({ protocol: 2 }), launchOf(home, null, { dataRoot: "relative" })]) {
+	for (const bad of ["{", JSON.stringify({ protocol: 1 }), launchOf(home, null, { dataRoot: "relative" })]) {
 		const r = await start({ DSH_HOME: home, DSH_MANAGER_LAUNCH: bad });
 		expect(r.code).toBe(1);
 		expect(r.stderr).toContain("DSH_MANAGER_LAUNCH");
 		expect(r.stdout).toBe("");
 	}
-	const direct = await start({ DSH_HOME: home }, ["manager", "update"]);
+	const direct = await start({ DSH_HOME: home, DSH_BIN_CONFIG_SNAPSHOT_DIR: "/untrusted-config" }, ["manager", "update"]);
 	expect(direct.code).toBe(0);
-	expect(direct.reports).toEqual([{ args: ["manager", "update"], dir: null, home, runtime: null, shim: "-" }]);
+	expect(direct.reports).toEqual([{ args: ["manager", "update"], dir: null, configDir: null, home, runtime: null, shim: "-" }]);
 	expect(readdirSync(home)).toEqual([]);
 }, 60_000);
+
+test("RB-CONFIG-CONTEXT: missing, mismatched, busy or unguarded config refuses before app entry", async () => {
+	const home = mkdtempSync(join(root, "home-")), dir = snapshot(`${RUNTIME}@5`);
+	const snap = { id: `${RUNTIME}@5`, dir };
+	for (const configSnapshot of [undefined, null, { id: `${RUNTIME}@1`, dir }, { id: `${RUNTIME}@99`, dir: join(data(), "config-snapshots", `${RUNTIME}@99`) }]) {
+		const r = await start({ DSH_MANAGER_LAUNCH: launchOf(home, snap, { configSnapshot }) });
+		expect(r.code).toBe(1); expect(r.stdout).toBe(""); expect(r.stderr).toMatch(/configSnapshot|config snapshot/);
+	}
+	const config = { id: `${RUNTIME}@5`, dir: snapshot(`${RUNTIME}@5`, "config-snapshots") };
+	const held = acquireClaim(join(config.dir, ".usage.lock"), "exclusive");
+	try {
+		const r = await start({ DSH_MANAGER_LAUNCH: launchOf(home, snap, { configSnapshot: config }) });
+		expect(r.code).toBe(1); expect(r.stdout).toBe(""); expect(r.stderr).toContain("is being removed");
+	} finally { if (held !== "busy") held.release(); }
+	rmSync(join(config.dir, ".usage.lock"));
+	const unguarded = await start({ DSH_MANAGER_LAUNCH: launchOf(home, snap, { configSnapshot: config }) });
+	expect(unguarded.code).toBe(1); expect(unguarded.stdout).toBe(""); expect(unguarded.stderr).toContain("usage guard");
+	const wrongRuntime = await start({ DSH_MANAGER_LAUNCH: launchOf(home, snap, { runtime: "other" }) });
+	expect(wrongRuntime.code).toBe(1); expect(wrongRuntime.stdout).toBe(""); expect(wrongRuntime.stderr).toContain("runtime identity/root");
+});
+
+test.skipIf(process.platform === "win32")("RB-CONFIG-CONTEXT: symlinked config identity outside its typed root never reaches app", async () => {
+	const home = mkdtempSync(join(root, "home-")), dir = snapshot(`${RUNTIME}@6`);
+	const outside = mkdtempSync(join(root, "outside-")); writeFileSync(join(outside, ".usage.lock"), "");
+	const configDir = join(data(), "config-snapshots", `${RUNTIME}@6`); symlinkSync(outside, configDir);
+	const r = await start({ DSH_MANAGER_LAUNCH: launchOf(home, { id: `${RUNTIME}@6`, dir }, { configSnapshot: { id: `${RUNTIME}@6`, dir: configDir } }) });
+	expect(r.code).toBe(1); expect(r.stdout).toBe(""); expect(r.stderr).toContain("mismatched identity/root");
+	expect(readdirSync(outside)).toEqual([".usage.lock"]);
+});

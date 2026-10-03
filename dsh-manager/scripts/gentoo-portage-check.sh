@@ -83,7 +83,7 @@ for number in 1 2; do
 		// Only amd64 executes here; unused arm64 fixture shares bytes for offline Manifest generation.
 		writeFileSync(`${base}/dist/${tag}-linux-arm64.zip`, readFileSync(zip), { flag: "wx" });
 		const bytes = readFileSync(zip), asset = {name: "manager-linux-x64.zip", size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex")};
-		index = {schema: 1, versions: [{version, tag, launchProtocols: [1], assets: {"linux-x64": asset, "linux-arm64": asset}}]};
+		index = {schema: 1, versions: [{version, tag, launchProtocols: [2], assets: {"linux-x64": asset, "linux-arm64": asset}}]};
 	}
 	const result = gentooEbuild(index, readFileSync("packaging/gentoo/dsh-bin-9999.ebuild.in", "utf8"));
 	writeFileSync(`${base}/overlay/app-misc/dsh-bin/dsh-bin-${result.pv}.ebuild`, result.ebuild, { flag: "wx" });

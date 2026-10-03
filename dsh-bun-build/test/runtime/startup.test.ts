@@ -76,19 +76,27 @@ describe.skipIf(!built)("compiled entry startup", () => {
 		root = mkdtempSync(join(tmpdir(), "dsh-startup-"));
 		const bundle = join(root, "bundles", "V1");
 		mkdirSync(join(bundle, "bin"), { recursive: true });
+		writeFileSync(join(bundle, ".usage.lock"), "");
 		native = join(bundle, "dsh-native");
 		execFileSync("bun", [join(ROOT, "scripts/compile-entry.mjs"), `bun-${process.platform}-${process.arch}`, native], { stdio: "ignore" });
 		symlinkSync(APP, join(bundle, "app"));
 		writeFileSync(join(bundle, "bin", "node"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 		officeDir = join(root, "addons", "office", "A1");
 		cpSync(join(ADDON, "node_modules"), join(officeDir, "node_modules"), { recursive: true });
+		writeFileSync(join(officeDir, ".usage.lock"), "");
 	});
 	afterAll(() => {
 		if (root) rmSync(root, { recursive: true, force: true });
 	});
 
 	// The manager resolved the office addon (or none) and passes its directory in DSH_MANAGER_LAUNCH.
-	const launch = (home: string, office?: object) => JSON.stringify({ protocol: 1, runtime: "V1", dataRoot: root, home, snapshot: null, addons: office ? { office } : {}, cache: null, manager: "t" });
+	let n = 0;
+	const launch = (home: string, office?: object) => {
+		const id = `V1@${++n}`, plugins = join(root, "snapshots", id), config = join(root, "config-snapshots", id);
+		for (const dir of [plugins, config]) { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, ".usage.lock"), ""); }
+		cpSync(join(home, "profiles"), join(plugins, "profiles"), { recursive: true });
+		return JSON.stringify({ protocol: 2, runtime: "V1", dataRoot: root, home, snapshot: { id, dir: plugins }, configSnapshot: { id, dir: config }, addons: office ? { office } : {}, cache: join(root, "cache"), tmp: join(root, "tmp"), manager: "t" });
+	};
 	const NO_OFFICE = "the office addon is not installed for this dsh; run `dsh manager install --addon office`";
 
 	test("3.5: tui startup warnings equal the declared degradation list", async () => {

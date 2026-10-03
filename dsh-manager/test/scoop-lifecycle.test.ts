@@ -33,7 +33,7 @@ test.skipIf(!hasZig)(`PS-SCOOP / DL-MANAGED-UPDATE / DL-MANAGED-SELF / DL-MANAGE
 		const archive = join(fixture, `manager-${version}.zip`);
 		writeZip(archive, [{ name: `dsh${EXE}`, data: readFileSync(build(version).manager), mode: 0o755 }]);
 		const bytes = readFileSync(archive), asset = { name: `manager-${version}.zip`, size: bytes.length, sha256: hash(bytes) };
-		const m = scoopManifests({ schema: 1, versions: [{ version, tag: `manager-v${version}`, launchProtocols: [1], assets: { "windows-x64": asset, "windows-arm64": asset } }] }).dsh;
+		const m = scoopManifests({ schema: 1, versions: [{ version, tag: `manager-v${version}`, launchProtocols: [2], assets: { "windows-x64": asset, "windows-arm64": asset } }] }).dsh;
 		// The fixture supplies host-native binaries. Production URLs/hashes still come from manager-index.
 		m.architecture["64bit"].url = pathToFileURL(archive).href;
 		return m;

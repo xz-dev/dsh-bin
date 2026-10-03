@@ -66,7 +66,7 @@ export type RuntimeSpec = {
 	commitTime?: string;
 	run?: number;
 	attempt?: number;
-	/** Overrides of the bundle.json fields (e.g. `launchProtocol: 2`), or raw text. */
+	/** Overrides of the bundle.json fields (e.g. `launchProtocol: 1`), or raw text. */
 	patch?: Record<string, unknown>;
 	raw?: string;
 	entry?: boolean;
@@ -83,7 +83,7 @@ export const bundleMeta = (id: string, spec: RuntimeSpec = {}) => ({
 	run: spec.run ?? 1,
 	attempt: spec.attempt ?? 1,
 	builderCommit: "d".repeat(40),
-	launchProtocol: 1,
+	launchProtocol: 2,
 	entry: `dsh-native${EXE}`,
 	requiredPaths: [`dsh-native${EXE}`, "bundle.json"],
 	addons: { office: { slot: null, pinned: null, known: [] } },

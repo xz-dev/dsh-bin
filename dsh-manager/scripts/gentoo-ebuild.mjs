@@ -21,7 +21,7 @@ export function gentooEbuild(index, template) {
 	const entries = [...index.versions].sort((a, b) => Bun.semver.order(b.version, a.version));
 	for (let i = 1; i < entries.length; i++) if (Bun.semver.order(entries[i - 1].version, entries[i].version) === 0) throw new Error("ambiguous manager version");
 	const manager = entries[0], pv = gentooVersion(manager.version);
-	if (!manager.launchProtocols?.includes(1)) throw new Error("incompatible manager protocol");
+	if (!manager.launchProtocols?.includes(2)) throw new Error("incompatible manager protocol");
 	let ebuild = template.replaceAll("@TAG@", manager.tag);
 	const dist = [["linux-x64", "AMD64"], ["linux-arm64", "ARM64"]].map(([target, arch]) => {
 		const a = manager.assets?.[target];

@@ -38,7 +38,10 @@ pub fn table(ctx: *const Ctx, version: []const u8) !Table {
 pub fn runtime(ctx: *const Ctx, opts: select.Options) ![]const u8 {
     const stored = state.readSelection(ctx);
     if (stored == .invalid) return error.InvalidSelection;
-    return switch (select.resolve(.{ .opts = opts, .bundles = runtimes.list(ctx), .channel = state.channel(ctx), .selection_use = if (stored == .ok) stored.ok.use else null })) {
+    var effective = opts;
+    if (opts.snapshot) |id| effective.snapshot = (try @import("snapshot.zig").existing(ctx, .plugins, id)).id;
+    if (opts.config_snapshot) |id| effective.config_snapshot = (try @import("snapshot.zig").existing(ctx, .config, id)).id;
+    return switch (select.resolve(.{ .opts = effective, .bundles = runtimes.list(ctx), .channel = state.channel(ctx), .selection_use = if (stored == .ok) stored.ok.use else null })) {
         .ok => |r| r.version,
         .err => error.NoSelectedRuntime,
     };

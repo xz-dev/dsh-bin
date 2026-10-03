@@ -20,7 +20,7 @@ function archive(binary = next, extra: ZipInput[] = []) {
 	return readFileSync(zip);
 }
 function entry(version: string, bytes: Uint8Array, patch: Record<string, unknown> = {}) {
-	return { version, tag: `manager-v${version}`, launchProtocols: [1], assets: { [TARGET]: { name: `manager-${TARGET}.zip`, size: bytes.length, sha256: sha(bytes) } }, ...patch };
+	return { version, tag: `manager-v${version}`, launchProtocols: [2], assets: { [TARGET]: { name: `manager-${TARGET}.zip`, size: bytes.length, sha256: sha(bytes) } }, ...patch };
 }
 function source(versions: ReturnType<typeof entry>[], bytes: Uint8Array, runtime?: { entry: unknown; bytes: Uint8Array }) {
 	const requests: string[] = [];
@@ -117,7 +117,7 @@ test.skipIf(!hasZig)("MC-SELF-ONLY: SemVer 1.10 > 1.9, prerelease ordering and s
 
 test.skipIf(!hasZig)("MC-SELF-FAIL: incompatible protocol/target, downgrade, duplicate or invalid identity refuse before archive", async () => {
 	const bytes = archive(), good = entry(NEXT, bytes);
-	for (const versions of [[{ ...good, launchProtocols: [2] }], [{ ...good, assets: { wrong: good.assets[TARGET] } }], [entry("1.0.0", bytes)], [good, good], [entry("09.0.0", bytes)], [{ ...good, tag: "../manager-v9.8.8" }]]) {
+	for (const versions of [[{ ...good, launchProtocols: [1] }], [{ ...good, assets: { wrong: good.assets[TARGET] } }], [entry("1.0.0", bytes)], [good, good], [entry("09.0.0", bytes)], [{ ...good, tag: "../manager-v9.8.8" }]]) {
 		const i = newInstall(), before = sha(readFileSync(i.exe)), s = source(versions, bytes);
 		try { const r = await command(i, s); expect(r.status).toBe(1); expect(s.requests).toEqual(["/manager-index.json"]); expect(sha(readFileSync(i.exe))).toBe(before); expect(readdirSync(i.dir).some(n => n.startsWith(".dsh-manager-candidate-"))).toBe(false); }
 		finally { s.stop(); }
@@ -130,8 +130,8 @@ test.skipIf(!hasZig)("MC-SELF-FAIL: bad digest/size, wrong binary marker/type, e
 	const file = join(tempDir("bad-manager-"), "bad.zip"); writeZip(file, [{ name: `dsh${EXE}`, data: wrong, mode: 0o755 }]);
 	const traversed = Buffer.from(archive(next, [{ name: "safe_file_", data: Buffer.from("bad") }]));
 	for (let at = traversed.indexOf("safe_file_"); at !== -1; at = traversed.indexOf("safe_file_", at + 10)) traversed.write("../outside", at);
-	const wrongProtocolFile = join(tempDir("wrong-protocol-"), `dsh${EXE}`), wrongProtocol = Buffer.from(readFileSync(next)), protocolAt = wrongProtocol.indexOf("DSH_MANAGER_LAUNCH_PROTOCOL=1\0");
-	expect(protocolAt).toBeGreaterThanOrEqual(0); wrongProtocol[protocolAt + "DSH_MANAGER_LAUNCH_PROTOCOL=".length] = "2".charCodeAt(0); writeFileSync(wrongProtocolFile, wrongProtocol);
+	const wrongProtocolFile = join(tempDir("wrong-protocol-"), `dsh${EXE}`), wrongProtocol = Buffer.from(readFileSync(next)), protocolAt = wrongProtocol.indexOf("DSH_MANAGER_LAUNCH_PROTOCOL=2\0");
+	expect(protocolAt).toBeGreaterThanOrEqual(0); wrongProtocol[protocolAt + "DSH_MANAGER_LAUNCH_PROTOCOL=".length] = "1".charCodeAt(0); writeFileSync(wrongProtocolFile, wrongProtocol);
 	for (const [bytes, patch] of [[valid, { sha256: "a".repeat(64) }], [valid, { size: valid.length + 1 }], [archive(build().manager), {}], [readFileSync(file), {}], [archive(wrongProtocolFile), {}], [archive(next, [{ name: "user-file", data: Buffer.from("bad") }]), {}], [traversed, {}]] as const) {
 		const i = fixture(), before = protectedBytes(i), e = entry(NEXT, bytes); Object.assign(e.assets[TARGET], patch); const s = source([e], bytes);
 		try { const r = await command(i, s); expect(r.status).toBe(1); expect(protectedBytes(i)).toEqual(before); expect(readdirSync(i.dir).some(n => n.startsWith(".dsh-manager-candidate-"))).toBe(false); expect(started(i)).toBe(false); }
@@ -262,7 +262,7 @@ test.skipIf(!hasZig || WIN)("MC-SELF-FAIL POSIX: candidate tampered after prepar
 				if (change === "link") { renameSync(path, join(i.home, "saved")); symlinkSync(i.exe, path); return; }
 				if (change === "bytes") { writeFileSync(path, Buffer.concat([data, Buffer.from("unverified addition")])); return; }
 				if (change === "header") data[0] = 0;
-				else { const key = change === "version" ? "DSH_MANAGER_VERSION=" : "DSH_MANAGER_LAUNCH_PROTOCOL="; data[data.indexOf(key) + key.length] = "2".charCodeAt(0); }
+				else { const key = change === "version" ? "DSH_MANAGER_VERSION=" : "DSH_MANAGER_LAUNCH_PROTOCOL="; data[data.indexOf(key) + key.length] = (change === "version" ? "2" : "1").charCodeAt(0); }
 				writeFileSync(path, data);
 			}, { DSH_MANAGER_TEST_ORIGIN: s.origin });
 			expect(r.status).toBe(1); expect(r.stdout).not.toContain("updated manager"); expect(r.stderr).toContain("self-update failed");

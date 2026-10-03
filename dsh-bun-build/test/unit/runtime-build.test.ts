@@ -67,6 +67,6 @@ test("RL-RUNTIME-BUILD / RB-CONTENTS: runtime-only checkout builds one v1 archiv
 		const manifests = entries.filter((p) => p === "bundle.json");
 		expect(manifests).toHaveLength(1);
 		const scratch = join(out, `.scratch-${built.id}/root`);
-		expect(JSON.parse(readFileSync(join(scratch, "bundle.json"), "utf8"))).toMatchObject({ kind: "dsh-runtime", schemaVersion: 1, launchProtocol: 1, entry: t.executable });
+		expect(JSON.parse(readFileSync(join(scratch, "bundle.json"), "utf8"))).toMatchObject({ kind: "dsh-runtime", schemaVersion: 1, launchProtocol: 2, entry: t.executable });
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 }, 240_000);
