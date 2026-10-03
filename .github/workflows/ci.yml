@@ -6,6 +6,7 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      windows_private_only: { description: "Run native Windows private-I/O component gates only; no release or full-app approval", type: boolean, default: false }
       release_dry_run: { description: "Build both release artifacts without publishing", type: boolean, default: false }
       manager_version: { type: string, default: "1.0.0-rc.1" }
       runtime_upstream: { type: string, default: "dsh-v0.1.7-rc.2" }
@@ -24,7 +25,7 @@ jobs:
   # Caller grants cover the skipped publish jobs; every build/verify job explicitly stays read-only.
   # Write permissions belong only to these two calls, never ordinary CI or pull requests.
   manager-release-dry-run:
-    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run
+    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run && !inputs.windows_private_only
     permissions: { contents: write, actions: read, id-token: write, attestations: write }
     uses: ./.github/workflows/manager-release.yml
     with:
@@ -35,7 +36,7 @@ jobs:
       accepted_artifact: ${{ inputs.accepted_runtime_artifact }}
       accepted_sha256: ${{ inputs.accepted_runtime_sha256 }}
   runtime-release-dry-run:
-    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run
+    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run && !inputs.windows_private_only
     permissions: { contents: write, actions: read, id-token: write, attestations: write }
     uses: ./.github/workflows/runtime-release.yml
     with:
@@ -47,7 +48,7 @@ jobs:
       accepted_artifact: ${{ inputs.accepted_manager_artifact }}
       accepted_sha256: ${{ inputs.accepted_manager_sha256 }}
   combined-artifact-e2e:
-    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run && inputs.e2e_runs != ''
+    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run && !inputs.windows_private_only && inputs.e2e_runs != ''
     permissions: { contents: read, actions: read }
     strategy:
       fail-fast: false
@@ -101,9 +102,36 @@ jobs:
           TMP: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
         run: bun test ./dsh-manager/test/artifact-e2e-combined.test.ts
+  windows-private-io:
+    if: github.event_name == 'workflow_dispatch' && inputs.windows_private_only
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "1.4.2" }
+      - name: Native private-I/O component gate (15 required cases, no skips)
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'windows-private-io.log'
+          bun dsh-bun-build/scripts/test-windows-private-io.mjs 2>&1 | Tee-Object -FilePath $log
+          exit $LASTEXITCODE
+      - name: Preserve native component evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-private-io-${{ matrix.runner }}
+          path: ${{ runner.temp }}/windows-private-io.log
+          if-no-files-found: error
   scoop:
+    if: github.event_name != 'workflow_dispatch' || !inputs.windows_private_only
     uses: ./.github/workflows/scoop-check.yml
   test:
+    if: github.event_name != 'workflow_dispatch' || !inputs.windows_private_only
     strategy:
       fail-fast: false
       matrix:
