@@ -127,7 +127,10 @@ fn runtimeWords(ctx: *Ctx, prefix: []const u8, prior: []const []const u8, opts: 
         .ok => |s| s.use,
         .invalid => return,
     };
-    const resolved = select.resolve(.{ .opts = opts, .bundles = bundles, .channel = state.channel(ctx), .selection_use = selection_use });
+    var effective = opts;
+    if (opts.snapshot) |id| effective.snapshot = (@import("snapshot.zig").existing(ctx, .plugins, id) catch return).id;
+    if (opts.config_snapshot) |id| effective.config_snapshot = (@import("snapshot.zig").existing(ctx, .config, id) catch return).id;
+    const resolved = select.resolve(.{ .opts = effective, .bundles = bundles, .channel = state.channel(ctx), .selection_use = selection_use });
     if (resolved != .ok) return;
     const meta = runtimes.metaOf(bundles, resolved.ok.version) orelse return;
     if (meta.format != .runtime_v1 or meta.protocol != select.protocol) return;

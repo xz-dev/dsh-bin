@@ -21,7 +21,8 @@ const absolute = (v: unknown): v is string => typeof v === "string" && isAbsolut
 const component = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9.+_-]*$/.test(v);
 const samePath = (a: string, b: string) => relative(resolve(a), resolve(b)) === "";
 
-export function readManagerLaunch(env: NodeJS.ProcessEnv = process.env, bundleDir?: string): ManagerLaunch | undefined {
+// Executable/root spelling may differ through a permitted XDG ancestor link. Bootstrap validates physical identity.
+export function readManagerLaunch(env: NodeJS.ProcessEnv = process.env, _bundleDir?: string): ManagerLaunch | undefined {
 	const raw = env[LAUNCH_VAR];
 	if (raw === undefined) return undefined;
 	let v: unknown;
@@ -30,7 +31,6 @@ export function readManagerLaunch(env: NodeJS.ProcessEnv = process.env, bundleDi
 	if (v.protocol !== LAUNCH_PROTOCOL) throw new LaunchError(`${LAUNCH_VAR} uses launch protocol ${String(v.protocol)}; this dsh runtime implements ${LAUNCH_PROTOCOL}`);
 	if (!component(v.runtime) || !absolute(v.dataRoot) || !absolute(v.home) || !absolute(v.cache) || !absolute(v.tmp) || typeof v.manager !== "string" || !v.manager) throw new LaunchError(`${LAUNCH_VAR} lacks runtime, dataRoot, home, cache, tmp or manager`);
 	if (!samePath(v.cache, join(v.dataRoot, "cache")) || !samePath(v.tmp, join(v.dataRoot, "tmp"))) throw new LaunchError(`${LAUNCH_VAR} has mismatched cache or tmp roots`);
-	if (bundleDir && !samePath(bundleDir, join(v.dataRoot, "bundles", v.runtime))) throw new LaunchError(`${LAUNCH_VAR} has a mismatched runtime identity/root`);
 	const snapshot = (field: "snapshot" | "configSnapshot", root: string): ManagerLaunch["snapshot"] => {
 		const s = v[field];
 		if (!object(s) || typeof s.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9.+_-]*@[1-9][0-9]*$/.test(s.id) || !absolute(s.dir) || !samePath(s.dir, join(v.dataRoot as string, root, s.id))) throw new LaunchError(`${LAUNCH_VAR} has an invalid ${field} identity/root`);

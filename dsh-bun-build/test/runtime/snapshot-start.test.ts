@@ -176,7 +176,7 @@ test("RB-CONFIG-CONTEXT: missing, mismatched, busy or unguarded config refuses b
 	const unguarded = await start({ DSH_MANAGER_LAUNCH: launchOf(home, snap, { configSnapshot: config }) });
 	expect(unguarded.code).toBe(1); expect(unguarded.stdout).toBe(""); expect(unguarded.stderr).toContain("usage guard");
 	const wrongRuntime = await start({ DSH_MANAGER_LAUNCH: launchOf(home, snap, { runtime: "other" }) });
-	expect(wrongRuntime.code).toBe(1); expect(wrongRuntime.stdout).toBe(""); expect(wrongRuntime.stderr).toContain("runtime identity/root");
+	expect(wrongRuntime.code).toBe(1); expect(wrongRuntime.stdout).toBe(""); expect(wrongRuntime.stderr).toContain("this dsh runtime has a mismatched identity/root");
 });
 
 test.skipIf(process.platform === "win32")("RB-CONFIG-CONTEXT: symlinked config identity outside its typed root never reaches app", async () => {

@@ -271,3 +271,16 @@ test.skipIf(!hasZig)("MC-TYPED: persisted dual pins, canonical aliases and dropp
 	expect(launchOf(i)).toMatchObject({ runtime: R2, configSnapshot: { id: `${R2}@2` } });
 	expect(readFileSync(path)).toEqual(saved);
 });
+
+test.skipIf(!hasZig)("MC-AMBIGUOUS: retained actual A prefix of installed B never implies B", () => {
+	const A = "0.2.0-rc.1", B = "0.2.0-rc.1-b10.1.g12345678", i = newInstall();
+	addRuntime(i.data, B);
+	for (const [root, version] of [["snapshots", A], ["config-snapshots", A], ["config-snapshots", B]]) {
+		const dir = join(i.data, root, `${version}@1`); mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "snapshot.json"), JSON.stringify({ id: `${version}@1`, version, n: 1, alias: "keep" })); writeFileSync(join(dir, ".usage.lock"), "");
+	}
+	refused(i, run(i, ["--snapshot", `${A}@keep`, "--config-snapshot", `${B}@keep`, "probe"]), "different versions", "--use");
+	for (const flag of ["--snapshot", "--config-snapshot"]) refused(i, run(i, [flag, `${A}@keep`, "probe"]), `version ${A}`, "not installed");
+	expect(run(i, ["--use", "0.2.0", "--snapshot", `${A}@keep`, "--config-snapshot", `${B}@keep`, "probe"]).status).toBe(0);
+	expect(launchOf(i)).toMatchObject({ runtime: B, snapshot: { id: `${A}@1` }, configSnapshot: { id: `${B}@1` } });
+});

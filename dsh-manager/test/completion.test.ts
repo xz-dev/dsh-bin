@@ -84,6 +84,8 @@ test.skipIf(!hasZig)("SC-VERSIONS: --use, default selection and channel choose r
 	expect(candidates(i, ["--use", "2.0.0", "--"])).toContain("--new-cli");
 	expect(candidates(i, ["--use", "runtime-v1.0.0", "plugin", "--p"])).toEqual(["--profile"]);
 	expect(candidates(i, ["--profile", "plugin", "--"])).toContain("--old-cli");
+	const snapshot = join(i.data, "snapshots", "1.0.0@1"); mkdirSync(snapshot, { recursive: true });
+	writeFileSync(join(snapshot, "snapshot.json"), JSON.stringify({ id: "1.0.0@1", version: "1.0.0", n: 1 })); writeFileSync(join(snapshot, ".usage.lock"), "");
 	expect(candidates(i, ["--snapshot", "1.0.0@1", "--"])).toContain("--old-cli");
 	expect(candidates(i, ["--use", "missing", "--"])).not.toContain("--old-cli");
 	writeFileSync(selection, JSON.stringify({ schema: 1, use: "latest", addons: {} }));
@@ -270,3 +272,23 @@ _dsh_manager_complete`;
 		expect(existsSync(rc)).toBe(false);
 	}, 120_000);
 }
+
+test.skipIf(!hasZig)("SC-CURRENT: typed prefix/Unicode alias completion agrees with launch without writes", () => {
+	const i = newInstall(), A = "0.2.0-rc.1-b10.1.g12345678", B = "0.2.0-rc.1-b11.1.g12345678", alias = "keep café $(literal)";
+	addRuntime(i.data, A, { completion: description("--from-a") }); addRuntime(i.data, B, { run: 2, completion: description("--from-b") });
+	for (const root of ["snapshots", "config-snapshots"]) {
+		const dir = join(i.data, root, `${A}@1`); mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "snapshot.json"), JSON.stringify({ id: `${A}@1`, version: A, n: 1, alias })); writeFileSync(join(dir, ".usage.lock"), "");
+	}
+	const before = tree(i.data), metadata = readFileSync(join(i.data, "config-snapshots", `${A}@1`, "snapshot.json"));
+	for (const flag of ["--snapshot", "--config-snapshot"]) {
+		expect(candidates(i, [flag, `0.2.0@${alias}`, "--"])).toContain("--from-a");
+		expect(candidates(i, [flag, `0.2.0@${alias}`, "--"])).not.toContain("--from-b");
+	}
+	expect(candidates(i, ["--snapshot", `0.2.0@${alias}`, "--config-snapshot", `0.2.0@${alias}`, "--"])).toContain("--from-a");
+	expect(tree(i.data)).toEqual(before); expect(readFileSync(join(i.data, "config-snapshots", `${A}@1`, "snapshot.json"))).toEqual(metadata); expect(tree(i.out)).toEqual([]);
+	const launched = run(i, ["--config-snapshot", `0.2.0@${alias}`, "probe"]); expect(launched.status).toBe(0);
+	const env = readFileSync(join(i.out, "1.env"), "utf8").split("\n").find(l => l.startsWith("DSH_MANAGER_LAUNCH="))!;
+	expect(JSON.parse(env.slice("DSH_MANAGER_LAUNCH=".length))).toMatchObject({ runtime: A, configSnapshot: { id: `${A}@1` } });
+	expect(candidates(i, ["--use", B, "probe", "--config-snapshot", `0.2.0@${alias}`, "--"])).toContain("--from-b");
+});

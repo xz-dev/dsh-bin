@@ -58,3 +58,8 @@ test("an exclusive claim blocks a shared session claim; release frees it", () =>
 	expect(shared).not.toBe("busy");
 	if (shared !== "busy") shared.release();
 });
+
+test("usage guard must be an ordinary file, not a directory", () => {
+	const dir = mkdtempSync(join(tmpdir(), "usage-directory-"));
+	expect(() => acquireClaim(dir, "shared")).toThrow(/ordinary file/);
+});

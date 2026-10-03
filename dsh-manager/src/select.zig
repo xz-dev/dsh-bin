@@ -258,7 +258,7 @@ fn newest(bundles: []const Bundle, channel: ?[]const u8) union(enum) { found: []
 pub const Intent = struct {
     query: []const u8,
     source: Source,
-    /// Second implied version, checked against the first resolved version rather than raw prefixes.
+    /// Other canonical snapshot-owned version, when both typed references were supplied.
     other_query: ?[]const u8 = null,
 };
 
@@ -268,6 +268,8 @@ pub fn intent(opts: Options, selection_use: ?[]const u8) union(enum) { ok: Inten
     const plugins = if (opts.snapshot) |id| snapshotVersion(id) orelse return .{ .err = .{ .bad_snapshot_id = id } } else null;
     const config = if (opts.config_snapshot) |id| snapshotVersion(id) orelse return .{ .err = .{ .bad_snapshot_id = id } } else null;
     if (opts.use) |u| return .{ .ok = .{ .query = u, .source = .use } };
+    if (plugins != null and config != null and !std.mem.eql(u8, plugins.?, config.?))
+        return .{ .err = .{ .conflicting_snapshots = .{ plugins.?, config.? } } };
     if (plugins orelse config) |v| return .{ .ok = .{ .query = v, .source = .snapshot, .other_query = if (plugins != null) config else null } };
     return .{ .ok = .{ .query = selection_use orelse "latest", .source = .selection } };
 }
@@ -293,15 +295,13 @@ pub fn resolve(in: Input) Resolution {
         .ok => |i| i,
         .err => |f| return .{ .err = f },
     };
-    const first = resolveQuery(in, choice.query, choice.source);
-    if (first == .err) return first;
-    if (choice.other_query) |query| {
-        const other = resolveQuery(in, query, .snapshot);
-        if (other == .err) return other;
-        if (!std.mem.eql(u8, first.ok.version, other.ok.version))
-            return .{ .err = .{ .conflicting_snapshots = .{ first.ok.version, other.ok.version } } };
+    // Snapshot lookup already established identity. Never rematch that actual version as a prefix/tag/latest.
+    if (choice.source == .snapshot) {
+        for (in.bundles) |b| if (std.mem.eql(u8, b.version, choice.query))
+            return .{ .ok = .{ .version = b.version, .source = .snapshot } };
+        return .{ .err = .{ .not_installed = .{ .query = choice.query, .source = .snapshot } } };
     }
-    return first;
+    return resolveQuery(in, choice.query, choice.source);
 }
 
 // ------------------------------------------------------------------------------------ Windows arguments
@@ -434,7 +434,7 @@ test "resolution: launch --use, then the --snapshot version, then the selection"
     var r = resolve(.{ .opts = .{ .use = "0.2.0-rc.1", .snapshot = "0.1.7-rc.2@2" }, .bundles = &all, .channel = "release" });
     try tt.expectEqualStrings(R1.version, r.ok.version);
     try tt.expectEqual(Source.use, r.ok.source);
-    r = resolve(.{ .opts = .{ .snapshot = "0.1.7-rc.2@2" }, .bundles = &all, .channel = "release", .selection_use = "0.2.0-rc.1" });
+    r = resolve(.{ .opts = .{ .snapshot = R2.version ++ "@2" }, .bundles = &all, .channel = "release", .selection_use = "0.2.0-rc.1" });
     try tt.expectEqualStrings(R2.version, r.ok.version);
     try tt.expectEqual(Source.snapshot, r.ok.source);
     r = resolve(.{ .opts = .{}, .bundles = &all, .channel = "release", .selection_use = "0.1.7-rc.2" });
@@ -501,11 +501,11 @@ test "MC-TYPED / MC-ARGS: independent config leading option, boundary and repeat
 
 test "MC-CONFIG-SELECT / MC-AMBIGUOUS: symmetric single-shot version intent" {
     const all = [_]Bundle{ R2, R1, L };
-    const config = resolve(.{ .opts = .{ .config_snapshot = "0.1.7-rc.2@1" }, .bundles = &all, .channel = "release", .selection_use = R1.version });
+    const config = resolve(.{ .opts = .{ .config_snapshot = R2.version ++ "@1" }, .bundles = &all, .channel = "release", .selection_use = R1.version });
     try tt.expectEqualStrings(R2.version, config.ok.version);
-    const conflict = resolve(.{ .opts = .{ .snapshot = "0.1.7-rc.2@1", .config_snapshot = "0.2.0-rc.1@1" }, .bundles = &all, .channel = "release" });
+    const conflict = resolve(.{ .opts = .{ .snapshot = R2.version ++ "@1", .config_snapshot = R1.version ++ "@1" }, .bundles = &all, .channel = "release" });
     try tt.expect(conflict == .err);
-    const explicit = resolve(.{ .opts = .{ .use = R1.version, .snapshot = "0.1.7-rc.2@1", .config_snapshot = "0.2.0-rc.1@1" }, .bundles = &all, .channel = "release" });
+    const explicit = resolve(.{ .opts = .{ .use = R1.version, .snapshot = R2.version ++ "@1", .config_snapshot = R1.version ++ "@1" }, .bundles = &all, .channel = "release" });
     try tt.expectEqualStrings(R1.version, explicit.ok.version);
 }
 
@@ -513,9 +513,26 @@ test "dual intent validates both IDs and override boundary without I/O" {
     const bad = intent(.{ .use = R1.version, .config_snapshot = "bad" }, null);
     try tt.expectEqualStrings("bad", bad.err.bad_snapshot_id);
     const all = [_]Bundle{ R2, R1 };
-    const same = resolve(.{ .opts = .{ .snapshot = "0.1.7@keep", .config_snapshot = "0.1.7-rc.2@2" }, .bundles = &all, .channel = "release" });
+    const same = resolve(.{ .opts = .{ .snapshot = R2.version ++ "@1", .config_snapshot = R2.version ++ "@2" }, .bundles = &all, .channel = "release" });
     try tt.expectEqualStrings(R2.version, same.ok.version);
     try tt.expect(!(Options{}).overridesSnapshots());
     try tt.expect(!(Options{ .addons = &.{"office:none"} }).overridesSnapshots());
     try tt.expect((Options{ .config_snapshot = "A@1" }).overridesSnapshots());
+}
+
+test "canonical snapshot identity never prefix-rematches an uninstalled actual version" {
+    const a = "0.2.0-rc.1";
+    const b = Bundle{ .version = "0.2.0-rc.1-b10.1.g12345678", .meta = R1.meta };
+    const conflict = resolve(.{ .opts = .{ .snapshot = a ++ "@1", .config_snapshot = b.version ++ "@1" }, .bundles = &.{b}, .channel = "release" });
+    try tt.expect(conflict == .err);
+    try tt.expect(conflict.err == .conflicting_snapshots);
+    try tt.expectEqualStrings(a, conflict.err.conflicting_snapshots[0]);
+    try tt.expectEqualStrings(b.version, conflict.err.conflicting_snapshots[1]);
+    for ([_]Options{ .{ .snapshot = a ++ "@1" }, .{ .config_snapshot = a ++ "@1" } }) |opts| {
+        const r = resolve(.{ .opts = opts, .bundles = &.{b}, .channel = "release" });
+        try tt.expect(r == .err);
+        try tt.expectEqualStrings(a, r.err.not_installed.query);
+    }
+    const explicit = resolve(.{ .opts = .{ .use = "0.2.0", .snapshot = a ++ "@1", .config_snapshot = b.version ++ "@1" }, .bundles = &.{b}, .channel = "release" });
+    try tt.expectEqualStrings(b.version, explicit.ok.version);
 }

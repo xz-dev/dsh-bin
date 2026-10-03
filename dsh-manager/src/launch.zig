@@ -129,9 +129,18 @@ fn explicitSnapshot(ctx: *Ctx, opts: select.Options, bundles: []const select.Bun
     const id = query orelse return null;
     if (select.snapshotVersion(id) == null) reportResolution(.{ .bad_snapshot_id = id });
     return snapshot.existing(ctx, kind, id) catch |err| {
-        // Preserve the missing-runtime diagnostic before reporting a missing snapshot.
-        const preliminary = select.resolve(.{ .opts = opts, .bundles = bundles, .channel = state.channel(ctx) });
-        if (preliminary == .err) reportResolution(preliminary.err);
+        // This lookup failed, so no canonical snapshot-owned identity is known. Keep raw query matching diagnostic-only.
+        if (opts.use) |use| {
+            const preliminary = select.resolve(.{ .opts = .{ .use = use }, .bundles = bundles, .channel = state.channel(ctx) });
+            if (preliminary == .err) reportResolution(preliminary.err);
+        } else {
+            const version = select.snapshotVersion(id).?;
+            switch (select.matchVersion(bundles, version)) {
+                .none => reportResolution(.{ .not_installed = .{ .query = version, .source = .snapshot } }),
+                .ambiguous => |c| reportResolution(.{ .ambiguous = .{ .query = version, .candidates = c } }),
+                .found => {},
+            }
+        }
         util.fatal("cannot use {s} snapshot {s}: {s}; run `dsh manager snapshot {s} list`", .{ @tagName(kind), id, @errorName(err), @tagName(kind) });
     };
 }
