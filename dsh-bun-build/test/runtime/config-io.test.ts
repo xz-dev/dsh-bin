@@ -147,7 +147,7 @@ test("CS-SWITCH: authentic settings/provider C1 → C2 update → C1, plugin bas
     // Kernel audit, not absence-of-secret output: include failed opens and native watcher registrations.
     const proc = Bun.spawn(["timeout", "--kill-after=2s", "30s", "strace", "-f", "-qq", "-e", "trace=open,openat,rename,renameat,renameat2,inotify_add_watch", "-o", audit, join(bundle, "dsh-native"), "--profile", "io", mode], {
       cwd, env: { PATH: process.env.PATH!, HOME: home, DSH_HOME: home, TMPDIR: root, XDG_CACHE_HOME: join(root, "cache"), DSH_MANAGER_LAUNCH: JSON.stringify(launch), IO_PROCESS_ONLY: "synthetic-inherited-process", NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
-    
+
     const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
     const code = await proc.exited;
     writeFileSync(join(root, `${stem}.log`), stdout + stderr);
