@@ -76,7 +76,9 @@ export const CONFIG_SITES = [
 	...['node_modules/@deepseek-ai/dsh-settings/lib/index.js', 'node_modules/@deepseek-ai/dsh-settings/lib/types/index.js'].flatMap(file => {
 		const q = file.includes('/types/') ? "'" : '"';
 		return [rule(file, `join(profile.home, ${q}settings.yaml${q})`, `__dshBinPaths.configFile(profile.home, ${q}settings.yaml${q})`),
-			rule(file, 'const imported = `${path}.imported`;', 'const imported = __dshBinPaths.check(`${path}.imported`);')];
+			rule(file, 'const imported = `${path}.imported`;', 'const imported = __dshBinPaths.check(`${path}.imported`);'),
+			rule(file, 'await rename(path, imported);', 'await rename(__dshBinPaths.check(path), __dshBinPaths.check(imported));'),
+			rule(file, `readFile(imported, ${q}utf8${q})`, `readFile(__dshBinPaths.check(imported), ${q}utf8${q})`)];
 	}),
 	rule(credFile, 'resolve(config.path ?? join(resolveDshHome(config.dshHome), ".credentials.yaml"))', '__dshBinPaths.credentialFile(config.path, config.dshHome === void 0 ? void 0 : resolveDshHome(config.dshHome), () => resolve(config.path ?? join(resolveDshHome(config.dshHome), ".credentials.yaml")))'),
 	rule(credFile, 'async function assertOwnerOnly(filename) {', 'async function assertOwnerOnly(filename) {\n\t__dshBinPaths.check(filename);'),
@@ -86,6 +88,10 @@ export const CONFIG_SITES = [
 	rule(credFile, 'writeFileAtomic(this.spec.filename,', 'writeFileAtomic(__dshBinPaths.check(this.spec.filename),', 4),
 	rule(credFile, 'withFileLock(this.spec.filename,', 'withFileLock(__dshBinPaths.check(this.spec.filename),', 4),
 	rule('node_modules/@deepseek-ai/dsh-config-editor/lib/index.js', 'return this.ownerContext.profileContext.patchPath;', 'return __dshBinPaths.check(this.ownerContext.profileContext.patchPath);'),
+	rule('node_modules/@deepseek-ai/dsh-config-editor/lib/index.js', 'readFile(path, "utf8")', 'readFile(__dshBinPaths.check(path), "utf8")'),
+	rule('node_modules/@deepseek-ai/dsh-config-editor/lib/index.js', 'writeFileAtomic(path,', 'writeFileAtomic(__dshBinPaths.check(path),', 2),
+	rule('node_modules/@deepseek-ai/dsh-hmr/lib/index.js', 'const target = await findWatchRoot(filename);', 'const target = await findWatchRoot(filename);\n\t__dshBinPaths.checkWatchPath(filename);'),
+	rule('node_modules/@deepseek-ai/dsh-hmr/lib/index.js', 'return readFileSync(filename, "utf8");', 'return readFileSync(__dshBinPaths.checkWatchPath(filename), "utf8");'),
 ];
 export const CONFIG_SITES_BY_VERSION = { "0.2.0-rc.2": CONFIG_SITES };
 const occurrences = (text, needle) => text.split(needle).length - 1;
