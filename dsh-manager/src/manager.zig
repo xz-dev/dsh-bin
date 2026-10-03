@@ -26,6 +26,8 @@ pub const help_text =
     \\  self-update [--force]                                     update this manager (Windows: hands off to a helper)
     \\  completion script|install|uninstall <bash|zsh|fish|pwsh|powershell>
     \\                                                            shell completion (--dry-run; PowerShell: --profile <path>)
+    \\  path [self|home|runtime|snapshot|addon|cache|tmp|completion] [target] [--json]
+    \\                                                            read-only positions, sources and effective selection
     \\  info                                                      install mode, data root and application home
     \\  --version, --help
     \\
@@ -44,6 +46,7 @@ pub fn run(ctx: *Ctx, opts: select.Options, args: []const []const u8) u8 {
         util.print("dsh manager {s} (launch protocol {d})\n", .{ options.version, select.protocol });
         return 0;
     }
+    if (std.mem.eql(u8, cmd, "path")) return @import("path.zig").run(ctx, opts, args[1..]);
     if (std.mem.eql(u8, cmd, "completion")) return completion.run(ctx, args[1..]);
     if (args.len == 2 and (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h"))) {
         util.print("{s}", .{help_text});

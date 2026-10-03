@@ -77,6 +77,17 @@ pub fn openRegular(dir: std.fs.Dir, name: []const u8) !std.fs.File {
     }
     return file;
 }
+/// Management metadata is ordinary and unaliased; never read a linked credential as metadata.
+pub fn readMetadata(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, limit: usize) ![]u8 {
+    const file = try openRegular(dir, name);
+    defer file.close();
+    if (builtin.os.tag == .windows) {
+        var info: std.os.windows.BY_HANDLE_FILE_INFORMATION = undefined;
+        if (GetFileInformationByHandle(file.handle, &info) == 0 or info.nNumberOfLinks != 1) return error.InvalidManagerFile;
+    } else if ((try std.posix.fstat(file.handle)).nlink != 1) return error.InvalidManagerFile;
+    return file.readToEndAlloc(a, limit);
+}
+
 pub fn validated(a: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, version: []const u8) !std.fs.File {
     _ = std.SemanticVersion.parse(version) catch return error.InvalidManagerVersion;
     var file = try openRegular(dir, name);

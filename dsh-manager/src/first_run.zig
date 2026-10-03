@@ -5,16 +5,16 @@ const util = @import("util.zig");
 const completion = @import("completion.zig");
 const Ctx = @import("context.zig").Ctx;
 const Shell = completion.Shell;
-const Result = enum { registered, declined, failed };
-const Entry = struct { result: Result };
-const Choices = struct {
+pub const Result = enum { registered, declined, failed, unregistered };
+pub const Entry = struct { result: Result, path: ?[]const u8 = null, binding: ?[]const u8 = null };
+pub const Choices = struct {
     bash: ?Entry = null,
     zsh: ?Entry = null,
     fish: ?Entry = null,
     pwsh: ?Entry = null,
     powershell: ?Entry = null,
 };
-const State = struct { schema: u32, shells: Choices, undetected: ?Entry = null };
+pub const State = struct { schema: u32, shells: Choices, undetected: ?Entry = null };
 
 fn saved(s: *const State, shell: ?Shell) bool {
     const chosen = shell orelse return s.undetected != null;
@@ -31,7 +31,8 @@ fn record(s: *State, shell: ?Shell, result: Result) void {
     };
     inline for (std.meta.fields(Choices)) |field| {
         if (std.mem.eql(u8, field.name, @tagName(chosen))) {
-            @field(s.shells, field.name) = .{ .result = result };
+            const previous = @field(s.shells, field.name);
+            @field(s.shells, field.name) = .{ .result = result, .path = if (previous) |e| e.path else null, .binding = if (previous) |e| e.binding else null };
             return;
         }
     }
@@ -40,9 +41,16 @@ fn record(s: *State, shell: ?Shell, result: Result) void {
 
 fn readState(ctx: *Ctx) State {
     const path = ctx.path(&.{ "state", "completion.json" });
-    const bytes = std.fs.cwd().readFileAlloc(ctx.a, path, 4096) catch |err| switch (err) {
-        error.FileNotFound => return .{ .schema = 1, .shells = .{} },
-        else => util.fatal("invalid completion state at {s}: {s}; repair it before retrying", .{ path, @errorName(err) }),
+    const bytes = blk: {
+        var dir = std.fs.cwd().openDir(ctx.path(&.{"state"}), .{ .no_follow = true }) catch |err| switch (err) {
+            error.FileNotFound => return .{ .schema = 1, .shells = .{} },
+            else => util.fatal("invalid completion state at {s}: {s}", .{ path, @errorName(err) }),
+        };
+        defer dir.close();
+        break :blk @import("manager_binary.zig").readMetadata(ctx.a, dir, "completion.json", 16384) catch |err| switch (err) {
+            error.FileNotFound => return .{ .schema = 1, .shells = .{} },
+            else => util.fatal("invalid completion state at {s}: {s}; repair it before retrying", .{ path, @errorName(err) }),
+        };
     };
     const s = std.json.parseFromSliceLeaky(State, ctx.a, bytes, .{}) catch
         util.fatal("invalid completion state at {s}; expected schema 1 shell results; repair it before retrying", .{path});
@@ -61,6 +69,20 @@ fn save(ctx: *Ctx, s: State) void {
     defer file.deinit();
     file.file_writer.interface.writeAll(bytes) catch util.fatal("cannot write completion choice", .{});
     file.finish() catch |err| util.fatal("cannot save completion choice: {s}", .{@errorName(err)});
+}
+
+/// Only successful actual registrations add locations; historical pathless results remain pathless.
+pub fn recordRegistration(ctx: *Ctx, shell: Shell, path: []const u8, binding: []const u8, installing: bool) void {
+    var dir = ctx.ensureDir(&.{"state"});
+    dir.close();
+    const mutex = @import("lock.zig").acquire(ctx.path(&.{ "state", "completion.lock" }), .exclusive, true, null) catch |err|
+        util.fatal("cannot record completion registration: {s}", .{@errorName(err)});
+    defer mutex.release();
+    var s = readState(ctx);
+    inline for (std.meta.fields(Choices)) |field| if (std.mem.eql(u8, field.name, @tagName(shell))) {
+        @field(s.shells, field.name) = .{ .result = if (installing) .registered else .unregistered, .path = path, .binding = binding };
+    };
+    save(ctx, s);
 }
 
 fn available(shell: Shell) bool {

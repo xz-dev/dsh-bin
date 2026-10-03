@@ -157,7 +157,9 @@ pub fn init(a: std.mem.Allocator) Ctx {
     };
     const env = std.process.getEnvMap(a) catch util.oom();
     const marker = util.join(a, &.{ dir, install_marker });
-    const bytes = std.fs.cwd().readFileAlloc(a, marker, 4096) catch |err| switch (err) {
+    var executable_dir = std.fs.cwd().openDir(dir, .{ .no_follow = true }) catch |err| util.fatal("cannot read install context: {s}", .{@errorName(err)});
+    defer executable_dir.close();
+    const bytes = @import("manager_binary.zig").readMetadata(a, executable_dir, install_marker, 4096) catch |err| switch (err) {
         error.FileNotFound => null,
         else => util.fatal("invalid install marker {s}: {s}", .{ marker, @errorName(err) }),
     };

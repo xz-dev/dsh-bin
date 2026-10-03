@@ -37,9 +37,11 @@ pub fn main() void {
         std.process.exit(code);
     }
     var ctx = context.init(a);
-    @import("self_update_windows.zig").consume(&ctx);
-    // `manager` is a namespace only as the first argument after the leading options.
+    // Parse intent before consuming Windows update receipts: path reports are strictly read-only.
     const opts = launch.parseLeading(a, args);
+    const path_query = opts.consumed + 1 < args.len and std.mem.eql(u8, args[opts.consumed], "manager") and std.mem.eql(u8, args[opts.consumed + 1], "path");
+    if (!path_query) @import("self_update_windows.zig").consume(&ctx);
+    // `manager` is a namespace only as the first argument after the leading options.
     if (opts.consumed < args.len and std.mem.eql(u8, args[opts.consumed], "manager")) {
         const code = manager.run(&ctx, opts, args[opts.consumed + 1 ..]);
         util.flush();

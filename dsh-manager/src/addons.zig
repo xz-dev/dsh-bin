@@ -24,11 +24,15 @@ fn validSlot(s: Slot) bool {
     for (s.commit) |c| if (!std.ascii.isHex(c)) return false;
     return true;
 }
-fn compatible(t: Table, s: Slot) bool {
+pub fn compatible(t: Table, s: Slot) bool {
     return if (t.slot) |slot| eq(u8, slot.commit, s.commit) else false;
 }
 pub fn table(ctx: *const Ctx, version: []const u8) !Table {
-    const bytes = try std.fs.cwd().readFileAlloc(ctx.a, ctx.path(&.{ "bundles", version, "bundle.json" }), 1 << 20);
+    var dir = try std.fs.cwd().openDir(ctx.path(&.{ "bundles", version }), .{ .no_follow = true });
+    defer dir.close();
+    return parseTable(ctx, try @import("manager_binary.zig").readMetadata(ctx.a, dir, "bundle.json", 1 << 20));
+}
+pub fn parseTable(ctx: *const Ctx, bytes: []const u8) !Table {
     const M = struct { addons: struct { office: Table } };
     const m = try std.json.parseFromSliceLeaky(M, ctx.a, bytes, .{ .ignore_unknown_fields = true });
     if (m.addons.office.slot) |s| if (!validSlot(s)) return error.InvalidAddonSlot;
@@ -105,7 +109,7 @@ pub fn readIn(ctx: *const Ctx, parent: std.fs.Dir, path: []const u8, version: []
     var d = try parent.openDir(path, .{ .iterate = true, .no_follow = true });
     defer d.close();
     if ((try d.stat()).kind != .directory) return error.AddonDirectoryConflict;
-    const bytes = try d.readFileAlloc(ctx.a, "addon.json", 1 << 20);
+    const bytes = try @import("manager_binary.zig").readMetadata(ctx.a, d, "addon.json", 1 << 20);
     const m = try std.json.parseFromSliceLeaky(Meta, ctx.a, bytes, .{ .ignore_unknown_fields = true });
     if (!eq(u8, m.name, "office") or !eq(u8, m.version, version) or !valid(.{ .version = m.version, .tag = m.tag, .slot = m.slot, .assets = .{} }) or !eq(u8, m.kitVersion, m.slot.kitVersion) or !eq(u8, m.platform, try platform(ctx))) return error.InvalidAddonMetadata;
     return m;
@@ -124,7 +128,7 @@ pub fn local(ctx: *const Ctx) ![]Meta {
     defer dir.close();
     return localIn(ctx, dir);
 }
-fn localIn(ctx: *const Ctx, dir: std.fs.Dir) ![]Meta {
+pub fn localIn(ctx: *const Ctx, dir: std.fs.Dir) ![]Meta {
     var out: std.ArrayList(Meta) = .empty;
     var it = dir.iterate();
     while (try it.next()) |e| {
@@ -251,6 +255,16 @@ pub fn storedChoice(s: ?select.Selection) !?[]const u8 {
     }
     return null;
 }
+pub fn candidate(t: Table, installed: []const Meta, wanted: ?[]const u8) ?Meta {
+    var chosen: ?Meta = null;
+    for (installed) |m| {
+        if (wanted) |w| {
+            if (eq(u8, w, m.version)) return m;
+        } else if (compatible(t, m.slot)) chosen = m;
+    }
+    return chosen;
+}
+
 pub fn resolve(ctx: *const Ctx, v: []const u8, opts: []const []const u8, s: ?select.Selection) Launch {
     const wanted = (if (opts.len != 0) option(opts) else storedChoice(s)) catch |err| util.fatal("invalid office addon choice: {s}", .{@errorName(err)});
     if (wanted) |w| if (eq(u8, w, "none")) return .{};
@@ -262,17 +276,7 @@ pub fn resolve(ctx: *const Ctx, v: []const u8, opts: []const []const u8, s: ?sel
         util.warn("office addon storage unavailable ({s}); launching without it", .{@errorName(err)});
         return .{};
     };
-    var chosen: ?Meta = null;
-    for (installed) |m| {
-        if (wanted) |w| {
-            if (eq(u8, w, m.version)) {
-                chosen = m;
-                break;
-            }
-        } else if (compatible(t, m.slot)) {
-            chosen = m;
-        }
-    }
+    const chosen = candidate(t, installed, wanted);
     if (chosen) |m| {
         if (compatible(t, m.slot)) return .{ .office = .{ .version = m.version, .dir = ctx.path(&.{ "addons", "office", m.version }) } };
         util.warn("office addon {s} is incompatible with runtime {s}; launching without it", .{ m.version, v });

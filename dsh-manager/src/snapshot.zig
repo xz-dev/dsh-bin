@@ -19,7 +19,7 @@ pub const Kind = enum {
 };
 pub const Snapshot = struct { kind: Kind, id: []const u8, dir: []const u8 };
 const Order = struct { upstream: struct { commitTime: []const u8 }, run: u64, attempt: u64 };
-const Meta = struct {
+pub const Meta = struct {
     id: []const u8,
     version: []const u8,
     n: u64,
@@ -45,7 +45,7 @@ fn list(ctx: *const Ctx, kind: Kind) ![]Meta {
     return listIn(ctx, root);
 }
 
-fn listIn(ctx: *const Ctx, root: std.fs.Dir) ![]Meta {
+pub fn listIn(ctx: *const Ctx, root: std.fs.Dir) ![]Meta {
     var result: std.ArrayList(Meta) = .empty;
     var it = root.iterate();
     while (try it.next()) |entry| {
@@ -56,9 +56,7 @@ fn listIn(ctx: *const Ctx, root: std.fs.Dir) ![]Meta {
         if (n == 0 or entry.kind != .directory) return error.InvalidSnapshot;
         var dir = try root.openDir(entry.name, .{ .no_follow = true });
         defer dir.close();
-        const file = try binary.openRegular(dir, "snapshot.json");
-        defer file.close();
-        const bytes = try file.readToEndAlloc(ctx.a, 1 << 20);
+        const bytes = try binary.readMetadata(ctx.a, dir, "snapshot.json", 1 << 20);
         const meta = try std.json.parseFromSliceLeaky(Meta, ctx.a, bytes, .{ .ignore_unknown_fields = true });
         if (!std.mem.eql(u8, meta.id, entry.name) or !std.mem.eql(u8, meta.version, v) or meta.n != n) return error.InvalidSnapshot;
         try dir.access(".usage.lock", .{});
@@ -77,7 +75,7 @@ fn listIn(ctx: *const Ctx, root: std.fs.Dir) ![]Meta {
     return result.toOwnedSlice(ctx.a);
 }
 
-fn lookup(ctx: *const Ctx, all: []const Meta, query: []const u8) !Meta {
+pub fn lookup(ctx: *const Ctx, all: []const Meta, query: []const u8) !Meta {
     const version = select.snapshotVersion(query) orelse return error.InvalidSnapshotId;
     if (!safeVersion(version)) return error.InvalidSnapshotId;
     const key = query[version.len + 1 ..];
@@ -111,7 +109,7 @@ pub fn existing(ctx: *const Ctx, kind: Kind, query: []const u8) !Snapshot {
     return .{ .kind = kind, .id = s.id, .dir = ctx.path(&.{ kind.root(), s.id }) };
 }
 
-fn newest(all: []const Meta, version: []const u8) ?Meta {
+pub fn newest(all: []const Meta, version: []const u8) ?Meta {
     var best: ?Meta = null;
     for (all) |s| if (std.mem.eql(u8, s.version, version) and (best == null or s.n > best.?.n)) {
         best = s;

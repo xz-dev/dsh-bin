@@ -18,16 +18,23 @@ pub fn list(ctx: *const Ctx) []select.Bundle {
         storageProblem(path);
     };
     defer dir.close();
+    return readIn(ctx, dir) catch storageProblem(path);
+}
+
+/// Fallible handle-relative inventory for read-only reports; policy/parsing is shared with list.
+pub fn readIn(ctx: *const Ctx, dir: std.fs.Dir) ![]select.Bundle {
     var out: std.ArrayList(select.Bundle) = .empty;
     var it = dir.iterate();
-    while (it.next() catch storageProblem(path)) |e| {
+    while (try it.next()) |e| {
         // Finder/Explorer metadata is not a runtime or evidence of a damaged install.
         if (std.mem.eql(u8, e.name, ".DS_Store") or std.mem.startsWith(u8, e.name, "._") or
             std.ascii.eqlIgnoreCase(e.name, "Thumbs.db") or std.ascii.eqlIgnoreCase(e.name, "desktop.ini")) continue;
-        if (e.kind != .directory or e.name[0] == '.') storageProblem(ctx.path(&.{ "bundles", e.name }));
-        const name = ctx.a.dupe(u8, e.name) catch util.oom();
-        const bytes = dir.readFileAlloc(ctx.a, util.join(ctx.a, &.{ name, "bundle.json" }), 1 << 20) catch null;
-        out.append(ctx.a, .{ .version = name, .meta = if (bytes) |b| select.parseMeta(ctx.a, b) else null }) catch util.oom();
+        if (e.kind != .directory or e.name[0] == '.') return error.DamagedRuntimeStorage;
+        const name = try ctx.a.dupe(u8, e.name);
+        var runtime = try dir.openDir(name, .{ .no_follow = true });
+        defer runtime.close();
+        const bytes = @import("manager_binary.zig").readMetadata(ctx.a, runtime, "bundle.json", 1 << 20) catch null;
+        try out.append(ctx.a, .{ .version = name, .meta = if (bytes) |b| select.parseMeta(ctx.a, b) else null });
     }
     std.mem.sort(select.Bundle, out.items, {}, struct {
         fn lt(_: void, x: select.Bundle, y: select.Bundle) bool {

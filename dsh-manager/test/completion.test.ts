@@ -197,7 +197,9 @@ _dsh_manager_complete`;
 		const active = shellRun(i, harness, [rc]);
 		expect(active.status).toBe(0);
 		expect(active.stdout.split("\n")).toContain("install");
-		expect(existsSync(i.data)).toBe(false);
+		// Actual install records target/binding; loading/querying still creates no runtime or snapshots.
+		expect(tree(i.data)).toEqual([".dsh-bin-data.json", "state", "state/completion.json", "state/completion.lock"]);
+		expect(JSON.parse(readFileSync(join(i.data, "state/completion.json"), "utf8")).shells[shell].path).toBe(rc);
 		const uninstall = run(i, ["manager", "completion", "uninstall", shell], { env: { ZDOTDIR: i.home } });
 		expect(uninstall.status).toBe(0);
 		expect(uninstall.stdout).toContain("current session");

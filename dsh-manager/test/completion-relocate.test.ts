@@ -21,6 +21,8 @@ function snapshot(i: Install, name: string) {
  while (existsSync(join(i.data, "snapshots", `${version}@${n}`))) n++;
  const id = `${version}@${n}`, dir = join(i.data, "snapshots", id);
  mkdirSync(dir, { recursive: true });
+ // Registration now records its actual target under an explicitly owned manager data root.
+ writeFileSync(join(i.data, ".dsh-bin-data.json"), JSON.stringify({ kind: "dsh-manager-data", schema: 1 }));
  writeFileSync(join(dir, "snapshot.json"), JSON.stringify({ id, version, n, alias }));
  writeFileSync(join(dir, ".usage.lock"), "");
 }

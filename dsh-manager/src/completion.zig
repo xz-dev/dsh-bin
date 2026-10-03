@@ -17,6 +17,7 @@ const commands = [_]Command{
     .{ .name = "clean" },
     .{ .name = "self-update" },
     .{ .name = "completion", .options = &.{ "--shell", "--profile", "--dry-run" } },
+    .{ .name = "path", .options = &.{"--json"} },
     .{ .name = "info" },
     .{ .name = "help" },
     .{ .name = "version" },
@@ -220,6 +221,18 @@ pub fn query(ctx: *Ctx, inherited: select.Options, args: []const []const u8) u8 
                     const kind = std.meta.stringToEnum(@import("snapshot.zig").Kind, rest[2]) orelse return 0;
                     if (rest.len == 3) for ([_][]const u8{ "new", "remove", "list" }) |w| emit(prefix, w);
                     if (rest.len > 3 and eq(rest[3], "remove")) snapshotWords(ctx, prefix, kind);
+                }
+            }
+            if (eq(rest[1], "path")) {
+                if (rest.len == 2) for (@import("path.zig").scopes) |scope| emit(prefix, scope);
+                if (rest.len >= 3) {
+                    if (eq(rest[2], "runtime")) versions(ctx, prefix, bundles);
+                    if (eq(rest[2], "snapshot")) {
+                        if (rest.len == 3) for (std.enums.values(@import("snapshot.zig").Kind)) |kind| emit(prefix, @tagName(kind));
+                        if (rest.len == 4) if (std.meta.stringToEnum(@import("snapshot.zig").Kind, rest[3])) |kind| snapshotWords(ctx, prefix, kind);
+                    }
+                    if (eq(rest[2], "addon")) addons(ctx, prefix);
+                    if (eq(rest[2], "completion")) for (std.enums.values(Shell)) |candidate| emit(prefix, @tagName(candidate));
                 }
             }
             if (eq(rest[1], "completion")) {
@@ -534,6 +547,8 @@ pub fn runReporting(ctx: *Ctx, args: []const []const u8, diagnostics: bool) u8 {
         resultHint(ctx, shell, path, installing, true, action, diagnostics);
         return 0;
     }
+    // A successful external registration must have a manager-owned record; do not adopt foreign data.
+    ctx.ensureData();
     if (remove_file) {
         std.fs.cwd().deleteFile(path) catch |err| {
             util.warn("cannot remove completion registration {s}: {s}", .{ path, @errorName(err) });
@@ -559,6 +574,7 @@ pub fn runReporting(ctx: *Ctx, args: []const []const u8, diagnostics: bool) u8 {
             return 1;
         };
     }
+    @import("first_run.zig").recordRegistration(ctx, shell, path, bound, installing);
     resultHint(ctx, shell, path, installing, false, action, diagnostics);
     return 0;
 }
