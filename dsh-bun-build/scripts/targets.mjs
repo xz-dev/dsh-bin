@@ -1,5 +1,12 @@
-// Single source of truth for the 12 release targets.
+// Target/compiler identity; CI remains restricted to its existing native runners.
 export const BUN_VERSION = "1.4.2";
+
+// Archive digests from Bun 1.4.2's official release API/SHASUMS256.txt.
+// Executable digests from extraction of those verified archives (not ZIP digests).
+export const FREEBSD_BUN = Object.freeze({
+	x64: Object.freeze({ asset: "bun-freebsd-x64-baseline.zip", sha256: "f01d1789358f02625300776925cc8f67cf7c232fb8a394e186f5fa59300eed2d", executableSha256: "b6e54b56a52711a4340143f890757770fe4393b1d8b8be4f21b6d03fe815bb23" }),
+	arm64: Object.freeze({ asset: "bun-freebsd-aarch64.zip", sha256: "a554958e5691c5036e576da78efb4114665da354c882cb0ca059bbd4a896b44a", executableSha256: "157149a306c9fbe7c757f86e8e40bb5c20aaaf9e426d232db3874bbfbdcc7201" }),
+});
 
 const RUNNERS = {
 	"macos-15-intel": ["darwin", "x64"],
@@ -8,6 +15,8 @@ const RUNNERS = {
 	"ubuntu-24.04-arm": ["linux", "arm64"],
 	"windows-2022": ["windows", "x64"],
 	"windows-11-arm": ["windows", "arm64"],
+	"freebsd-vm-x64": ["freebsd", "x64"],
+	"freebsd-vm-arm64": ["freebsd", "arm64"],
 };
 
 // Pinned native musl userspace: oven/bun:1.4.2-alpine (Alpine 3.22), so musl builds run BUN_VERSION too.
@@ -18,7 +27,7 @@ const MUSL_IMAGES = {
 	arm64: "docker.io/oven/bun@sha256:df7bf53d29008d89d195925aad82ca7e51dad114c6cd65b32cf8c3e0c186bb30",
 };
 
-const NODE_OS = { linux: "linux", darwin: "darwin", windows: "win32" };
+const NODE_OS = { linux: "linux", darwin: "darwin", windows: "win32", freebsd: "freebsd" };
 
 function t(id, os, arch, libc, cpu, runner) {
 	const [ros, rarch] = RUNNERS[runner];
@@ -37,7 +46,11 @@ function t(id, os, arch, libc, cpu, runner) {
 		// pnpm official GitHub release asset; only its platform-neutral dist/ is kept.
 		// pnpm ships no darwin-x64 asset: reuse darwin-arm64 dist/, drop its arm64
 		// reflink package and add reflink.darwin-x64.node from pnpm/reflink.
-		pnpmAsset: `pnpm-${NODE_OS[os]}-${os === "darwin" ? "arm64" : arch}${libc === "musl" ? "-musl" : ""}.${os === "windows" ? "zip" : "tar.gz"}`,
+		// pnpm 11.7.0 has no FreeBSD standalone asset. Universal JS closure
+		// acquisition/filtering and shim integration belong to the following slice.
+		...(os === "freebsd"
+			? { runnerKind: "freebsd-vm", minVersion: "15.0", bunAsset: FREEBSD_BUN[arch].asset, pnpmStrategy: "universal-js" }
+			: { pnpmAsset: `pnpm-${NODE_OS[os]}-${os === "darwin" ? "arm64" : arch}${libc === "musl" ? "-musl" : ""}.${os === "windows" ? "zip" : "tar.gz"}` }),
 		...(os === "darwin" && arch === "x64"
 			? { pnpmDrop: ["dist/node_modules/@reflink/reflink-darwin-arm64"], reflinkAsset: "reflink.darwin-x64.node" }
 			: {}),
@@ -59,6 +72,8 @@ export const TARGETS = Object.freeze([
 	t("windows-x64-baseline", "windows", "x64", null, "baseline", "windows-2022"),
 	t("windows-x64-modern", "windows", "x64", null, "modern", "windows-2022"),
 	t("windows-arm64", "windows", "arm64", null, "arm64", "windows-11-arm"),
+	t("freebsd-x64", "freebsd", "x64", null, "baseline", "freebsd-vm-x64"),
+	t("freebsd-arm64", "freebsd", "arm64", null, "arm64", "freebsd-vm-arm64"),
 ]);
 
 export function target(id) {
@@ -67,10 +82,13 @@ export function target(id) {
 	return found;
 }
 
-/** Target of the current host (glibc/modern by default). */
-export function hostTargetId() {
-	const os = process.platform === "win32" ? "windows" : process.platform;
-	const arch = process.arch;
+/** Target of current host; FreeBSD x64 deliberately stays baseline. */
+export function hostTargetId(platform = process.platform, arch = process.arch) {
+	const os = platform === "win32" ? "windows" : platform;
+	if (os === "freebsd") {
+		if (arch !== "x64" && arch !== "arm64") throw new Error(`unsupported host: ${os}-${arch}`);
+		return `${os}-${arch}`;
+	}
 	if (arch === "arm64") return os === "linux" && isMusl() ? "linux-arm64-musl" : `${os}-arm64`;
 	return os === "linux" && isMusl() ? "linux-x64-musl-modern" : `${os}-x64-modern`;
 }
@@ -83,7 +101,8 @@ function isMusl() {
 	}
 }
 
-export const githubMatrix = () => ({ include: TARGETS.map(({ id, runner, containerImage }) => ({ id, runner, ...(containerImage ? { containerImage } : {}) })) });
+// VM descriptors are NOT GitHub runs-on labels. Dedicated FreeBSD CI is a later gate.
+export const githubMatrix = () => ({ include: TARGETS.filter((t) => t.runnerKind !== "freebsd-vm").map(({ id, runner, containerImage }) => ({ id, runner, ...(containerImage ? { containerImage } : {}) })) });
 
 if (import.meta.main) {
 	const [cmd, id, field] = process.argv.slice(2);

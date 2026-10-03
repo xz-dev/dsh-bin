@@ -23,6 +23,11 @@ fn id(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch, musl: bool, modern: bool
             .aarch64 => "darwin-arm64",
             else => error.UnsupportedHost,
         },
+        .freebsd => switch (arch) {
+            .x86_64 => "freebsd-x64",
+            .aarch64 => "freebsd-arm64",
+            else => error.UnsupportedHost,
+        },
         .windows => switch (arch) {
             .x86_64 => if (modern) "windows-x64-modern" else "windows-x64-baseline",
             .aarch64 => "windows-arm64",
@@ -30,6 +35,18 @@ fn id(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch, musl: bool, modern: bool
         },
         else => error.UnsupportedHost,
     };
+}
+
+test "FBSD-NATIVE FreeBSD uses baseline x64 and rejects unsupported architectures" {
+    try std.testing.expectEqualStrings("freebsd-x64", try id(.freebsd, .x86_64, false, false));
+    try std.testing.expectEqualStrings("freebsd-x64", try id(.freebsd, .x86_64, true, true));
+    try std.testing.expectEqualStrings("freebsd-arm64", try id(.freebsd, .aarch64, false, false));
+    try std.testing.expectError(error.UnsupportedHost, id(.freebsd, .riscv64, false, false));
+    try std.testing.expectError(error.UnsupportedHost, id(.freebsd, .x86, false, false));
+    if (builtin.os.tag == .freebsd) {
+        const expected = if (builtin.cpu.arch == .x86_64) "freebsd-x64" else "freebsd-arm64";
+        try std.testing.expectEqualStrings(expected, try host());
+    }
 }
 
 test "FB-EMPTY host targets cover libc and CPU independently of manager ABI" {
