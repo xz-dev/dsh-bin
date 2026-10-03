@@ -87,11 +87,12 @@ test.skipIf(!hasZig || WIN)("MC-SNAPSHOT review: chained relative links cannot m
 	expect(JSON.parse(readFileSync(join(root(i), ".counters.json"), "utf8"))[B]).toBe(1);
 });
 
-test.skipIf(!hasZig)("MC-SNAPSHOT review: replacing the snapshots ancestor never deletes external user files", async () => {
-	const i = install(), id = `${A}@1`; expect(command(i, ["new", "--use", A, "--empty"]).status).toBe(0);
+test.skipIf(!hasZig).each(["plugins", "config"])("MC-SNAPSHOT review: replacing the %s snapshots ancestor never deletes external user files", async kind => {
+	const i = install(), id = `${A}@1`, store = join(i.data, kind === "config" ? "config-snapshots" : "snapshots");
+	expect(typed(i, kind, ["new", "--use", A, "--empty"]).status).toBe(0);
 	const external = join(i.home, "external"), sentinel = join(external, id, "unrelated-user-file");
 	mkdirSync(join(external, id), { recursive: true }); writeFileSync(sentinel, "KEEP");
-	const p = spawn(i.exe, ["manager", "snapshot", "plugins", "remove", id], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_PAUSE: "snapshot-remove" }, stdio: "pipe" });
+	const p = spawn(i.exe, ["manager", "snapshot", kind, "remove", id], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_PAUSE: "snapshot-remove" }, stdio: "pipe" });
 	let stderr = ""; p.stderr.on("data", b => { stderr += b.toString(); }); p.stdout.resume();
 	const done = new Promise<number | null>((resolve, reject) => { p.on("close", resolve); p.on("error", reject); });
 	const watchdog = setTimeout(() => p.kill("SIGKILL"), 15_000);
@@ -99,9 +100,9 @@ test.skipIf(!hasZig)("MC-SNAPSHOT review: replacing the snapshots ancestor never
 		const deadline = Date.now() + 5000;
 		while (!stderr.includes("test pause: snapshot-remove") && p.exitCode === null && Date.now() < deadline) await Bun.sleep(10);
 		expect(stderr).toContain("test pause: snapshot-remove");
-		const claim = acquireClaim(join(root(i), id, ".usage.lock"), "shared");
+		const claim = acquireClaim(join(store, id, ".usage.lock"), "shared");
 		try { expect(claim).toBe("busy"); } finally { if (claim !== "busy") claim.release(); }
-		const original = replaceAncestor(root(i), external);
+		const original = replaceAncestor(store, external);
 		p.stdin.end("continue"); const code = await done;
 		expect(existsSync(sentinel)).toBe(true); expect(readFileSync(sentinel, "utf8")).toBe("KEEP");
 		expect(code).toBe(0); expect(existsSync(join(original, id))).toBe(false); expect(started(i)).toBe(false);
@@ -230,6 +231,83 @@ test.skipIf(!hasZig)("CS-CONTENT / CS-PERMISSIONS: config copies all profiles/se
 	if (!WIN) for (const name of [join(i.data, "config-snapshots"), dest, join(dest, "profiles/one"), join(dest, "accounts")]) expect(lstatSync(name).mode & 0o077).toBe(0);
 	expect(r.stdout + r.stderr + JSON.stringify(typedRows(i, "config"))).not.toContain("test-secret-do-not-print");
 	expect(typedRows(i, "plugins")).toEqual([]); expect(started(i)).toBe(false);
+});
+
+test.skipIf(!hasZig)("CS-CONTENT review: profile names and nested local paths are not storage roles", () => {
+	const i = install(); expect(typed(i, "config", ["new", "--use", A, "--empty"]).status).toBe(0);
+	const source = configDir(i, `${A}@1`);
+	const names = ["cache", "state", "tmp", "session", "sessions", "addons", "bundles", "node_modules", "package.json", "cordis.yml", "snapshot.json", ".usage.lock", ".staging-profile", "profile.tmp", "profile.lock", "profile.jsonl"];
+	const contents = Object.fromEntries(names.map(name => [`profiles/${name}/cordis.patch.yml`, `profile: ${name}\n`]));
+	Object.assign(contents, { "accounts/cache/work.yaml": "nested-cache-config\n", "accounts/state/work.yaml": "nested-state-config\n", "accounts/tmp/work.yaml": "nested-tmp-config\n" });
+	for (const [name, bytes] of Object.entries(contents)) { mkdirSync(join(source, name, ".."), { recursive: true }); writeFileSync(join(source, name), bytes); }
+	const excluded = names.flatMap(name => ["node_modules/pkg/index.js", "cordis.yml", "package.json", "pnpm-lock.yaml", ".credentials.yaml.tmp-123"].map(file => `profiles/${name}/${file}`));
+	for (const name of excluded) { mkdirSync(join(source, name, ".."), { recursive: true }); writeFileSync(join(source, name), "excluded"); }
+	const saved = digest(source), pluginsBefore = tree(root(i));
+	const r = typed(i, "config", ["new", "--use", A]); expect(r.status, r.stderr).toBe(0);
+	const dest = configDir(i, `${A}@2`);
+	for (const [name, bytes] of Object.entries(contents)) expect(readFileSync(join(dest, name), "utf8")).toBe(bytes);
+	for (const name of excluded) expect(existsSync(join(dest, name))).toBe(false);
+	writeFileSync(join(dest, "profiles/cache/cordis.patch.yml"), "copy changed"); expect(digest(source)).toEqual(saved);
+	expect(tree(root(i))).toEqual(pluginsBefore); expect(started(i)).toBe(false);
+});
+
+test.skipIf(!hasZig).each(["plugins", "config"])("CS-FAILURE review: %s removal rejects a replacement target after preflight", async kind => {
+	const i = install(), id = `${A}@1`, path = kind === "config" ? configDir : dir;
+	expect(typed(i, kind, ["new", "--use", A, "--empty"]).status).toBe(0);
+	const saved = join(i.out, "original"), replacement = join(i.out, "replacement"), sentinel = "unrelated-user-file";
+	mkdirSync(replacement); writeFileSync(join(replacement, sentinel), "KEEP");
+	const before = digest(path(i, id));
+	const p = spawn(i.exe, ["manager", "snapshot", kind, "remove", id], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_PAUSE: "snapshot-remove" }, stdio: "pipe" });
+	let stderr = "", stdout = ""; p.stderr.on("data", b => { stderr += b.toString(); }); p.stdout.on("data", b => { stdout += b.toString(); });
+	const done = new Promise<number | null>((resolve, reject) => { p.on("close", resolve); p.on("error", reject); }); const timer = setTimeout(() => p.kill("SIGKILL"), 15000);
+	let swapped = false;
+	try {
+		const deadline = Date.now() + 5000; while (!stderr.includes("test pause: snapshot-remove") && p.exitCode === null && Date.now() < deadline) await Bun.sleep(10);
+		expect(stderr).toContain("test pause: snapshot-remove");
+		try { renameSync(path(i, id), saved); swapped = true; }
+		catch (err) { if (!WIN || (err as NodeJS.ErrnoException).code !== "EPERM") throw err; }
+		if (swapped) renameSync(replacement, path(i, id));
+		p.stdin.end("x"); const code = await done;
+		if (swapped) {
+			expect(code).toBe(1); expect(stderr).toContain("SnapshotChanged"); expect(stdout).not.toContain("Removed snapshot");
+			expect(readFileSync(join(path(i, id), sentinel), "utf8")).toBe("KEEP"); expect(digest(saved)).toEqual(before);
+		} else { expect(code).toBe(0); expect(existsSync(path(i, id))).toBe(false); expect(readFileSync(join(replacement, sentinel), "utf8")).toBe("KEEP"); }
+		expect(started(i)).toBe(false);
+	} finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await done; } }
+});
+
+test.skipIf(!hasZig).each(["plugins", "config"].flatMap(kind => ["changed", "replaced", "added", "missing"].map(change => [kind, change])))
+("CS-FAILURE review: %s publication rejects %s earlier staged content", async (kind, change) => {
+	const i = install(), path = kind === "config" ? configDir : dir;
+	expect(typed(i, kind, ["new", "--use", A, "--empty"]).status).toBe(0);
+	const source = path(i, `${A}@1`), content = kind === "config" ? source : join(source, "profiles/probe");
+	mkdirSync(content, { recursive: true });
+	writeFileSync(join(content, ".credentials.yaml"), "original-synthetic-credential\n"); writeFileSync(join(content, "settings.yaml"), "original-settings\n");
+	expect(run(i, ["manager", "select", "--use", A, kind === "config" ? "--config-snapshot" : "--snapshot", `${A}@1`]).status).toBe(0);
+	const saved = digest(source), pin = readFileSync(join(i.data, "state/selection.json"), "utf8"), other = kind === "config" ? "snapshots" : "config-snapshots", otherBefore = digest(join(i.data, other));
+	const p = spawn(i.exe, ["manager", "snapshot", kind, "new", "--use", A], { cwd: i.home, env: { ...baseEnv(i), DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_PAUSE: "snapshot-file-copied" }, stdio: "pipe" });
+	let stderr = "", stdout = ""; p.stderr.on("data", b => { stderr += b.toString(); }); p.stdout.on("data", b => { stdout += b.toString(); });
+	const done = new Promise<number | null>((resolve, reject) => { p.on("close", resolve); p.on("error", reject); }); const timer = setTimeout(() => p.kill("SIGKILL"), 15000);
+	const pauses = () => [...stderr.matchAll(/test pause: snapshot-file-copied ([^\r\n]+)/g)].map(m => m[1]);
+	try {
+		for (let n = 1; n <= 2; n++) {
+			const deadline = Date.now() + 5000; while (pauses().length < n && p.exitCode === null && Date.now() < deadline) await Bun.sleep(10);
+			expect(pauses()).toHaveLength(n); if (n === 1) p.stdin.write("x");
+		}
+		const store = join(i.data, kind === "config" ? "config-snapshots" : "snapshots"), staging = readdirSync(store).filter(name => name.startsWith(".staging-")); expect(staging).toHaveLength(1);
+		const staged = join(store, staging[0]), copied = kind === "config" ? staged : join(staged, "profiles/probe"), first = join(copied, pauses()[0]);
+		if (kind === "config" && !WIN) for (const name of [staged, ...tree(staged).map(name => join(staged, name))]) expect(lstatSync(name).mode & 0o077).toBe(0);
+		if (change === "changed") writeFileSync(first, Buffer.alloc(readFileSync(first).length, 0x78));
+		else if (change === "replaced") { const replacement = join(i.out, "replacement"); writeFileSync(replacement, readFileSync(first)); renameSync(replacement, first); }
+		else if (change === "missing") rmSync(first);
+		else writeFileSync(join(copied, "unexpected.yaml"), "untrusted-added-content\n");
+		p.stdin.end("x"); expect(await done).toBe(1); expect(stderr).toContain("SnapshotChanged"); expect(stdout).not.toContain("Created"); expect(stdout + stderr).not.toContain("original-synthetic-credential");
+		expect(typedRows(i, kind).map((s: any) => s.id)).toEqual([`${A}@1`]); expect(existsSync(path(i, `${A}@2`))).toBe(false);
+		expect(digest(source)).toEqual(saved); expect(readFileSync(join(i.data, "state/selection.json"), "utf8")).toBe(pin); expect(digest(join(i.data, other))).toEqual(otherBefore);
+		expect(readdirSync(store).some(name => name.startsWith(".staging-"))).toBe(false);
+		expect(JSON.parse(readFileSync(join(store, ".counters.json"), "utf8"))[A]).toBe(2);
+		expect(typed(i, kind, ["new", "--use", A]).status).toBe(0); expect(typedRows(i, kind).map((s: any) => s.id)).toEqual([`${A}@1`, `${A}@3`]); expect(started(i)).toBe(false);
+	} finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await done; } }
 });
 
 test.skipIf(!hasZig)("CS-FAILURE: injected I/O failure and interruption keep selection/source and private unpublished residues", () => {

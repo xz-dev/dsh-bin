@@ -230,6 +230,12 @@ fn create(ctx: *const Ctx, kind: Kind, root: std.fs.Dir, all: []const Meta, vers
         if (sameDirectory(root, staging, staging_stat)) root.deleteTree(staging) catch {};
     }
     _ = try makeDirectory(ctx, dir, "profiles", kind);
+    var expected: std.StringHashMap(Expected) = .init(ctx.a);
+    {
+        var profiles = try dir.openDir("profiles", .{ .no_follow = true });
+        defer profiles.close();
+        try expected.put("profiles", .{ .kind = .directory, .identity = try identity(.{ .handle = profiles.fd }) });
+    }
     if (source) |s| {
         var src = try root.openDir(s.id, .{ .iterate = true, .no_follow = true });
         defer src.close();
@@ -237,20 +243,23 @@ fn create(ctx: *const Ctx, kind: Kind, root: std.fs.Dir, all: []const Meta, vers
         binary.testPause(ctx, "snapshot-copy", s.id); // Handles pinned before any handoff.
         if (!sameDirectory(root, s.id, source_stat)) return error.SnapshotChanged;
         if (kind == .config) {
-            try copyConfig(ctx, src, dir, "");
+            try copyConfig(ctx, src, dir, "", &expected);
         } else {
             var profiles = try src.openDir("profiles", .{ .iterate = true, .no_follow = true });
             defer profiles.close();
             var dest = try dir.openDir("profiles", .{ .iterate = true, .no_follow = true });
             defer dest.close();
-            try copyProfiles(ctx, profiles, dest, try profiles.realpathAlloc(ctx.a, "."), "");
+            try copyProfiles(ctx, profiles, dest, try profiles.realpathAlloc(ctx.a, "."), "", &expected);
             try validateCopiedLinks(ctx, dest, try dest.realpathAlloc(ctx.a, "."), "");
         }
         if (!sameDirectory(root, s.id, source_stat) or !unchanged(source_stat, try src.stat())) return error.SnapshotChanged;
     }
     crashPoint(ctx, "snapshot-copied");
-    const guard = try privateFile(ctx, dir, ".usage.lock", kind);
-    guard.close();
+    {
+        const guard = try privateFile(ctx, dir, ".usage.lock", kind);
+        defer guard.close();
+        try expected.put(".usage.lock", .{ .kind = .file, .identity = try identity(guard), .hash = bytesHash(""), .size = 0 });
+    }
     const bytes = try std.json.Stringify.valueAlloc(ctx.a, Meta{
         .id = id,
         .version = version,
@@ -266,31 +275,40 @@ fn create(ctx: *const Ctx, kind: Kind, root: std.fs.Dir, all: []const Meta, vers
     defer if (file_open) file.close();
     try file.writeAll(bytes);
     try file.sync();
+    try expected.put("snapshot.json", .{ .kind = .file, .identity = try identity(file), .hash = bytesHash(bytes), .size = bytes.len });
     file.close();
     file_open = false;
-    if (!sameDirectory(root, staging, staging_stat)) return error.SnapshotChanged;
+    try verifyTree(ctx, dir, "", &expected);
     dir.close();
-    open = false; // Windows publication needs closed staging handles.
+    open = false; // Windows publication needs closed staging handles, but retains expected identities.
+    if (!sameDirectory(root, staging, staging_stat)) return error.SnapshotChanged;
     try @import("self_update.zig").publish(ctx.a, root, staging, id);
+    errdefer if (sameDirectory(root, id, staging_stat)) root.deleteTree(id) catch {};
+    if (!sameDirectory(root, id, staging_stat)) return error.SnapshotChanged;
+    var published = try root.openDir(id, .{ .iterate = true, .no_follow = true });
+    defer published.close();
+    try verifyTree(ctx, published, "", &expected);
     if (!sameDirectory(root, id, staging_stat)) return error.SnapshotChanged;
     return .{ .kind = kind, .id = id, .dir = ctx.path(&.{ kind.root(), id }) };
 }
 
 /// Copy files, not hardlinks. Relative pnpm links may remain only within the copied profiles tree.
-fn copyProfiles(ctx: *const Ctx, src: std.fs.Dir, dest: std.fs.Dir, base: []const u8, rel: []const u8) !void {
+fn copyProfiles(ctx: *const Ctx, src: std.fs.Dir, dest: std.fs.Dir, base: []const u8, rel: []const u8, expected: *std.StringHashMap(Expected)) !void {
     var it = src.iterate();
     while (try it.next()) |entry| {
         const child = try std.fs.path.join(ctx.a, &.{ rel, entry.name });
+        const key = try std.fs.path.join(ctx.a, &.{ "profiles", child });
         switch (entry.kind) {
-            .file => try copyFile(ctx, src, dest, entry.name, .plugins),
+            .file => try expected.put(key, try copyFile(ctx, src, dest, entry.name, .plugins)),
             .directory => {
                 try dest.makeDir(entry.name);
                 var source_dir = try src.openDir(entry.name, .{ .iterate = true, .no_follow = true });
                 defer source_dir.close();
-                var dest_dir = try dest.openDir(entry.name, .{});
+                var dest_dir = try dest.openDir(entry.name, .{ .no_follow = true });
                 defer dest_dir.close();
+                try expected.put(key, .{ .kind = .directory, .identity = try identity(.{ .handle = dest_dir.fd }) });
                 const before = try source_dir.stat();
-                try copyProfiles(ctx, source_dir, dest_dir, base, child);
+                try copyProfiles(ctx, source_dir, dest_dir, base, child, expected);
                 if (!sameDirectory(src, entry.name, before) or !unchanged(before, try source_dir.stat())) return error.SnapshotChanged;
             },
             .sym_link => {
@@ -304,6 +322,7 @@ fn copyProfiles(ctx: *const Ctx, src: std.fs.Dir, dest: std.fs.Dir, base: []cons
                 }
                 const stat = src.statFile(entry.name) catch return error.InvalidSnapshotLink;
                 try dest.symLink(target, entry.name, .{ .is_directory = stat.kind == .directory });
+                try expected.put(key, .{ .kind = .sym_link, .link = try ctx.a.dupe(u8, target) });
             },
             else => return error.UnsupportedSnapshotFile,
         }
@@ -452,12 +471,12 @@ fn command(ctx: *Ctx, input: []const []const u8, opts: select.Options) !u8 {
     if (stored == .invalid) return error.InvalidSelection;
     const chosen = if (stored == .ok) @import("manage.zig").snapshotChoice(stored.ok, kind) else null;
     const chosen_id = if (chosen) |q| (try lookup(ctx, all, q)).id else null;
-    const claims = try ctx.a.alloc(?lock.Lock, targets.items.len);
-    @memset(claims, null);
-    defer for (claims) |c| if (c) |l| l.release();
-    for (targets.items, claims) |s, *c| {
+    const removals = try ctx.a.alloc(?Removal, targets.items.len);
+    @memset(removals, null);
+    defer for (removals) |*r| if (r.*) |*held| held.close();
+    for (targets.items, removals) |s, *r| {
         if (chosen_id != null and std.mem.eql(u8, s.id, chosen_id.?)) try failures.print(ctx.a, "{s} (named by selection); ", .{s.id});
-        c.* = lock.tryAcquireIn(root, util.join(ctx.a, &.{ s.id, ".usage.lock" }), .exclusive, false) catch |err| {
+        r.* = pinRemoval(root, s.id) catch |err| {
             try failures.print(ctx.a, "{s} ({s}); ", .{ s.id, if (err == error.Busy) "in use" else @errorName(err) });
             continue;
         };
@@ -473,8 +492,8 @@ fn command(ctx: *Ctx, input: []const []const u8, opts: select.Options) !u8 {
         var byte: [1]u8 = undefined;
         if (try std.fs.File.stdin().read(&byte) == 0) return error.TestPauseAborted;
     }
-    for (targets.items, claims) |s, *c| {
-        @import("install.zig").remove(ctx, root, s.id, c) catch |err| {
+    for (targets.items, removals) |s, *r| {
+        removePinned(ctx, root, s.id, &r.*.?) catch |err| {
             if (err == error.UsageReported) return 1;
             util.warn("cannot remove snapshot {s}: {s}; earlier reported removals remain removed", .{ s.id, @errorName(err) });
             return 1;
@@ -510,6 +529,127 @@ fn unchanged(before: std.fs.File.Stat, after: std.fs.File.Stat) bool {
         before.mtime == after.mtime and before.ctime == after.ctime;
 }
 
+const Identity = struct { volume: u64, inode: u64 };
+
+fn identity(file: std.fs.File) !Identity {
+    if (builtin.os.tag == .windows) {
+        var info: std.os.windows.BY_HANDLE_FILE_INFORMATION = undefined;
+        if (GetFileInformationByHandle(file.handle, &info) == 0) return error.SnapshotChanged;
+        return .{ .volume = info.dwVolumeSerialNumber, .inode = (@as(u64, info.nFileIndexHigh) << 32) | info.nFileIndexLow };
+    }
+    const stat = try std.posix.fstat(file.handle);
+    return .{ .volume = @intCast(stat.dev), .inode = @intCast(stat.ino) };
+}
+
+fn sameIdentity(a: Identity, b: Identity) bool {
+    return a.volume == b.volume and a.inode == b.inode;
+}
+
+fn namedDirectory(parent: std.fs.Dir, name: []const u8, held: Identity) bool {
+    var current = parent.openDir(name, .{ .no_follow = true }) catch return false;
+    defer current.close();
+    if ((current.stat() catch return false).kind != .directory) return false;
+    return sameIdentity(held, identity(.{ .handle = current.fd }) catch return false);
+}
+
+const Removal = struct {
+    dir: ?std.fs.Dir,
+    identity: Identity,
+    claim: ?lock.Lock,
+
+    fn close(self: *Removal) void {
+        if (self.claim) |claim| claim.release();
+        self.claim = null;
+        if (self.dir) |*dir| dir.close();
+        self.dir = null;
+    }
+};
+
+fn pinRemoval(root: std.fs.Dir, name: []const u8) !Removal {
+    var dir = try root.openDir(name, .{ .no_follow = true });
+    errdefer dir.close();
+    if ((try dir.stat()).kind != .directory) return error.UnsafeSnapshotFile;
+    const held = try identity(.{ .handle = dir.fd });
+    const claim = try lock.tryAcquireIn(dir, ".usage.lock", .exclusive, false);
+    errdefer claim.release();
+    if (!namedDirectory(root, name, held)) return error.SnapshotChanged;
+    return .{ .dir = dir, .identity = held, .claim = claim };
+}
+
+/// Keep the target pinned through preflight; Windows closes handles but not the saved identity.
+fn removePinned(ctx: *const Ctx, root: std.fs.Dir, name: []const u8, held: *Removal) !void {
+    var tmp = ctx.ensureDir(&.{"tmp"});
+    defer tmp.close();
+    const retired = try std.fmt.allocPrint(ctx.a, ".remove-{s}-{x}", .{ name, std.crypto.random.int(u64) });
+    if (builtin.os.tag == .windows) held.close();
+    if (!namedDirectory(root, name, held.identity)) return error.SnapshotChanged;
+    std.fs.rename(root, name, tmp, retired) catch |err| {
+        if (builtin.os.tag == .windows and err == error.AccessDenied) {
+            util.warn("cannot retire {s}: in use or access denied; object unchanged, retry after sessions exit", .{name});
+            return error.UsageReported;
+        }
+        return err;
+    };
+    held.close();
+    if (!namedDirectory(tmp, retired, held.identity)) return error.SnapshotChanged;
+    tmp.deleteTree(retired) catch |err| util.warn("removed {s}; leftover tmp/{s} could not be deleted ({s}); run `dsh manager clean`", .{ name, retired, @errorName(err) });
+}
+
+const Expected = struct {
+    kind: std.fs.File.Kind,
+    identity: ?Identity = null,
+    hash: [32]u8 = undefined,
+    size: u64 = 0,
+    link: []const u8 = "",
+};
+
+fn bytesHash(bytes: []const u8) [32]u8 {
+    var hash: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &hash, .{});
+    return hash;
+}
+
+/// Expected bytes come from source streams (or generated metadata), never mutable staging.
+/// Enumerate everything, including empty directories: additions, omissions and replacements fail.
+fn verifyTree(ctx: *const Ctx, dir: std.fs.Dir, rel: []const u8, expected: *const std.StringHashMap(Expected)) !void {
+    var count: usize = 0;
+    try verifyEntries(ctx, dir, rel, expected, &count);
+    if (count != expected.count()) return error.SnapshotChanged;
+}
+
+fn verifyEntries(ctx: *const Ctx, dir: std.fs.Dir, rel: []const u8, expected: *const std.StringHashMap(Expected), count: *usize) !void {
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        const child = try std.fs.path.join(ctx.a, &.{ rel, entry.name });
+        const want = expected.get(child) orelse return error.SnapshotChanged;
+        if (entry.kind != want.kind) return error.SnapshotChanged;
+        count.* += 1;
+        switch (entry.kind) {
+            .directory => {
+                var subdir = dir.openDir(entry.name, .{ .iterate = true, .no_follow = true }) catch return error.SnapshotChanged;
+                defer subdir.close();
+                if (!sameIdentity(want.identity.?, try identity(.{ .handle = subdir.fd }))) return error.SnapshotChanged;
+                try verifyEntries(ctx, subdir, child, expected, count);
+                if (!namedDirectory(dir, entry.name, want.identity.?)) return error.SnapshotChanged;
+            },
+            .file => {
+                const file = binary.openRegular(dir, entry.name) catch return error.SnapshotChanged;
+                defer file.close();
+                const before = try file.stat();
+                if (!sameIdentity(want.identity.?, try identity(file)) or before.size != want.size) return error.SnapshotChanged;
+                try singleLink(file);
+                if (!std.mem.eql(u8, &want.hash, &(try binary.digest(file))) or !unchanged(before, try file.stat()) or !binary.sameFile(dir, entry.name, file)) return error.SnapshotChanged;
+            },
+            .sym_link => {
+                var buffer: [4096]u8 = undefined;
+                const target = dir.readLink(entry.name, &buffer) catch return error.SnapshotChanged;
+                if (!std.mem.eql(u8, want.link, target)) return error.SnapshotChanged;
+            },
+            else => return error.SnapshotChanged,
+        }
+    }
+}
+
 fn singleLink(file: std.fs.File) !void {
     if (builtin.os.tag == .windows) {
         var info: std.os.windows.BY_HANDLE_FILE_INFORMATION = undefined;
@@ -518,7 +658,7 @@ fn singleLink(file: std.fs.File) !void {
 }
 
 /// Independent bytes from a pinned regular source, checked before/after copy and against final output.
-fn copyFile(ctx: *const Ctx, src: std.fs.Dir, dest: std.fs.Dir, name: []const u8, kind: Kind) !void {
+fn copyFile(ctx: *const Ctx, src: std.fs.Dir, dest: std.fs.Dir, name: []const u8, kind: Kind) !Expected {
     const source = try binary.openRegular(src, name);
     defer source.close();
     if (kind == .config) try singleLink(source);
@@ -543,28 +683,39 @@ fn copyFile(ctx: *const Ctx, src: std.fs.Dir, dest: std.fs.Dir, name: []const u8
         std.mem.eql(u8, ctx.env.get("DSH_MANAGER_TEST_FAIL") orelse "", "snapshot-copy")) return error.TestCopyFailed;
     if (!binary.sameFile(src, name, source) or !unchanged(before, try source.stat())) return error.SnapshotChanged;
     try file.sync();
-    if (!binary.sameFile(dest, name, file) or !std.mem.eql(u8, &(try binary.digest(file)), &hash.finalResult())) return error.SnapshotChanged;
+    const expected_hash = hash.finalResult();
+    if (!binary.sameFile(dest, name, file) or !std.mem.eql(u8, &(try binary.digest(file)), &expected_hash)) return error.SnapshotChanged;
+    return .{ .kind = .file, .identity = try identity(file), .hash = expected_hash, .size = before.size };
 }
 
 /// This store owns configuration, not home. Unknown future config names stay byte-preserved;
 /// known non-content and operation temporaries never travel to another snapshot.
-fn configExcluded(name: []const u8) bool {
-    for ([_][]const u8{ "snapshot.json", ".usage.lock", ".lock", ".counters.json", "node_modules", "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "cordis.yml", "addons", "bundles", "sessions", "session", "cache", "tmp", "state" }) |skip|
-        if (std.mem.eql(u8, name, skip)) return true;
+fn configExcluded(rel: []const u8, name: []const u8) bool {
+    // Direct children of profiles are user-chosen names, never cache/dependency roles.
+    if (std.mem.eql(u8, rel, "profiles")) return false;
+    if (rel.len == 0) {
+        for ([_][]const u8{ "snapshot.json", ".usage.lock", ".lock", ".counters.json", "addons", "bundles", "sessions", "session", "cache", "tmp", "state" }) |skip|
+            if (std.mem.eql(u8, name, skip)) return true;
+    }
+    const profile_root = if (std.fs.path.dirname(rel)) |parent| std.mem.eql(u8, parent, "profiles") else false;
+    if (rel.len == 0 or profile_root) {
+        for ([_][]const u8{ "node_modules", "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "cordis.yml" }) |skip|
+            if (std.mem.eql(u8, name, skip)) return true;
+    }
     return std.mem.endsWith(u8, name, ".lock") or std.mem.endsWith(u8, name, ".tmp") or
         std.mem.startsWith(u8, name, ".staging-") or std.mem.startsWith(u8, name, ".tmp-") or
         std.mem.indexOf(u8, name, ".tmp-") != null or std.mem.endsWith(u8, name, ".jsonl");
 }
 
-fn copyConfig(ctx: *const Ctx, src: std.fs.Dir, dest: std.fs.Dir, rel: []const u8) !void {
+fn copyConfig(ctx: *const Ctx, src: std.fs.Dir, dest: std.fs.Dir, rel: []const u8, expected: *std.StringHashMap(Expected)) !void {
     const before = try src.stat();
     if (before.kind != .directory or (try dest.stat()).kind != .directory) return error.UnsafeSnapshotFile;
     var it = src.iterate();
     while (try it.next()) |entry| {
-        if (configExcluded(entry.name)) continue;
+        if (configExcluded(rel, entry.name)) continue;
         const child = try std.fs.path.join(ctx.a, &.{ rel, entry.name });
         switch (entry.kind) {
-            .file => try copyFile(ctx, src, dest, entry.name, .config),
+            .file => try expected.put(child, try copyFile(ctx, src, dest, entry.name, .config)),
             .directory => {
                 _ = try makeDirectory(ctx, dest, entry.name, .config);
                 var source = try src.openDir(entry.name, .{ .iterate = true, .no_follow = true });
@@ -572,7 +723,8 @@ fn copyConfig(ctx: *const Ctx, src: std.fs.Dir, dest: std.fs.Dir, rel: []const u
                 const held = try source.stat();
                 var target = try dest.openDir(entry.name, .{ .iterate = true, .no_follow = true });
                 defer target.close();
-                try copyConfig(ctx, source, target, child);
+                try expected.put(child, .{ .kind = .directory, .identity = try identity(.{ .handle = target.fd }) });
+                try copyConfig(ctx, source, target, child, expected);
                 if (!sameDirectory(src, entry.name, held)) return error.SnapshotChanged;
             },
             // Credentials never follow links, even within the tree: copying their target could
@@ -696,8 +848,12 @@ test "CS-IDENTITY: roots are typed; config exclusions leave opaque future conten
     const t = std.testing;
     try t.expectEqualStrings("snapshots", Kind.plugins.root());
     try t.expectEqualStrings("config-snapshots", Kind.config.root());
-    try t.expect(!configExcluded(".credentials.yaml"));
-    try t.expect(!configExcluded("settings.yaml.imported"));
-    try t.expect(!configExcluded("future-format.bin"));
-    for ([_][]const u8{ "node_modules", "pnpm-lock.yaml", "cordis.yml", "sessions", ".credentials.yaml.lock", ".credentials.yaml.tmp-123", ".tmp-test" }) |name| try t.expect(configExcluded(name));
+    try t.expect(!configExcluded("", ".credentials.yaml"));
+    try t.expect(!configExcluded("", "settings.yaml.imported"));
+    try t.expect(!configExcluded("", "future-format.bin"));
+    for ([_][]const u8{ "node_modules", "pnpm-lock.yaml", "cordis.yml", "sessions", ".credentials.yaml.lock", ".credentials.yaml.tmp-123", ".tmp-test" }) |name| try t.expect(configExcluded("", name));
+    for ([_][]const u8{ "cache", "state", "tmp", "node_modules", "snapshot.json", "profile.lock", ".staging-profile" }) |name| try t.expect(!configExcluded("profiles", name));
+    try t.expect(configExcluded("profiles/cache", "node_modules"));
+    try t.expect(configExcluded("profiles/cache", "cordis.yml"));
+    try t.expect(!configExcluded("accounts", "cache"));
 }
