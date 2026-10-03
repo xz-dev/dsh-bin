@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-这是 `add-config-snapshots-and-paths` 的实施期记录，不是完整验收。首个 store 候选为 `4dfbbf1e9787598982936618f98aae7322f31459`，父进程补全安全与耦合回归修复为 `abefea6d377d909fb276a365c6fdb27a0b741fc3`。当前协议仍为 1；协议 2、真实配置／凭据 I/O、双运行保护、八类 path、原生 Windows 与真实应用门禁未完成。不能根据此记录发布、合并、同步或归档。
+这是 `add-config-snapshots-and-paths` 的实施期记录，不是完整验收。首个 store 候选为 `4dfbbf1e9787598982936618f98aae7322f31459`，父进程补全安全与耦合回归修复为 `abefea6d377d909fb276a365c6fdb27a0b741fc3`。协议 2、真实 rc.2 配置 I/O 和八类 path 已整合为固定候选 `6ae48b28200e7b25be44af6f447795cb04ad3672`，原四项协议发现已独立定点 Closed（仅 Linux transport）。不同真实运行包 A→B→A、Windows 当前 ACL／原生平台、完整真实产品与 I/O/path 独立审查仍未验收；后一审查及 A→B→A worker 遭提供方策略拒绝，未记为批准。不能根据此记录发布、合并、同步或归档。
 
 ## 前置与保留场景核对
 
@@ -53,3 +53,34 @@
 ## 固定真实应用输入
 
 独立 `/var/tmp/dsh-remaining/real-io-inputs/` 已按现有 fetch-upstream／fetch-pnpm／build-app 入口构建真实上游 `dsh-v0.2.0-rc.2`，commit `639ed015397290b3745d163aafe02ffee4aa3f84`，pnpm11.7.0官方资产SHA校验、frozen lockfile guard均成功；raw app闭包构建exit0并补齐27个workspace包、完成flat无symlink检查。原始service及文件hash、完整命令输出在 `HANDOFF.md`、`input-SHA256SUMS` 和 `logs/`。HOME/TMP/cache隔离，无全局依赖安装或用户实际凭据。此为后继真实 I/O 输入，不是协议2适配运行包／产品验收。
+
+## 联合候选与四项协议复审
+
+父侧 path 提交 `816fc9033791f421fec0dd1607ddd239dbc5ed22` 与协议修复 `1119958`、真实 I/O 的 `1a09eb5`／`09cfae3`／`f7b4c09` 整合为 `6ae48b2`。真实 I/O 版本站点表仅认证上游 rc.2；同一运行包 C1→C2→C1 不等于不同运行包 A→B→A。Windows managed I/O 此基线仍明确 fail-closed，HMR helper 验证不等于正常挂载 HMR 已恢复。
+
+父全套使用 `/var/tmp/dsh-remaining/parent-gates/combined-6ae48b2/{home,tmp,cache}` 及前述真实 app／pnpm 输入，所有日志保留于该目录：
+
+| 检查 | 实际结果 | 日志 |
+| --- | --- | --- |
+| `bun test dsh-manager/test` | exit0；299 pass / 46 skip / 0 fail，345 tests / 27 files | `manager-full.log` |
+| `zig build test --summary all` | exit0；53/53 | `zig-unit.log` |
+| `zig fmt --check src` | exit0 | `zig-format.log` |
+| 初次完整 runtime/unit | exit1；122 pass / 6 skip / 1 fail | `runtime-unit-full.log` |
+| 原 pnpm reader 直接导入重现 | exit1；缺 `dsh-bin:config-paths`，绕过实际应用 bootstrap | `pnpm-probe-red.log` |
+| 真实 compiled entry 挂载 pluginManager 服务探针 | 实际应用 exit0，自定义命令返回 synthetic registry，原命令参数记录保留 | `custom-real-entry-probe.log` |
+| 改为真实入口后的 pnpm 相关回归 | exit0；4 pass / 1 offline skip / 0 fail | `pnpm-real-entry-green.log` |
+| 改后完整 runtime/unit | exit0；123 pass / 6 skip / 0 fail，129 tests / 30 files | `runtime-unit-real-entry-green.log` |
+| 固定 raw 输入 SHA 复算 | exit0，六项均未变 | `input-verify-parent.log` |
+
+补全 path 初次全套三个失败保留在 `parent-gates/path/manager-full-first.log`：搬迁夹具需声明合法 manager data root，显式实际注册会保存 location/binding。只迁移正向夹具和旧“注册无状态”断言，另增外来非空数据根拒绝且 rc 原字节不变的负例，不放宽生产归属检查。定点组合 exit0；42 pass / 27 skip / 0 fail，`path/coupled-green.log`。skip 未被算作 shell/native 验收。
+
+原 reviewer 沿同会话 `f0e52375` 对冻结 `6ae48b2` 独立重建 manager/runtime，原 guard 换代竞态、canonical owner prefix、XDG transport、两类 completion canonicalization 四项均 Closed，无该 Linux 范围剩余 P0/P1/P2。实际竞态 runtime exit1、未进入应用、所有 claims 释放、凭据与 metadata 不变；正常 live runtime 删除拒绝，退出后显式删除允许。报告 `/var/tmp/dsh-remaining/reports/protocol-rereview-6ae48b2.md`，命令 receipt 与二进制 SHA 位于 `/var/tmp/dsh-protocol-rereview-6ae48b2/logs/`。它不批准真实 I/O／XDG 配置访问、Windows native 或整个 change。
+
+## 正在实施的门禁与提供方阻塞
+
+- Windows owner 独占 `/var/tmp/dsh-remaining/windows-io`，实施实际 current token SID、owner、DACL／继承和句柄身份检查；原生 CI 由父侧调度，未执行不算通过。新 wx/atomic temp 的私有 ACL 必须 creation-before-bytes；已有锁内部读取及创建专用检查未接入的站点不许用“最终单 syscall 窗口”掩盖。
+- 两真实上游运行包 owner `e3cddf8d` 于工作树 `/var/tmp/dsh-remaining/real-io` 被提供方 `session_blocked_by_cyber_policy` 权限拒绝，未产出 file-only 交付。父确认树/index 干净且仍为 `6ae48b2`；A→B→A 未通过。匿名 GitHub tags 403 的日志另明确为 rate limit，不是源码身份，TLS EOF 也不提供真实第二版本证据。
+- I/O/path fresh reviewer `aff5cc75` 被提供方 `cyber_policy` 拒绝；冻结 `/var/tmp/dsh-remaining/io-path-review` 干净、仍为 `6ae48b2`，没有批准报告。workflow `b3bfc81a` 的总 receipt 明确一成功一失败。两条被拒绝 lane 均未换模型、重开会话、改写请求或切换执行方式规避限制，接受门禁继续阻塞。
+- FreeBSD 独立平台基础切片在另一分支推进，原生产物／组件命令不替代本 change 的平台与真实 I/O 门禁，更不替代 FreeBSD 全产品支持。
+
+所有任务按完整 criterion 再更新；当前 OpenSpec 仍仅 1.1 checked，56 场景完整映射及各原生／产品门禁尚未完成。

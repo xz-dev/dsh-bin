@@ -2,7 +2,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { appBuilt, APP, type Fixture, makeBundle, pnpmFetched, toolsOnlyPath } from "./bundle-fixture.ts";
+import { appBuilt, type Fixture, makeBundle, pnpmFetched, toolsOnlyPath } from "./bundle-fixture.ts";
 
 const online = !process.env.DSH_BIN_OFFLINE;
 let fx: Fixture;
@@ -91,23 +91,30 @@ describe.skipIf(!appBuilt || !pnpmFetched)("embedded pnpm", () => {
 	}
 
 	test("4.3: an explicit pnpm command wins over the bundle's pnpm shim on PATH", async () => {
-		// dsh's plugin-manager service passes its configured `pnpmCommand` to execa; the runtime only puts
-		// the shim directory first on PATH. Run upstream's own reader with a recording command, under the
-		// same PATH the compiled entry sets.
+		// The transformed app requires its validated bootstrap. Exercise the actual mounted service,
+		// not an internal-module import from a plain Bun process with no application context.
 		const marker = join(fx.root, "custom-pnpm-ran");
 		const custom = join(fx.root, "custom-pnpm");
 		writeFileSync(custom, `#!/bin/sh\necho "$@" > "${marker}"\necho https://custom.example/\n`, { mode: 0o755 });
-		const probe = join(fx.root, "probe.mjs");
-		writeFileSync(
-			probe,
-			`import { readProfileRegistry } from ${JSON.stringify(join(APP, "node_modules/@deepseek-ai/dsh-plugin-manager/lib/types/operations.js"))};
-console.log(await readProfileRegistry(process.cwd(), { command: process.argv[2], timeoutMs: 10000 }));`,
-		);
-		const proc = Bun.spawnSync([process.execPath, probe, custom], {
-			cwd: fx.root,
-			env: { PATH: `${join(fx.bundle, "bin")}:${toolsOnlyPath(fx.root)}` },
-		});
-		expect(proc.stdout.toString()).toContain("https://custom.example/");
+		const home = mkdtempSync(join(fx.root, "home-"));
+		const dir = join(home, "profiles/custom"), pkg = join(dir, "node_modules/custom-probe");
+		mkdirSync(pkg, { recursive: true });
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "custom-profile", private: true, dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "custom-probe"] } } }));
+		writeFileSync(join(dir, "cordis.patch.yml"), `- id: plugin-manager\n  config:\n    pnpmCommand: ${JSON.stringify(custom)}\n`);
+		writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "custom-probe", version: "1.0.0", type: "module", main: "index.js", dsh: { bundle: { patch: "cordis.patch.yml" } } }));
+		writeFileSync(join(pkg, "cordis.patch.yml"), "- insert:\n    - id: custom-probe\n      name: custom-probe\n");
+		writeFileSync(join(pkg, "index.js"), `export const inject = ['pluginManager', 'appReady', 'appExit'];
+export function apply(ctx) {
+  ctx.appReady.onReady(() => {
+    void ctx.pluginManager.registries().then(result => {
+      console.log('CUSTOM_REGISTRY ' + result.resolved); ctx.appExit(0);
+    }).catch(error => { console.error(error); ctx.appExit(1); });
+  });
+}`);
+		const result = await dsh(["--profile", "custom"], home);
+		if (result.code !== 0) console.error(result.stdout, result.stderr);
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("CUSTOM_REGISTRY https://custom.example/");
 		expect(readFileSync(marker, "utf8")).toContain("config get registry");
 	});
 });
