@@ -62,7 +62,7 @@ async function paused(i: Install, args: string[], stage: string, action: (name: 
 		const status = await done; return { stdout, stderr, status };
 	} finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await done; } }
 }
-const protectedDirs = ["bundles", "snapshots", "addons", "home"];
+const protectedDirs = ["bundles", "snapshots", "config-snapshots", "addons", "home"];
 function protectedBytes(i: Install) {
 	const result: Record<string, string> = {};
 	for (const folder of protectedDirs) for (const path of tree(join(i.data, folder))) {
@@ -73,7 +73,9 @@ function protectedBytes(i: Install) {
 }
 function fixture() {
 	const i = newInstall(); addRuntime(i.data, A);
-	expect(run(i, ["manager", "snapshot", "new", "--use", A, "--empty"]).status).toBe(0);
+	expect(run(i, ["manager", "snapshot", "plugins", "new", "--use", A, "--empty"]).status).toBe(0);
+	expect(run(i, ["manager", "snapshot", "config", "new", "--use", A, "--empty"]).status).toBe(0);
+	writeFileSync(join(i.data, "config-snapshots", `${A}@1`, ".credentials.yaml"), "credential: PRIVATE KEEP", { mode: 0o600 });
 	expect(run(i, ["manager", "select", "--use", A, "--snapshot", `${A}@1`]).status).toBe(0);
 	for (const path of ["home/profiles/main/cordis.patch.yml", "home/credential", "addons/office/keep", "snapshots/" + A + "@1/profiles/plugin", "state/config.json"]) { mkdirSync(join(i.data, path, ".."), { recursive: true }); writeFileSync(join(i.data, path), "KEEP"); }
 	return i;

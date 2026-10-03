@@ -99,14 +99,14 @@ test.skipIf(!hasZig)(`PS-SCOOP / DL-MANAGED-UPDATE / DL-MANAGED-SELF / DL-MANAGE
 		expect((await command(["manager", "select", "--use", V, "--addon", `office:${A}`])).status).toBe(0);
 		expect((await command(["probe"])).status).toBe(0); expect(launchOf(i).runtime).toBe(V); expect(launchOf(i).addons.office.version).toBe(A);
 		expect((await command(["--use", W, "probe"])).status).toBe(0); expect(launchOf(i).runtime).toBe(W);
-		expect((await command(["manager", "snapshot", "new", "--use", V, "--empty", "--name", "kept"])).status).toBe(0);
+		expect((await command(["manager", "snapshot", "plugins", "new", "--use", V, "--empty", "--name", "kept"])).status).toBe(0);
 		mkdirSync(join(i.data, "home/profiles"), { recursive: true }); writeFileSync(join(i.data, "home/credential"), "SECRET KEEP"); writeFileSync(join(i.data, "home/profiles/config"), "CONFIG KEEP"); writeFileSync(join(i.data, "home/session"), "SESSION KEEP");
 		expect(files(i.dir)).toEqual(prefix); expect(existsSync(join(i.dir, "dsh-bin"))).toBe(false); expect(existsSync(join(i.dir, "addons"))).toBe(false);
 		const protectedBefore = files(i.data);
 		await packageVersion(1); expect(i.dir).not.toBe(oldDir); expect(files(i.data)).toEqual(protectedBefore);
 		expect(run(i, ["manager", "info"], { env }).stdout).toContain(i.data);
 		const list = run(i, ["manager", "list", "--json"], { env }); expect(list.status).toBe(0); expect(list.stdout).toContain(V); expect(list.stdout).toContain(W); expect(list.stdout).toContain(A);
-		expect(run(i, ["manager", "snapshot", "list"], { env }).stdout).toContain("kept");
+		expect(run(i, ["manager", "snapshot", "plugins", "list"], { env }).stdout).toContain("kept");
 		expect((await command(["probe"])).status).toBe(0); expect(launchOf(i).runtime).toBe(V); expect(launchOf(i).addons.office.version).toBe(A);
 		expect(files(i.data)).toEqual(protectedBefore);
 		before = requests.length; r = await command(["manager", "self-update"]); expect(r.status).toBe(1); expect(r.stderr).toContain("scoop update dsh"); expect(requests.length).toBe(before);

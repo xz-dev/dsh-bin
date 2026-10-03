@@ -1,6 +1,6 @@
 // Completion scenarios exercise the real manager, offline local state and real shell registrations.
 import { afterEach, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { acquireClaim } from "./claim-probe.ts";
 import { spawnSync } from "node:child_process";
@@ -45,6 +45,31 @@ const candidates = (i: ReturnType<typeof newInstall>, words: string[]) => {
 	expect(result.stderr).toBe("");
 	return result.stdout.trim() ? result.stdout.trim().split("\n") : [];
 };
+
+test.skipIf(!hasZig)("SC-QUOTING: typed local aliases preserve literal punctuation and Unicode", () => {
+	const i = newInstall(), alias = "space $(touch CANARY) ` ; & café '";
+	for (const [folder, flag] of [["snapshots", "--snapshot"], ["config-snapshots", "--config-snapshot"]]) {
+		const dir = join(i.data, folder, "1.0.0@1"); mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "snapshot.json"), JSON.stringify({ id: "1.0.0@1", version: "1.0.0", n: 1, alias }));
+		writeFileSync(join(dir, ".usage.lock"), "");
+		expect(candidates(i, [flag, "1.0.0@space"])).toEqual([`1.0.0@${alias}`]);
+	}
+	expect(existsSync(join(i.home, "CANARY"))).toBe(false);
+	expect(tree(i.out)).toEqual([]);
+}, 120_000);
+
+test.skipIf(!hasZig || WIN)("SC-LOCAL: linked snapshot metadata never reads or emits external credential-like content", () => {
+	const i = newInstall(), secret = "never-read-external-metadata";
+	const outside = join(i.home, "credential-like.json");
+	writeFileSync(outside, JSON.stringify({ id: "1.0.0@1", version: "1.0.0", n: 1, alias: secret }));
+	for (const [folder, flag] of [["snapshots", "--snapshot"], ["config-snapshots", "--config-snapshot"]]) {
+		const dir = join(i.data, folder, "1.0.0@1"); mkdirSync(dir, { recursive: true });
+		symlinkSync(outside, join(dir, "snapshot.json"));
+		writeFileSync(join(dir, ".usage.lock"), "");
+		expect(candidates(i, [flag, "1.0.0@"])).toEqual([]);
+	}
+	expect(readFileSync(outside, "utf8")).toContain(secret);
+}, 120_000);
 
 test.skipIf(!hasZig)("SC-VERSIONS: --use, default selection and channel choose runtime CLI data, never the app", () => {
 	const i = newInstall();

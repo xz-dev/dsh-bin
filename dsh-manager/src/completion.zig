@@ -83,7 +83,9 @@ fn snapshotWords(ctx: *Ctx, prefix: []const u8, kind: @import("snapshot.zig").Ki
         if (!safeWord(entry.name)) continue;
         var dir = root.openDir(entry.name, .{ .no_follow = true }) catch continue;
         defer dir.close();
-        const bytes = dir.readFileAlloc(ctx.a, "snapshot.json", 1 << 20) catch continue;
+        const file = @import("manager_binary.zig").openRegular(dir, "snapshot.json") catch continue;
+        defer file.close();
+        const bytes = file.readToEndAlloc(ctx.a, 1 << 20) catch continue;
         const Meta = struct { id: []const u8, alias: ?[]const u8 = null };
         const meta = std.json.parseFromSliceLeaky(Meta, ctx.a, bytes, .{ .ignore_unknown_fields = true }) catch continue;
         if (!eq(meta.id, entry.name)) continue;
@@ -95,7 +97,7 @@ fn snapshotWords(ctx: *Ctx, prefix: []const u8, kind: @import("snapshot.zig").Ki
             return std.mem.lessThan(u8, a, b);
         }
     }.less);
-    for (words.items) |word| emit(prefix, word);
+    for (words.items) |word| if (localWord(word) and std.mem.startsWith(u8, word, prefix)) util.print("{s}\n", .{word});
 }
 
 fn addons(ctx: *Ctx, prefix: []const u8) void {

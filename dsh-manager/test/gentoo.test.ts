@@ -111,7 +111,7 @@ test.skipIf(!hasZig || process.platform !== "linux")(`PS-MANAGED / DL-MANAGED-UP
 		let before = requests.length, r = await command(["manager", "self-update"]); expect(r.status).toBe(1); expect(r.stderr).toContain("emerge --ask --update app-misc/dsh-bin"); expect(requests.length).toBe(before); expect(existsSync(i.data)).toBe(false);
 		for (const id of [A, B]) expect(await command(["manager", "install", id])).toMatchObject({ status: 0 });
 		expect((await command(["manager", "select", "--use", A])).status).toBe(0); expect((await command(["probe"])).status).toBe(0); expect(launchOf(i).runtime).toBe(A);
-		expect((await command(["manager", "select", "--use", B])).status).toBe(0); expect((await command(["manager", "snapshot", "new", "--use", B, "--empty", "--name", "kept"])).status).toBe(0);
+		expect((await command(["manager", "select", "--use", B])).status).toBe(0); expect((await command(["manager", "snapshot", "plugins", "new", "--use", B, "--empty", "--name", "kept"])).status).toBe(0);
 		expect((await command(["probe"])).status).toBe(0); expect(launchOf(i).runtime).toBe(B);
 		mkdirSync(join(i.data, "home/profiles"), { recursive: true }); writeFileSync(join(i.data, "home/credential"), "SECRET KEEP"); writeFileSync(join(i.data, "home/profiles/config"), "CONFIG KEEP");
 		expect(files(i.dir)).toEqual(prefix); expect(existsSync(join(i.dir, "dsh-bin"))).toBe(false);

@@ -15,7 +15,9 @@ beforeAll(() => { if (hasZig) { build(); if (WIN) next = build(NEXT).manager; } 
 afterAll(cleanup);
 function fixture() {
     const i = newInstall(); addRuntime(i.data, A);
-    expect(run(i, ["manager", "snapshot", "new", "--use", A, "--empty"]).status).toBe(0);
+    expect(run(i, ["manager", "snapshot", "plugins", "new", "--use", A, "--empty"]).status).toBe(0);
+    expect(run(i, ["manager", "snapshot", "config", "new", "--use", A, "--empty"]).status).toBe(0);
+    writeFileSync(join(i.data, "config-snapshots", `${A}@1`, ".credentials.yaml"), "credential: PRIVATE KEEP", { mode: 0o600 });
     expect(run(i, ["manager", "select", "--use", A, "--snapshot", `${A}@1`]).status).toBe(0);
     for (const p of ["home/credential", "home/profiles/config", `snapshots/${A}@1/profiles/plugin`, "addons/keep"]) {
         mkdirSync(join(i.data, p, ".."), { recursive: true }); writeFileSync(join(i.data, p), "KEEP");
@@ -23,7 +25,7 @@ function fixture() {
     return i;
 }
 function protectedState(i: Install) {
-    const paths = ["bundles", "snapshots", "home", "addons", "state"];
+    const paths = ["bundles", "snapshots", "config-snapshots", "home", "addons", "state"];
     return Object.fromEntries(paths.flatMap(folder => tree(join(i.data, folder)).filter(p => !p.endsWith("manager.lock")).map(p => {
         const path = `${folder}/${p}`;
         try { return [path, hash(readFileSync(join(i.data, path)))]; } catch { return [path, "directory"]; }

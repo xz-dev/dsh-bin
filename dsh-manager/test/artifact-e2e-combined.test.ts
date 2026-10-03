@@ -145,7 +145,7 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 		expect((await probe())[0].launch.runtime).toBe(b.id);
 		await command(["manager", "install", a.id]);
 		const list = (await command(["manager", "list"])).out; expect(list).toContain(a.id); expect(list).toContain(b.id);
-		await command(["manager", "snapshot", "new", "--use", b.id]);
+		await command(["manager", "snapshot", "plugins", "new", "--use", b.id]);
 		const chosenSnapshot = `${b.id}@2`;
 		await command(["manager", "select", "--use", b.id, "--snapshot", chosenSnapshot]);
 		for (const runtime of [a.id, b.id]) expect((await probe(["--use", runtime, "--snapshot", chosenSnapshot]))[0].launch.snapshot.id).toBe(chosenSnapshot);

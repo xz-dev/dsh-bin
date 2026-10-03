@@ -14,7 +14,16 @@ function move(i: Install, name: string): Install {
  const dir = join(i.dir, "..", name); renameSync(i.dir, dir);
  return { ...i, dir, exe: join(dir, `dsh${EXE}`), data: join(dir, "dsh-bin") };
 }
-function snapshot(i: Install, name: string) { mkdirSync(join(i.data, "snapshots", name), { recursive: true }); }
+function snapshot(i: Install, name: string) {
+ const at = name.indexOf("@");
+ const version = name.slice(0, at), alias = name.slice(at + 1);
+ let n = 1;
+ while (existsSync(join(i.data, "snapshots", `${version}@${n}`))) n++;
+ const id = `${version}@${n}`, dir = join(i.data, "snapshots", id);
+ mkdirSync(dir, { recursive: true });
+ writeFileSync(join(dir, "snapshot.json"), JSON.stringify({ id, version, n, alias }));
+ writeFileSync(join(dir, ".usage.lock"), "");
+}
 for (const shell of ["bash", "zsh", "fish", "pwsh", "powershell"] as const) {
  const ps = shell === "pwsh" || shell === "powershell";
  const binary = ((!ps && WIN) || (shell === "powershell" && !WIN)) ? null : Bun.which(WIN ? shell + ".exe" : shell);
@@ -81,11 +90,11 @@ for (const shell of ["bash", "zsh", "fish", "pwsh", "powershell"] as const) {
   snapshot(i, name);
   const generated = join(i.home, ps ? "generated.ps1" : "generated");
   const script = run(i, ["manager", "completion", "script", shell]); expect(script.status).toBe(0); writeFileSync(generated, (ps ? "\ufeff" : "") + script.stdout);
-  const result = invoke(i, `${i.dir}${delimiter}${process.env.PATH}`, load(generated) + query(["--snapshot", "1.0.0@"], i.exe));
+  const result = invoke(i, `${i.dir}${delimiter}${process.env.PATH}`, load(generated) + query(["--snapshot", "1.0.0@space"], i.exe));
   expect(result.status).toBe(0); expect(result.stdout).toContain("CANARY"); expect(existsSync(join(i.home, "CANARY"))).toBe(false);
   let accept: string;
   if (ps) {
-   const line = "& " + psq(i.exe) + " --snapshot 1.0.0@";
+   const line = "& " + psq(i.exe) + " --snapshot 1.0.0@space";
    accept = `$l=${psq(line)}; $c=(TabExpansion2 $l $l.Length).CompletionMatches | Where-Object ListItemText -eq ${psq(name)}; $tokens=$null; $errors=$null; $ast=[System.Management.Automation.Language.Parser]::ParseInput('dsh --snapshot '+$c.CompletionText,[ref]$tokens,[ref]$errors); $v=$ast.EndBlock.Statements[0].PipelineElements[0].CommandElements[2]; if ($v -isnot [System.Management.Automation.Language.StringConstantExpressionAst] -or $errors.Count) { throw 'candidate not literal' }; $v.Value`;
   } else if (shell === "fish") {
    // Actual interactive Tab insertion, not eval of helper output (Fish owns candidate escaping).
@@ -106,7 +115,7 @@ for (const shell of ["bash", "zsh", "fish", "pwsh", "powershell"] as const) {
    try {
     p.stdin.write(`source ${fq(generated)}; function dsh; printf '%s' "$argv[2]" > ${fq(acceptedFile)}; end; printf 'FISH_READY\\n'\n`);
     await wait(() => output.includes("FISH_READY\r\n"));
-    p.stdin.write("dsh --snapshot 1.0.0@\t\n");
+    p.stdin.write("dsh --snapshot 1.0.0@space\t\n");
     await wait(() => existsSync(acceptedFile));
     expect(readFileSync(acceptedFile, "utf8")).toBe(name);
     expect(existsSync(join(i.home, "CANARY"))).toBe(false);
@@ -115,9 +124,9 @@ for (const shell of ["bash", "zsh", "fish", "pwsh", "powershell"] as const) {
    }
    accept = ""; // No helper-eval path: native insertion above proves exact accepted argument.
   } else if (shell === "bash") {
-   accept = `COMP_WORDS=(dsh --snapshot 1.0.0@); COMP_CWORD=2; _dsh_manager_complete; eval "set -- \${COMPREPLY[0]}"; test "$#" = 1; printf '%s\\n' "$1"`;
+   accept = `COMP_WORDS=(dsh --snapshot 1.0.0@space); COMP_CWORD=2; _dsh_manager_complete; eval "set -- \${COMPREPLY[0]}"; test "$#" = 1; printf '%s\\n' "$1"`;
   } else {
-   accept = `compadd() { shift 2; eval "set -- $1"; print -r -- "$1"; }; words=(dsh --snapshot 1.0.0@); CURRENT=3; _dsh_manager_complete`;
+   accept = `compadd() { shift 2; eval "set -- $1"; print -r -- "$1"; }; words=(dsh --snapshot 1.0.0@space); CURRENT=3; _dsh_manager_complete`;
   }
   if (shell !== "fish") {
    const accepted = invoke(i, `${i.dir}${delimiter}${process.env.PATH}`, load(generated) + accept);

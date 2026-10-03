@@ -43,6 +43,8 @@ test.skipIf(!!fishReason)(`SC-SHELLS / SC-IDEMPOTENT / SC-CURRENT: real fish loa
 	expect(active.stderr).toBe("");
 	addRuntime(i.data, "1.0.0");
 	mkdirSync(join(i.data, "snapshots/1.0.0@1"), { recursive: true });
+	writeFileSync(join(i.data, "snapshots/1.0.0@1/snapshot.json"), JSON.stringify({ id: "1.0.0@1", version: "1.0.0", n: 1, alias: null }));
+	writeFileSync(join(i.data, "snapshots/1.0.0@1/.usage.lock"), "");
 	const local = fishRun(i, "complete -C 'dsh --use 1'; complete -C 'dsh manager select --snapshot 1'");
 	expect(words(local.stdout)).toEqual(expect.arrayContaining(["1.0.0", "1.0.0@1"]));
 	const uninstall = run(i, ["manager", "completion", "uninstall", "fish"], { env: fishEnv(i) });

@@ -56,7 +56,9 @@ fn listIn(ctx: *const Ctx, root: std.fs.Dir) ![]Meta {
         if (n == 0 or entry.kind != .directory) return error.InvalidSnapshot;
         var dir = try root.openDir(entry.name, .{ .no_follow = true });
         defer dir.close();
-        const bytes = try dir.readFileAlloc(ctx.a, "snapshot.json", 1 << 20);
+        const file = try binary.openRegular(dir, "snapshot.json");
+        defer file.close();
+        const bytes = try file.readToEndAlloc(ctx.a, 1 << 20);
         const meta = try std.json.parseFromSliceLeaky(Meta, ctx.a, bytes, .{ .ignore_unknown_fields = true });
         if (!std.mem.eql(u8, meta.id, entry.name) or !std.mem.eql(u8, meta.version, v) or meta.n != n) return error.InvalidSnapshot;
         try dir.access(".usage.lock", .{});
