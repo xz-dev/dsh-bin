@@ -1,6 +1,6 @@
 ## 1. 前置门槛与可执行验收约定
 
-- [ ] 1.1 确认 `split-dsh-manager` 已验收归档，逐块核对本 change 的 manager-control、portable-storage、runtime-bundles MODIFIED 目标及保留场景，核对启动协议、选择记录、存储锁和注册记录接口；验证交付为依赖核对记录与通过的严格 OpenSpec 校验，前置未就绪不得进入实施。
+- [x] 1.1 确认 `split-dsh-manager` 已验收归档，逐块核对本 change 的 manager-control、portable-storage、runtime-bundles MODIFIED 目标及保留场景，核对启动协议、选择记录、存储锁和注册记录接口；验证交付为依赖核对记录与通过的严格 OpenSpec 校验，前置未就绪不得进入实施。
 - [ ] 1.2 将本 change 的全部场景 ID 映射到现有管理器黑盒、Zig、构建适配和真实应用测试层，准备隔离 HOME/cwd/PATH、专用测试凭据和受控源；验证每个场景有明确测试入口且不依赖用户实际配置，开始每个切片时在 evidence.md 记录可解释的 red，完成后记录实际命令及 green。
 
 ## 2. 类型化快照与管理器选择

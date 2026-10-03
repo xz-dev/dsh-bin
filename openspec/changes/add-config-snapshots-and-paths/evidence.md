@@ -40,4 +40,16 @@
 2. P1：较早文件完成单文件 hash 检查后，在后续复制暂停时被篡改，最终发布成功且来源保持不变；不是已接受的最终检查到单 syscall 窗口。
 3. P2：递归 basename 排除将 `profiles/cache/cordis.patch.yml` 等合法 profile 一并丢弃。
 
-以上三项必须最小修复、回归和复审后才能接受 store 候选。最终 identity-check-to-single-syscall 窗口、断电持久性与已经 hash 认证输入的前置边界保持不变；不引入全局业务事务或快照冻结框架。
+后继修复 `99ced445ea971d3a3712d4a5e2d8d05658454ee7` 只改 snapshot.zig／snapshots.test.ts。baseline 新回归实际 0 pass / 9 fail；最终 11 pass / 0 fail。父完整 manager suite exit0（325 tests）与 Zig 50/50；日志 `store-safety-99ced445/`。原 reviewer 定点复审运行 `6acf9476` 逐项重跑原复现及11个回归、10个交互，三项均 Closed，无该范围剩余 P0/P1/P2。报告 `/var/tmp/dsh-remaining/reports/store-rereview-99ced445.md`，结论 approved with explicit residual risks，仅针对三项修复。原生 Windows及整体 change 门禁仍待完成。
+
+最终 identity-check-to-single-syscall 窗口、断电持久性与已经 hash 认证输入的前置边界保持不变；不引入全局业务事务或快照冻结框架。
+
+## 双选择与协议 2 的整合检查
+
+独立协议 worktree 从48c0557交付 `2652273936c93aeaf5c5c879f81fd006dee777a2`；父 cherry-pick 与修复联合为 `041bd977253b435ed1fc0063b87b094b284a46d5`，仅 snapshots.test.ts 机械重叠自动合并，安全回归保留。协议原 red 实际证明 config-only 选择错误、协议2被拒绝／协议1被接受、双配置载荷缺失，原日志 `/var/tmp/dsh-protocol-run/logs/red-{zig,runtime,manager}.log`。
+
+父对联合源码运行 `bun test dsh-manager/test`：exit0，282 pass / 46 skip / 0 fail（328 tests）；`bun test dsh-bun-build/test/unit dsh-bun-build/test/runtime`：exit0，105 pass / 18 skip / 0 fail（123 tests）；`zig build test --summary all` exit0。日志 `/var/tmp/dsh-remaining/parent-gates/combined-041bd977/`。共同纯 intent/resolve、双载荷及 runtime claims 是传输／进程证据，不证明实际 settings/profile/local-credential 服务消费根。协议独立审查和真实 I/O 仍待完成，不发布此候选。
+
+## 固定真实应用输入
+
+独立 `/var/tmp/dsh-remaining/real-io-inputs/` 已按现有 fetch-upstream／fetch-pnpm／build-app 入口构建真实上游 `dsh-v0.2.0-rc.2`，commit `639ed015397290b3745d163aafe02ffee4aa3f84`，pnpm11.7.0官方资产SHA校验、frozen lockfile guard均成功；raw app闭包构建exit0并补齐27个workspace包、完成flat无symlink检查。原始service及文件hash、完整命令输出在 `HANDOFF.md`、`input-SHA256SUMS` 和 `logs/`。HOME/TMP/cache隔离，无全局依赖安装或用户实际凭据。此为后继真实 I/O 输入，不是协议2适配运行包／产品验收。
