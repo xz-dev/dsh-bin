@@ -1,6 +1,7 @@
 // Only app.ts installs this module, after protocol/root/guard validation. Raw env is not authority.
 import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { createWindowsPrivateAccess } from "./windows-private-access.ts";
 
 export const CONFIG_PATHS_SPECIFIER = "dsh-bin:config-paths";
 
@@ -16,10 +17,21 @@ export function createConfigPaths(plugins?: string, config?: string, home?: stri
 	const boundary = (message = "dsh: configuration path violates selected configuration boundary"): never => {
 		throw Object.assign(new Error(message), { code: "DSH_CONFIG_BOUNDARY" });
 	};
-	// No POSIX-mode fiction for Windows ACLs. Managed IO stays closed until native ACL proof exists.
-	if (config && process.platform === "win32") boundary("dsh: managed configuration I/O requires native Windows ACL validation; configuration not opened");
-	function validate(path: string, parents = false): string {
+	// Authenticate Windows independently of manager claims, including empty snapshots, before startup.
+	let windows: ReturnType<typeof createWindowsPrivateAccess> | undefined;
+	if (config && process.platform === "win32") {
+		try { windows = createWindowsPrivateAccess(config); } catch { boundary(); }
+	}
+	function validate(path: string, parents = false, auxiliary = false, creation = false): string {
 		if (!config) return path;
+		if (windows) {
+			if (creation) windows.checkCreation(path, parents);
+			else windows.check(path, parents);
+			// Known writer sibling preflight; atomic-write's inner read/create/rename seams still
+			// must call checkAuxiliary themselves, not rely on this earlier wrapper check.
+			if (!auxiliary) windows.check(`${path}.lock`);
+			return path;
+		}
 		const root = resolve(config);
 		if (!contains(root, path) || relative(root, path) === "") boundary();
 		const privateNode = (p: string, directory: boolean) => {
@@ -47,8 +59,8 @@ export function createConfigPaths(plugins?: string, config?: string, home?: stri
 		}
 		return path;
 	}
-	function checked(path: string, parents = false): string {
-		try { return validate(path, parents); } catch (error) {
+	function checked(path: string, parents = false, auxiliary = false, creation = false): string {
+		try { return validate(path, parents, auxiliary, creation); } catch (error) {
 			if (!config) throw error;
 			return boundary(); // Stable code, no filesystem/parser error can quote secret bytes.
 		}
@@ -87,14 +99,24 @@ export function createConfigPaths(plugins?: string, config?: string, home?: stri
 		if (config && failures.some(({ outcome }) => outcome.kind === "failed" && (outcome.error as { code?: string })?.code === "DSH_CONFIG_BOUNDARY")) boundary();
 	}
 	return { root, dir: (name: string) => root() ? join(root()!, name) : undefined, profileFile, configFile, credentialFile,
+		// Windows privacy comes from verified inheritable DACLs before creation, never this POSIX mode.
 		privateWriteOptions: config ? { mode: 0o600 } : undefined,
 		check: (path: string) => checked(path),
+		// Upstream-generated lock/takeover/temp names require authentication at their own syscall seam.
+		checkAuxiliary: (path: string) => checked(path, false, true),
+		checkCreation: (path: string) => checked(path, false, true, true),
 		checkWatchPath: (path: string) => config && contains(resolve(config), resolve(path)) ? checked(path) : path,
 		envDirectory, envFile, isManagedHome, assertStartup };
 }
 
 export function installConfigPaths(plugins?: string, config?: string, home?: string): void {
 	const paths = createConfigPaths(plugins, config, home);
+	// Module authentication is implemented, but atomic-write's generated lock/read/wx/rename
+	// seams are not wired in this scoped change. Do not enable unmanaged inner Windows writes.
+	// Remove this startup gate only together with those syscall guards and native I/O acceptance.
+	if (config && process.platform === "win32") {
+		throw Object.assign(new Error("dsh: configuration path violates selected configuration boundary"), { code: "DSH_CONFIG_BOUNDARY" });
+	}
 	Bun.plugin({ name: CONFIG_PATHS_SPECIFIER, setup(build) {
 		build.module(CONFIG_PATHS_SPECIFIER, () => ({ exports: { paths }, loader: "object" }));
 	} });
