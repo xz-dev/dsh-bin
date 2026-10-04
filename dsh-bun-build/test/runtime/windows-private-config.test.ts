@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { closeSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createConfigPaths, installConfigPaths } from "../../runtime/compat/config-paths.ts";
+import { currentTokenDiagnostics, observeProcess } from "./fixtures/windows-private-probe.ts";
 
 // Source/cross-compilation cannot satisfy this suite. Dedicated runner supplies isolated HOME/TEMP.
 const enabled = process.platform === "win32" && process.env.DSH_WINDOWS_PRIVATE_IO_NATIVE === "1";
@@ -75,7 +76,16 @@ nativeTest("native private ACL positive, protected nested creation, inherited fi
 	const target = paths.credentialFile("accounts/work.yaml", undefined, () => { throw new Error("fallback"); });
 	const nested = inspect(join(config, "accounts"));
 	expect(nested.protected).toBe(true); expect(nested.owner).toBe(rootAcl.user);
-	// Actual wx-created siblings inherit private DACL, despite Windows ignoring POSIX mode bits.
+	// Read-only same-Bun TokenUser/TokenOwner plus zero-byte wx owner under a separate private
+	// diagnostic directory. No production bypass, token adjustment or secret write before guard.
+	const token = currentTokenDiagnostics();
+	writeFileSync(join(control, "creation-token.result.json"), JSON.stringify(token));
+	const diagnosticDir = join(control, "owner-diagnostic"); fixture("directory", diagnosticDir);
+	const diagnosticFile = join(diagnosticDir, "zero-byte-wx"); writeFileSync(diagnosticFile, "", { flag: "wx", mode: 0o666 });
+	const defaultAcl = inspect(diagnosticFile);
+	writeFileSync(join(control, "creation-wx-owner.result.json"), JSON.stringify({ token, acl: defaultAcl }));
+	console.log(`NATIVE_CREATION_TOKEN_OWNER ${JSON.stringify({ token, actualWxOwner: defaultAcl.owner, rules: defaultAcl.rules })}`);
+	// Actual wx-created sensitive siblings retain the exact production guard, despite Windows ignoring POSIX mode bits.
 	for (const name of [target, `${target}.lock`, `${target}.lock.takeover-test`, `${target}.0123456789ab.tmp`]) {
 		writeFileSync(paths.checkCreation(name), "", { flag: "wx", mode: 0o666 });
 		const acl = inspect(name);
@@ -141,17 +151,29 @@ nativeTest("native restart authenticates afresh; parent death cannot authenticat
 	fixture("everyone", file); rejectedBeforeOpen(config, restartControl);
 	for (const corrupt of [false, true]) {
 		const second = setup();
-		const parent = Bun.spawn([process.execPath, probe, "parent", second.config, second.control], { env: process.env, stdout: "pipe", stderr: "pipe" });
-		let pid: number | undefined;
+		const parentStdout = openSync(join(second.control, "parent.stdout"), "wx"), parentStderr = openSync(join(second.control, "parent.stderr"), "wx");
+		const parent = Bun.spawn([process.execPath, probe, "parent", second.config, second.control], { env: process.env, stdin: "ignore", stdout: parentStdout, stderr: parentStderr });
+		closeSync(parentStdout); closeSync(parentStderr);
+		let pid: number | undefined, observed: ReturnType<typeof observeProcess> | undefined;
+		const samples: object[] = [];
+		const capture = (stage: string) => {
+			const sample = { stage, time: Date.now(), parentPid: parent.pid, parentExitCode: parent.exitCode, parentSignal: parent.signalCode,
+				child: observed?.snapshot(), waiting: existsSync(join(second.control, "child-waiting")), released: existsSync(join(second.control, "release")), result: existsSync(join(second.control, "result")) };
+			samples.push(sample); writeFileSync(join(second.control, "parent-death-lifecycle.result.json"), JSON.stringify(samples, null, 2));
+			console.log(`NATIVE_PARENT_DEATH_SAMPLE ${JSON.stringify(sample)} artifact=${second.control}`);
+		};
 		try {
 			await until(join(second.control, "parent-authenticated")); await until(join(second.control, "child-waiting"));
-			pid = Number(readFileSync(join(second.control, "child-pid"), "utf8"));
-			parent.kill(); await parent.exited;
+			pid = Number(readFileSync(join(second.control, "child-pid"), "utf8")); observed = observeProcess(pid);
+			capture("before-parent-kill");
+			parent.kill(); await parent.exited; capture("after-parent-exit");
 			if (corrupt) fixture("everyone", second.file);
-			writeFileSync(join(second.control, "release"), "1"); await until(join(second.control, "result"));
+			writeFileSync(join(second.control, "release"), "1"); capture("release-written");
+			try { await until(join(second.control, "result")); } finally { capture("after-result-wait"); }
 			expect(readFileSync(join(second.control, "result"), "utf8")).toBe(corrupt ? "DSH_CONFIG_BOUNDARY" : "READY");
 			for (const name of ["sensitive-open", "sensitive-watch", "ready"]) expect(existsSync(join(second.control, name))).toBe(!corrupt);
 		} finally {
+			observed?.close();
 			if (pid) { try { process.kill(pid); } catch {} }
 			if (parent.exitCode === null) { parent.kill(); await parent.exited; }
 		}
