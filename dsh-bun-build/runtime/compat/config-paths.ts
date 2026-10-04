@@ -15,7 +15,11 @@ const contains = (root: string, path: string) => {
  */
 export function createConfigPaths(plugins?: string, config?: string, home?: string) {
 	const boundary = (message = "dsh: configuration path violates selected configuration boundary"): never => {
-		throw Object.assign(new Error(message), { code: "DSH_CONFIG_BOUNDARY" });
+		const error = Object.assign(new Error(message), { code: "DSH_CONFIG_BOUNDARY" });
+		// Explicit message property survives Bun compiled Error/cause inspection (native Error alone
+		// can print only its name). Diagnostic remains constant; never format caught parser content.
+		Object.defineProperty(error, "message", { value: message, enumerable: true, configurable: true });
+		throw error;
 	};
 	// Authenticate Windows independently of manager claims, including empty snapshots, before startup.
 	let windows: ReturnType<typeof createWindowsPrivateAccess> | undefined;
@@ -98,13 +102,17 @@ export function createConfigPaths(plugins?: string, config?: string, home?: stri
 	function assertStartup(failures: { outcome: { kind: string; error?: unknown } }[]) {
 		if (config && failures.some(({ outcome }) => outcome.kind === "failed" && (outcome.error as { code?: string })?.code === "DSH_CONFIG_BOUNDARY")) boundary();
 	}
+	const managedPath = (path: string) => Boolean(config && contains(resolve(config), resolve(path)));
 	return { root, dir: (name: string) => root() ? join(root()!, name) : undefined, profileFile, configFile, credentialFile,
 		// Windows privacy comes from verified inheritable DACLs before creation, never this POSIX mode.
 		privateWriteOptions: config ? { mode: 0o600 } : undefined,
 		check: (path: string) => checked(path),
-		// Upstream-generated lock/takeover/temp names require authentication at their own syscall seam.
-		checkAuxiliary: (path: string) => checked(path, false, true),
-		checkCreation: (path: string) => checked(path, false, true, true),
+		// Shared atomic-write also handles sessions/cache outside C; preserve those upstream semantics.
+		checkAuxiliary: (path: string) => managedPath(path) ? checked(path, false, true) : path,
+		checkCreation: (path: string) => managedPath(path) ? checked(path, true, true, true) : path,
+		rethrowBoundary: (error: unknown) => {
+			if (config && (error as { code?: string })?.code === "DSH_CONFIG_BOUNDARY") boundary();
+		},
 		checkWatchPath: (path: string) => config && contains(resolve(config), resolve(path)) ? checked(path) : path,
 		envDirectory, envFile, isManagedHome, assertStartup };
 }

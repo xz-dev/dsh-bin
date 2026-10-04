@@ -62,7 +62,7 @@ const credFile = "node_modules/@deepseek-ai/dsh-credentials-local/lib/index.js";
 // Actual rc.2 built paths, including duplicate settings types module and all credential opens/watch/lock parents.
 export const CONFIG_SITES = [
 	rule(bootFile, 'async function auditStartupEntries(ctx, binName, warn = (line) => void process.stderr.write(line)) {\n\tconst failures = await inactiveEntries(ctx);', 'async function auditStartupEntries(ctx, binName, warn = (line) => void process.stderr.write(line)) {\n\tconst failures = await inactiveEntries(ctx);\n\t__dshBinPaths.assertStartup(failures);'),
-	rule(bootFile, 'if (!existsSync(patchPath)) writeFileSync(patchPath, PROFILE_PATCH_TEMPLATE);', 'if (!existsSync(patchPath)) writeFileSync(patchPath, PROFILE_PATCH_TEMPLATE, __dshBinPaths.privateWriteOptions);'),
+	rule(bootFile, 'if (!existsSync(patchPath)) writeFileSync(patchPath, PROFILE_PATCH_TEMPLATE);', 'if (!existsSync(patchPath)) writeFileSync(__dshBinPaths.checkCreation(patchPath), PROFILE_PATCH_TEMPLATE, __dshBinPaths.privateWriteOptions);'),
 	rule(bootFile, 'loadOptionalPatches(binName, context.patchPath)', 'loadOptionalPatches(binName, __dshBinPaths.check(context.patchPath))'),
 	rule("node_modules/@deepseek-ai/dsh-hmr/lib/index.js", 'async function watchConfig(ctx, filename, options, refresh, inTransaction = () => false) {', 'async function watchConfig(ctx, filename, options, refresh, inTransaction = () => false) {\n\t__dshBinPaths.checkWatchPath(filename);'),
 	rule(bootFile, 'join(context.home, "cordis.patch.yml")', '__dshBinPaths.configFile(context.home, "cordis.patch.yml")'),
@@ -92,6 +92,23 @@ export const CONFIG_SITES = [
 	rule('node_modules/@deepseek-ai/dsh-config-editor/lib/index.js', 'writeFileAtomic(path,', 'writeFileAtomic(__dshBinPaths.check(path),', 2),
 	rule('node_modules/@deepseek-ai/dsh-hmr/lib/index.js', 'const target = await findWatchRoot(filename);', 'const target = await findWatchRoot(filename);\n\t__dshBinPaths.checkWatchPath(filename);'),
 	rule('node_modules/@deepseek-ai/dsh-hmr/lib/index.js', 'return readFileSync(filename, "utf8");', 'return readFileSync(__dshBinPaths.checkWatchPath(filename), "utf8");'),
+	// Shared atomic helper also serves non-config session/cache paths. Helper guards select C only;
+	// exact internal sites cover retries and takeover re-reads, not just outer credential wrappers.
+	...[
+		['await mkdir(dirname(filename), {', 'await mkdir(dirname(__dshBinPaths.checkCreation(filename)), {'],
+		['await writeFile(temp, content, {', 'await writeFile(__dshBinPaths.checkCreation(temp), content, {'],
+		['await rename(temp, filename);', 'await rename(__dshBinPaths.checkAuxiliary(temp), __dshBinPaths.checkAuxiliary(filename));'],
+		['await rm(temp, { force: true });', 'await rm(__dshBinPaths.checkAuxiliary(temp), { force: true });'],
+		['await writeFile(claim, `${process.pid}\\n`, {', 'await writeFile(__dshBinPaths.checkCreation(claim), `${process.pid}\\n`, {'],
+		['await writeFile(lockPath, `${process.pid}\\n`, {', 'await writeFile(__dshBinPaths.checkCreation(lockPath), `${process.pid}\\n`, {'],
+		['await rm(claim, { force: true }).catch((error) => {});', 'await rm(__dshBinPaths.checkAuxiliary(claim), { force: true }).catch((error) => {});'],
+		['try {\n\t\tawait lstat(lockPath);\n\t\treturn true;\n\t} catch {\n\t\treturn false;\n\t}', 'try {\n\t\tawait lstat(__dshBinPaths.checkAuxiliary(lockPath));\n\t\treturn true;\n\t} catch (error) {\n\t\t__dshBinPaths.rethrowBoundary(error);\n\t\treturn false;\n\t}'],
+		['try {\n\t\treturn await readFile(lockPath, "utf8");\n\t} catch (error) {\n\t\treturn;\n\t}', 'try {\n\t\treturn await readFile(__dshBinPaths.checkAuxiliary(lockPath), "utf8");\n\t} catch (error) {\n\t\t__dshBinPaths.rethrowBoundary(error);\n\t\treturn;\n\t}'],
+		['try {\n\t\t\tawait rm(lockPath, { force: true });\n\t\t} catch (error) {\n\t\t\treturn false;\n\t\t}', 'try {\n\t\t\tawait rm(__dshBinPaths.checkAuxiliary(lockPath), { force: true });\n\t\t} catch (error) {\n\t\t\t__dshBinPaths.rethrowBoundary(error);\n\t\t\treturn false;\n\t\t}'],
+		['} finally {\n\t\tawait rm(lockPath, { force: true });\n\t}', '} finally {\n\t\tawait rm(__dshBinPaths.checkAuxiliary(lockPath), { force: true });\n\t}'],
+		// Exact import inventory rejects a new unaccounted fs operation or alias.
+		['import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";', 'import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";'],
+	].map(([from, to]) => rule("node_modules/@deepseek-ai/dsh-atomic-write/lib/index.js", from, to)),
 ];
 export const CONFIG_SITES_BY_VERSION = { "0.2.0-rc.2": CONFIG_SITES };
 const occurrences = (text, needle) => text.split(needle).length - 1;
@@ -115,6 +132,9 @@ function rewriteConfigSites(texts, sites, rewritten) {
 		// Profile sites were independently enumerated above; this one is diagnostic-only, not I/O.
 		rest = rest.replace(/__dshBinPaths\.profileFile\([^\n]+?\)/g, "")
 			.replace('resolve(home, ".env")', "");
+		if (file === "node_modules/@deepseek-ai/dsh-atomic-write/lib/index.js" && /\b(?:lstat|mkdir|readFile|rename|rm|writeFile)\s*\(/.test(rest)) {
+			throw new Error(`${file}: unknown atomic configuration I/O site`);
+		}
 		if (/\b(?:join|resolve|dshHomePath)\([^;\n]*(?:PROFILE_PATCH_FILENAME|cordis\.patch\.yml|settings\.yaml|\.credentials\.yaml|["']\.env["'])/.test(rest)) {
 			throw new Error(`${file}: unknown configuration path site`);
 		}
