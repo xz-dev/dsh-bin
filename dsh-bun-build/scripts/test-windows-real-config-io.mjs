@@ -1,0 +1,57 @@
+// Native authentic-service candidate ONLY. Production startup gate remains unchanged.
+// Parent CI: Node24 + pinned Bun1.4.2 + existing git/gh/unzip; scoped GH_TOKEN only build metadata.
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { checkout, resolveRef, commitTime } from "./fetch-upstream.mjs";
+import { fetchPnpm } from "./fetch-pnpm.mjs";
+import { buildApp } from "./build-app.mjs";
+import { assembleBundle } from "./assemble-bundle.mjs";
+import { transformApp } from "./transform-app.mjs";
+import { splitOfficeAddon, KIT } from "./split-addon.mjs";
+import { target } from "./targets.mjs";
+
+if (process.platform !== "win32" || Bun.version !== "1.4.2") throw new Error("real native Windows Bun1.4.2 required; NOT RUN");
+const root = mkdtempSync(join(tmpdir(), "dsh-private-real-io-")), work = join(root, "work");
+console.log(`NATIVE_WINDOWS_REAL_IO_ARTIFACT ${root}`);
+for (const p of [work, join(root, "home"), join(root, "tmp"), join(root, "cache")]) mkdirSync(p);
+Object.assign(process.env, { HOME: join(root, "home"), USERPROFILE: join(root, "home"), APPDATA: join(root, "home/AppData/Roaming"), LOCALAPPDATA: join(root, "home/AppData/Local"), TMP: join(root, "tmp"), TEMP: join(root, "tmp"), TMPDIR: join(root, "tmp"), XDG_CACHE_HOME: join(root, "cache"), BUN_INSTALL_CACHE_DIR: join(root, "cache"), npm_config_cache: join(root, "cache/npm") });
+const repo = resolve(import.meta.dir, "../.."), originalHead = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+const expectedCommit = "639ed015397290b3745d163aafe02ffee4aa3f84", ref = resolveRef("dsh-v0.2.0-rc.2");
+if (ref.commit !== expectedCommit) throw new Error("raw upstream tag does not match independently pinned rc.2 commit");
+const src = join(work, "src"), pnpm = join(work, `pnpm-windows-${process.arch}`), raw = join(work, "app-raw");
+checkout(expectedCommit, src);
+const targetId = process.arch === "arm64" ? "windows-arm64" : "windows-x64-modern", t = target(targetId);
+await fetchPnpm(src, targetId, pnpm); buildApp(src, pnpm, raw);
+const hash = p => createHash("sha256").update(readFileSync(p)).digest("hex");
+const files = ["dsh-settings", "dsh-credentials-local", "dsh-app-boot", "dsh-config-editor", "dsh-hmr", "dsh-atomic-write"].map(p => `node_modules/@deepseek-ai/${p}/lib/index.js`);
+const sources = Object.fromEntries(files.map(p => [p, hash(join(raw, p))]));
+const candidate = join(work, "candidate-source"); cpSync(join(repo, "dsh-bun-build"), candidate, { recursive: true });
+const relative = "runtime/compat/config-paths.ts", original = readFileSync(join(candidate, relative), "utf8");
+const gate = '\tif (config && process.platform === "win32") {\n\t\tthrow Object.assign(new Error("dsh: configuration path violates selected configuration boundary"), { code: "DSH_CONFIG_BOUNDARY" });\n\t}\n';
+if (original.split(gate).length !== 2) throw new Error("candidate startup-gate removal must match exactly once");
+const patched = original.replace(gate, ""); writeFileSync(join(candidate, relative), patched);
+const runtimeFiles = ["app.ts", "launch.ts", "usage-claim.ts", "compat/windows-private-access.ts"];
+const retainedRuntime = Object.fromEntries(runtimeFiles.map(p => {
+	const before = hash(join(repo, "dsh-bun-build/runtime", p)), after = hash(join(candidate, "runtime", p));
+	if (before !== after) throw new Error(`candidate unexpectedly changed runtime/${p}`);
+	return [p, before];
+}));
+writeFileSync(join(root, "candidate-gate.diff"), `--- original/${relative}\n+++ candidate/${relative}\n@@ ONLY managed Windows startup gate removed @@\n` + gate.split("\n").filter(Boolean).map(l => "-" + l).join("\n") + "\n");
+const app = join(work, "app"); cpSync(raw, app, { recursive: true }); transformApp(app);
+if (await Bun.file(join(app, "node_modules", KIT, "package.json")).exists()) splitOfficeAddon(app, join(work, "office"));
+const native = join(work, t.executable);
+execFileSync(process.execPath, [join(candidate, "scripts/compile-entry.mjs"), t.bunTarget, native], { stdio: "inherit", timeout: 120_000 });
+const bundle = join(root, "bundles/0.2.0-rc.2");
+assembleBundle({ target: targetId, out: bundle, app, pnpm, native, identity: { id: "0.2.0-rc.2", tag: "dsh-v0.2.0-rc.2", channel: "rc" }, upstream: { commit: expectedCommit, commitTime: commitTime(src), version: "0.2.0-rc.2" }, run: 1, attempt: 1, builderCommit: originalHead });
+const manifest = { originalHead, expectedCommit, targetId, sources, retainedRuntime, pnpm: JSON.parse(readFileSync(join(pnpm, "pnpm-source.json"), "utf8")), originalConfigSha256: createHash("sha256").update(original).digest("hex"), candidateConfigSha256: hash(join(candidate, relative)), compiledSha256: hash(native), candidateGateDiffSha256: hash(join(root, "candidate-gate.diff")) };
+writeFileSync(join(root, "candidate-inputs.json"), JSON.stringify(manifest, null, 2));
+const systemPath = join(process.env.SystemRoot, "System32");
+const env = { PATH: systemPath, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR, COMSPEC: process.env.COMSPEC, PATHEXT: process.env.PATHEXT, HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, TMP: process.env.TMP, TEMP: process.env.TEMP, TMPDIR: process.env.TMPDIR, XDG_CACHE_HOME: process.env.XDG_CACHE_HOME, BUN_INSTALL_CACHE_DIR: process.env.BUN_INSTALL_CACHE_DIR, DSH_WINDOWS_REAL_IO_ROOT: root, NO_COLOR: "1" };
+const child = Bun.spawn([process.execPath, "test", join(repo, "dsh-bun-build/test/runtime/windows-real-config-io.test.ts")], { cwd: root, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 180_000 });
+const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).arrayBuffer(), new Response(child.stderr).arrayBuffer(), child.exited]);
+writeFileSync(join(root, "service.stdout"), Buffer.from(stdout)); writeFileSync(join(root, "service.stderr"), Buffer.from(stderr)); process.stdout.write(Buffer.from(stdout)); process.stderr.write(Buffer.from(stderr));
+if (code !== 0 || !/\b1 pass\b/.test(Buffer.from(stderr).toString()) || /\b[1-9]\d* (skip|fail)\b/.test(Buffer.from(stderr).toString())) process.exit(1);
+console.log("NATIVE_WINDOWS_REAL_IO_CANDIDATE_GATE_PASSED; production gate still retained; final-source native rerun required");
