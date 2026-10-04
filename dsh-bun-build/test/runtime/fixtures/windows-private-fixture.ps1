@@ -1,6 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Action, [Parameter(Mandatory=$true)][string]$Path)
 $ErrorActionPreference = 'Stop'
-[Console]::Error.WriteLine("NATIVE_FIXTURE_PS_ENTER {0} {1}" -f $Action, $PID)
+[Console]::Error.WriteLine("NATIVE_FIXTURE_PS_ENTER $Action $PID")
 $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $full = [System.Security.AccessControl.FileSystemRights]::FullControl
 $allow = [System.Security.AccessControl.AccessControlType]::Allow
@@ -72,4 +72,4 @@ public class NativeNullDacl {
     }
     default { throw "Unknown fixture action" }
 }
-[Console]::Error.WriteLine("NATIVE_FIXTURE_PS_EXIT {0}" -f $Action)
+[Console]::Error.WriteLine("NATIVE_FIXTURE_PS_EXIT $Action")
