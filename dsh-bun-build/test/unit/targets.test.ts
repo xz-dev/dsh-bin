@@ -51,7 +51,7 @@ test("FBSD-NATIVE native guest targets, not Linux runners or invented pnpm asset
 			bunTarget: arch === "x64" ? "bun-freebsd-x64-baseline" : "bun-freebsd-arm64",
 			bunAsset: arch === "x64" ? "bun-freebsd-x64-baseline.zip" : "bun-freebsd-aarch64.zip",
 			runnerKind: "freebsd-vm",
-			minVersion: "15.0",
+			minVersion: "15.1",
 			pnpmStrategy: "universal-js",
 		});
 		expect(t.pnpmAsset).toBeUndefined();

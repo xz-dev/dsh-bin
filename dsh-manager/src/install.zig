@@ -11,6 +11,8 @@ const state = @import("state.zig");
 const snapshot = @import("snapshot.zig");
 const lock = @import("lock.zig");
 const runtimes = @import("runtimes.zig");
+const safe = @import("safe_open.zig");
+const publication = @import("self_update.zig");
 const Ctx = @import("context.zig").Ctx;
 
 pub fn run(ctx: *Ctx, args: []const []const u8, opts: select.Options) u8 {
@@ -137,7 +139,9 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
     // on the next explicit install, under the maintenance lock; never delete the only generation.
     if (!existsIn(bundles, e.id) and existsIn(tmp, backup)) {
         try recognized(ctx, tmp, backup, e.id);
-        try std.fs.rename(tmp, backup, bundles, e.id);
+        if (builtin.os.tag == .freebsd) {
+            try publication.publishFrom(ctx.a, tmp, backup, bundles, e.id);
+        } else try std.fs.rename(tmp, backup, bundles, e.id);
     }
     const exists = existsIn(bundles, e.id);
     if (exists) try recognized(ctx, bundles, e.id, e.id);
@@ -159,11 +163,18 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
     const installed_meta = try std.json.Stringify.valueAlloc(ctx.a, .{ .kind = "dsh-runtime-install", .schema = @as(u32, 1), .id = e.id, .target = host, .tag = e.tag, .asset = candidate.asset, .seq = e.seq }, .{});
     try dir.writeFile(.{ .sub_path = ".dsh-install.json", .data = installed_meta });
     try dir.writeFile(.{ .sub_path = runtimes.guard_name, .data = "" });
-    dir.close(); // No open directory/file handles at Windows activation.
-    dir_open = false;
+    if (builtin.os.tag != .freebsd) {
+        dir.close(); // Windows activation requires closed descendant handles.
+        dir_open = false;
+    }
     crashPoint(ctx, "before-activation");
+    if (builtin.os.tag == .freebsd) {
+        @import("manager_binary.zig").testPause(ctx, "install-before-activation", staging);
+        if (!sameDirectory(tmp, staging, dir)) return error.RuntimeDirectoryConflict;
+    }
     if (existsIn(tmp, backup)) try recognized(ctx, tmp, backup, e.id);
     try activate(ctx, tmp, staging, bundles, e.id, backup, exists);
+    if (builtin.os.tag == .freebsd and !sameDirectory(bundles, e.id, dir)) return error.RuntimeDirectoryConflict;
     crashPoint(ctx, "after-activation");
     _ = try snapshot.ensure(ctx, .plugins, e.id, meta, "install");
     _ = try snapshot.ensure(ctx, .config, e.id, meta, "install");
@@ -286,11 +297,12 @@ pub fn checkIdle(parent: std.fs.Dir, name: []const u8, label: []const u8) !void 
 
 /// POSIX renames under the claim. Windows must close our guard first: any open descendant blocks retirement.
 /// If another session opens its guard before rename, Windows refuses instead of removing a live object.
-fn retire(parent: std.fs.Dir, name: []const u8, tmp: std.fs.Dir, retired: []const u8, claim: *?lock.Lock) !void {
+fn retire(a: std.mem.Allocator, parent: std.fs.Dir, name: []const u8, tmp: std.fs.Dir, retired: []const u8, claim: *?lock.Lock) !void {
     if (builtin.os.tag == .windows) {
         if (claim.*) |c| c.release();
         claim.* = null;
     }
+    if (builtin.os.tag == .freebsd) return publication.publishFrom(a, parent, name, tmp, retired);
     std.fs.rename(parent, name, tmp, retired) catch |err| {
         if (builtin.os.tag == .windows and err == error.AccessDenied) {
             util.warn("cannot retire {s}: in use or access denied; object unchanged, retry after sessions exit", .{name});
@@ -305,17 +317,35 @@ pub fn remove(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, claim: *?lo
     var tmp = ctx.ensureDir(&.{"tmp"});
     defer tmp.close();
     const retired = try std.fmt.allocPrint(ctx.a, ".remove-{s}-{x}", .{ name, std.crypto.random.int(u64) });
-    try retire(parent, name, tmp, retired, claim);
+    try retire(ctx.a, parent, name, tmp, retired, claim);
     if (claim.*) |c| c.release();
     claim.* = null;
     tmp.deleteTree(retired) catch |err| util.warn("removed {s}; leftover tmp/{s} could not be deleted ({s}); run `dsh manager clean`", .{ name, retired, @errorName(err) });
 }
 
+fn sameDirectory(parent: std.fs.Dir, name: []const u8, held: std.fs.Dir) bool {
+    const opened = std.posix.fstat(held.fd) catch return false;
+    const named = std.posix.fstatat(parent.fd, name, std.posix.AT.SYMLINK_NOFOLLOW) catch return false;
+    return opened.dev == named.dev and opened.ino == named.ino and named.mode & std.posix.S.IFMT == std.posix.S.IFDIR;
+}
+
+/// FreeBSD caller retains validated source across waits; compare its name without following a link.
+fn publishDirectory(ctx: *const Ctx, source: std.fs.Dir, name: []const u8, held: std.fs.Dir, target_dir: std.fs.Dir, dest: []const u8) !void {
+    if (!sameDirectory(source, name, held)) return error.RuntimeDirectoryConflict;
+    try publication.publishFrom(ctx.a, source, name, target_dir, dest);
+    if (!sameDirectory(target_dir, dest, held)) return error.RuntimeDirectoryConflict;
+}
+
 // Retain validated parent handles through activation, replacement and cleanup. POSIX exchange
 // keeps force reinstall visible; Windows retains the existing retirement/rollback protocol.
 pub fn activate(ctx: *const Ctx, tmp: std.fs.Dir, staging: []const u8, parent: std.fs.Dir, dest: []const u8, backup: []const u8, exists: bool) !void {
-    if (!exists) return std.fs.rename(tmp, staging, parent, dest);
-    var current = try parent.openDir(dest, .{ .no_follow = true });
+    var source: ?std.fs.Dir = if (builtin.os.tag == .freebsd) try safe.openDir(tmp, staging, .{ .no_follow = true }) else null;
+    defer if (source) |*held| held.close();
+    if (!exists) {
+        if (builtin.os.tag == .freebsd) return publishDirectory(ctx, tmp, staging, source.?, parent, dest);
+        return std.fs.rename(tmp, staging, parent, dest);
+    }
+    var current = try safe.openDir(parent, dest, .{ .no_follow = true });
     var current_open = true;
     defer if (current_open) current.close();
     if ((try current.stat()).kind != .directory) return error.RuntimeDirectoryConflict;
@@ -335,14 +365,34 @@ pub fn activate(ctx: *const Ctx, tmp: std.fs.Dir, staging: []const u8, parent: s
         return;
     }
     // Windows requires both the directory and our descendant guard handles closed before retirement.
-    current.close();
-    current_open = false;
+    if (builtin.os.tag == .freebsd) {
+        const held = try std.posix.fstat(current.fd);
+        const named = try std.posix.fstatat(parent.fd, dest, std.posix.AT.SYMLINK_NOFOLLOW);
+        if (held.dev != named.dev or held.ino != named.ino) return error.RuntimeDirectoryConflict;
+    } else {
+        current.close();
+        current_open = false;
+    }
     if (existsIn(tmp, backup)) try tmp.deleteTree(backup);
-    try retire(parent, dest, tmp, backup, &claim);
-    std.fs.rename(tmp, staging, parent, dest) catch |err| {
-        std.fs.rename(tmp, backup, parent, dest) catch return error.RestoreFailed;
-        return err;
-    };
+    try retire(ctx.a, parent, dest, tmp, backup, &claim);
+    if (builtin.os.tag == .freebsd) {
+        const held = try std.posix.fstat(current.fd);
+        const retired = try std.posix.fstatat(tmp.fd, backup, std.posix.AT.SYMLINK_NOFOLLOW);
+        if (held.dev != retired.dev or held.ino != retired.ino) return error.RuntimeDirectoryConflict;
+        crashPoint(ctx, "after-retire");
+        @import("manager_binary.zig").testPause(ctx, "install-after-retire", backup);
+        publishDirectory(ctx, tmp, staging, source.?, parent, dest) catch |err| {
+            const restore = try std.posix.fstatat(tmp.fd, backup, std.posix.AT.SYMLINK_NOFOLLOW);
+            if (held.dev != restore.dev or held.ino != restore.ino) return error.RuntimeDirectoryConflict;
+            publication.publishFrom(ctx.a, tmp, backup, parent, dest) catch return error.RestoreFailed;
+            return err;
+        };
+    } else {
+        std.fs.rename(tmp, staging, parent, dest) catch |err| {
+            std.fs.rename(tmp, backup, parent, dest) catch return error.RestoreFailed;
+            return err;
+        };
+    }
     if (claim) |l| l.release();
     claim = null; // POSIX replacements retain the claim; Windows retirement already released it.
     tmp.deleteTree(backup) catch |err| util.warn("replacement {s} is active; leftover tmp/{s} could not be deleted ({s}); run `dsh manager clean`", .{ dest, backup, @errorName(err) });

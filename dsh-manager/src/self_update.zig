@@ -191,26 +191,55 @@ fn reusable(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, version: []co
 
 /// Handle-relative no-replace publication. Existing names, even links, are never overwritten.
 pub fn publish(a: std.mem.Allocator, parent: std.fs.Dir, part: []const u8, name: []const u8) !void {
+    return publishFrom(a, parent, part, parent, name);
+}
+
+/// Same no-replace contract across two retained parents; FreeBSD install activation/restore use this seam.
+pub fn publishFrom(a: std.mem.Allocator, source: std.fs.Dir, part: []const u8, parent: std.fs.Dir, name: []const u8) !void {
     if (builtin.os.tag == .windows) {
         const win = std.os.windows;
-        const src = try win.sliceToPrefixedFileW(parent.fd, part);
+        const src = try win.sliceToPrefixedFileW(source.fd, part);
         const dst = try win.sliceToPrefixedFileW(parent.fd, name);
-        return std.posix.renameatW(parent.fd, src.span(), parent.fd, dst.span(), win.FALSE);
+        return std.posix.renameatW(source.fd, src.span(), parent.fd, dst.span(), win.FALSE);
     }
     const src = try a.dupeZ(u8, part);
     const dst = try a.dupeZ(u8, name);
     if (builtin.os.tag == .linux) {
-        switch (std.posix.errno(std.os.linux.renameat2(parent.fd, src, parent.fd, dst, 1))) {
+        switch (std.posix.errno(std.os.linux.renameat2(source.fd, src, parent.fd, dst, 1))) {
             .SUCCESS => return,
             .EXIST => return error.PathAlreadyExists,
             .NOSYS, .INVAL => {}, // Older kernels/filesystems: link creates the final name exclusively.
             else => return error.CandidatePublishFailed,
         }
+    } else if (builtin.os.tag == .freebsd) {
+        // FreeBSD 15.1 libc/kernel primitive: retained parent, atomic no-replace for files AND directories.
+        // No fallback: directory linkat fails EPERM and plain rename would overwrite a raced destination.
+        switch (std.posix.errno(renameat2(source.fd, src, parent.fd, dst, 1))) { // AT_RENAME_NOREPLACE
+            .SUCCESS => return,
+            .EXIST, .NOTEMPTY => return error.PathAlreadyExists,
+            .ACCES => return error.AccessDenied,
+            .PERM => return error.PermissionDenied,
+            .BUSY => return error.FileBusy,
+            .DQUOT => return error.DiskQuota,
+            .ISDIR => return error.IsDir,
+            .LOOP => return error.SymLinkLoop,
+            .MLINK => return error.LinkQuotaExceeded,
+            .NAMETOOLONG => return error.NameTooLong,
+            .NOENT => return error.FileNotFound,
+            .NOTDIR => return error.NotDir,
+            .NOMEM => return error.SystemResources,
+            .NOSPC => return error.NoSpaceLeft,
+            .ROFS => return error.ReadOnlyFileSystem,
+            .XDEV => return error.RenameAcrossMountPoints,
+            .NOSYS => return error.UnsupportedOperatingSystemVersion,
+            else => return error.CandidatePublishFailed,
+        }
     } else if (builtin.os.tag == .macos) {
-        if (renameatx_np(parent.fd, src, parent.fd, dst, 4) == 0) return; // RENAME_EXCL
+        if (renameatx_np(source.fd, src, parent.fd, dst, 4) == 0) return; // RENAME_EXCL
         return error.CandidatePublishFailed;
     }
-    try std.posix.linkat(parent.fd, part, parent.fd, name, 0);
-    try parent.deleteFile(part);
+    try std.posix.linkat(source.fd, part, parent.fd, name, 0);
+    try source.deleteFile(part);
 }
+extern "c" fn renameat2(c_int, [*:0]const u8, c_int, [*:0]const u8, c_uint) c_int;
 extern "c" fn renameatx_np(c_int, [*:0]const u8, c_int, [*:0]const u8, c_uint) c_int;

@@ -21,6 +21,11 @@ pub fn host() ![]const u8 {
             .aarch64 => "darwin-arm64",
             else => error.UnsupportedHost,
         },
+        .freebsd => switch (builtin.cpu.arch) {
+            .x86_64 => "freebsd-x64",
+            .aarch64 => "freebsd-arm64",
+            else => error.UnsupportedHost,
+        },
         .windows => switch (builtin.cpu.arch) {
             .x86_64 => "windows-x64",
             .aarch64 => "windows-arm64",
@@ -38,8 +43,9 @@ fn dword(bytes: []const u8, at: usize) u32 {
 fn native(bytes: []const u8) bool {
     if (bytes.len < 64) return false;
     switch (builtin.os.tag) {
-        .linux => return std.mem.eql(u8, bytes[0..4], "\x7fELF") and bytes[4] == 2 and bytes[5] == 1 and
-            (word(bytes, 16) == 2 or word(bytes, 16) == 3) and word(bytes, 18) == @as(u16, if (builtin.cpu.arch == .x86_64) 62 else 183),
+        .linux, .freebsd => return std.mem.eql(u8, bytes[0..4], "\x7fELF") and bytes[4] == 2 and bytes[5] == 1 and
+            (word(bytes, 16) == 2 or word(bytes, 16) == 3) and word(bytes, 18) == @as(u16, if (builtin.cpu.arch == .x86_64) 62 else 183) and
+            (builtin.os.tag != .freebsd or freebsdAbi(bytes)),
         .windows => {
             if (!std.mem.eql(u8, bytes[0..2], "MZ")) return false;
             const at: usize = dword(bytes, 60);
@@ -49,6 +55,40 @@ fn native(bytes: []const u8) bool {
         .macos => return dword(bytes, 0) == 0xfeedfacf and dword(bytes, 4) == @as(u32, if (builtin.cpu.arch == .x86_64) 0x01000007 else 0x0100000c) and dword(bytes, 12) == 2,
         else => return false,
     }
+}
+
+/// Native Zig 0.15.2/FreeBSD 15.1 ELF is OSABI System V, with a FreeBSD ABI PT_NOTE.
+/// Require that note: accepting same-machine Linux ELF (also System V) is not a target check.
+fn freebsdAbi(bytes: []const u8) bool {
+    if (bytes[7] != 0 and bytes[7] != 9) return false;
+    const phoff = std.mem.readInt(u64, bytes[32..40], .little);
+    const size: usize = word(bytes, 54);
+    const count: usize = word(bytes, 56);
+    if (size < 56 or phoff > bytes.len or count > (bytes.len - @as(usize, @intCast(phoff))) / size) return false;
+    for (0..count) |i| {
+        const header: usize = @as(usize, @intCast(phoff)) + i * size;
+        if (dword(bytes, header) != 4) continue; // PT_NOTE
+        const offset = std.mem.readInt(u64, bytes[header + 8 ..][0..8], .little);
+        const length = std.mem.readInt(u64, bytes[header + 32 ..][0..8], .little);
+        if (offset > bytes.len or length > bytes.len - @as(usize, @intCast(offset))) return false;
+        const end = @as(usize, @intCast(offset + length));
+        var at = @as(usize, @intCast(offset));
+        while (end - at >= 12) {
+            const names: usize = dword(bytes, at);
+            const desc: usize = dword(bytes, at + 4);
+            const kind = dword(bytes, at + 8);
+            at += 12;
+            const padded_name = std.mem.alignForward(usize, names, 4);
+            const padded_desc = std.mem.alignForward(usize, desc, 4);
+            if (padded_name > end - at or padded_desc > end - at - padded_name) return false;
+            if (kind == 1 and names == 8 and desc == 4 and std.mem.eql(u8, bytes[at..][0..8], "FreeBSD\x00")) {
+                const version = dword(bytes, at + padded_name);
+                return version >= 1501000; // FreeBSD identity at the approved 15.1 ABI floor.
+            }
+            at += padded_name + padded_desc;
+        }
+    }
+    return false;
 }
 
 /// Open the final component itself, never a symlink/junction or a special file.

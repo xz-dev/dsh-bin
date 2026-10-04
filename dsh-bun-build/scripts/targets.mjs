@@ -49,7 +49,7 @@ function t(id, os, arch, libc, cpu, runner) {
 		// pnpm 11.7.0 has no FreeBSD standalone asset. Universal JS closure
 		// acquisition/filtering and shim integration belong to the following slice.
 		...(os === "freebsd"
-			? { runnerKind: "freebsd-vm", minVersion: "15.0", bunAsset: FREEBSD_BUN[arch].asset, pnpmStrategy: "universal-js" }
+			? { runnerKind: "freebsd-vm", minVersion: "15.1", bunAsset: FREEBSD_BUN[arch].asset, pnpmStrategy: "universal-js" }
 			: { pnpmAsset: `pnpm-${NODE_OS[os]}-${os === "darwin" ? "arm64" : arch}${libc === "musl" ? "-musl" : ""}.${os === "windows" ? "zip" : "tar.gz"}` }),
 		...(os === "darwin" && arch === "x64"
 			? { pnpmDrop: ["dist/node_modules/@reflink/reflink-darwin-arm64"], reflinkAsset: "reflink.darwin-x64.node" }

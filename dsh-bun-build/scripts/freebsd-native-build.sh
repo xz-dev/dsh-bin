@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run only inside an owned full-system FreeBSD 15.0 guest, after verified inputs
+# Run only inside an owned full-system FreeBSD 15.1 guest, after verified inputs
 # and frozen-source.tar.gz/candidate-files.tar have been staged in /opt/task-build.
 set -eu
 cd /opt/task-build
@@ -9,7 +9,10 @@ case "$1" in
   *) echo 'usage: freebsd-native-build.sh x64|arm64' >&2; exit 2 ;;
 esac
 [ "$(uname -s)" = FreeBSD ]
-[ "$(freebsd-version -u)" = 15.0-RELEASE ]
+[ "$(freebsd-version -u)" = 15.1-RELEASE ]
+# Zig 0.15.2's bundled FreeBSD libc stubs predate renameat2@FBSD_1.9.
+# Native 15.1 headers/libraries, not a newer host or a generated cross-libc stub.
+[ "$(uname -m)" = "$(case "$1" in x64) echo amd64;; arm64) echo arm64;; esac)" ]
 mkdir -p tools frozen candidate artifacts logs
 # SHA-256 checks also run before extraction on guest (manifest from authenticated inputs).
 (cd inputs && while read -r digest filename; do [ "$(sha256 -q "$filename")" = "$digest" ]; done < SHA256SUMS)
@@ -45,9 +48,13 @@ sha256 "$ZIG" "$BUN" inputs/frozen-source.tar.gz inputs/candidate-files.tar
 cd frozen/dsh-manager
 record frozen-target "$ZIG" test src/target.zig
 record frozen-suite "$ZIG" build test -j1
+libc_dir=$(mktemp -d /var/tmp/dsh-freebsd-emlink-libc.XXXXXXXX)
+libc_file="$libc_dir/libc.conf"
+"$ZIG" libc > "$libc_file"
+sha256 "$libc_file"
 cd /opt/task-build/candidate/dsh-manager
 record target "$ZIG" test src/target.zig
-record manager "$ZIG" build -j1 "-Dtarget=$zig_arch-freebsd.15.0" -Dcpu=baseline -Dversion=0.0.0-freebsd-task
+record manager "$ZIG" build -j1 --libc "$libc_file" "-Dtarget=$zig_arch-freebsd.15.1" -Dcpu=baseline -Dversion=0.0.0-freebsd-task
 [ "$(cat /opt/task-build/logs/manager.exit)" = 0 ]
 cp zig-out/bin/dsh /opt/task-build/artifacts/dsh
 cd /opt/task-build/candidate/dsh-bun-build

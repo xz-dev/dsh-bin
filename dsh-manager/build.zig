@@ -2,6 +2,8 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
+    if (target.result.os.tag == .freebsd and !(target.result.os.isAtLeast(.freebsd, .{ .major = 15, .minor = 1, .patch = 0 }) orelse false))
+        @panic("FreeBSD manager requires a FreeBSD 15.1 or newer target (renameat2 no-replace)");
     const optimize = b.option(std.builtin.OptimizeMode, "optimize", "optimization mode") orelse .ReleaseSmall;
     const version = b.option([]const u8, "version", "manager version") orelse "0.0.0-dev";
 
