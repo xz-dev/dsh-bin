@@ -144,6 +144,10 @@ jobs:
             ${{ runner.temp }}/dsh-windows-private-io-*/tmp/fixture-*.stages
             ${{ runner.temp }}/dsh-windows-private-io-*/tmp/fixture-*.request.json
             ${{ runner.temp }}/dsh-windows-private-io-*/tmp/fixture-*.result.json
+            ${{ runner.temp }}/dsh-windows-private-io-*/tmp/private-case-*/control/*.result.json
+            ${{ runner.temp }}/dsh-windows-private-io-*/tmp/private-case-*/control/*.stages
+            ${{ runner.temp }}/dsh-windows-private-io-*/tmp/private-case-*/control/*.stdout
+            ${{ runner.temp }}/dsh-windows-private-io-*/tmp/private-case-*/control/*.stderr
           if-no-files-found: error
   scoop:
     if: github.event_name != 'workflow_dispatch' || !inputs.windows_private_only
