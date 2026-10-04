@@ -2,13 +2,13 @@
 
 ## 当前结论
 
-这是 `add-config-snapshots-and-paths` 的实施期记录，不是完整验收。首个 store 候选为 `4dfbbf1e9787598982936618f98aae7322f31459`，父进程补全安全与耦合回归修复为 `abefea6d377d909fb276a365c6fdb27a0b741fc3`。协议 2、真实 rc.2 配置 I/O 和八类 path 已整合为固定候选 `6ae48b28200e7b25be44af6f447795cb04ad3672`，原四项协议发现已独立定点 Closed（仅 Linux transport）。不同真实运行包 A→B→A、Windows 当前 ACL／原生平台、完整真实产品与 I/O/path 独立审查仍未验收；后一审查及 A→B→A worker 遭提供方策略拒绝，未记为批准。不能根据此记录发布、合并、同步或归档。
+这是 `add-config-snapshots-and-paths` 的实施期记录，不是完整验收。固定生产候选 `500537c4c0ef0449ec992a02a0324e385cfae5d1` 已通过真实 rc.1→rc.2→rc.1 与 config／atomic／path 联合回归（19 pass /0 fail）。后续 `0629c8b` 及父 test/docs 提交未改生产行为。原四项协议发现仍独立 Closed（仅 Linux transport）；I/O/path 的 Opus 首审 BLOCK 仍待独立关闭，`213b6796` 与有界恢复 `232d391d` 均429无报告，本轮不再自动重试。Windows 第五轮 `37192195212` 两架构各13pass/2fail/0skip，生产managed install仍fail-closed。56场景语义映射已交付，但不等于全部场景接受；并发及真实产物夹具新测试已整合，正在父侧统一候选复跑。实际上游内部重启、规定原生矩阵、Office／CI组合产物和独审仍未闭合。下文旧基线为历史，不覆盖当前结论；尚不具备发布、合并、同步或归档条件。
 
 ## 前置与保留场景核对
 
 前置 `split-dsh-manager` 已验收并归档，main 基线为 `5b3ed0fec0cbb6832cfa1b216f0cecc11d33e791`。manager-control、portable-storage、runtime-bundles 的 11 个 MODIFIED requirement 目标均存在，19 个前置场景标题全部保留。机器核对记录：`/var/tmp/dsh-remaining/parent-gates/config-modified-retention.json`。严格校验 `openspec validate add-config-snapshots-and-paths --strict --no-interactive` exit 0，日志 `config-strict-abefea6.log`（同目录）。
 
-已核对接口：数据所有权标记 `.dsh-bin-data.json` 为 kind=dsh-manager-data/schema=1；context 区分真实 executable、管理 data 与应用 home；选择来自 `state/selection.json`，维护锁为 `state/manager.lock`；两类 store 的 root、`.counters.json`、`.lock` 和对象 `.usage.lock` 独立。旧有效插件 metadata 不要求新增 kind 字段，旧选择缺失 configSnapshot 仍可读取。completion 前置记录未保存历史目标路径，后续查询必须报告 unknown 而非猜测。56 个增量场景的完整测试映射尚未交付，任务 1.2 不计完成。
+已核对接口：数据所有权标记 `.dsh-bin-data.json` 为 kind=dsh-manager-data/schema=1；context 区分真实 executable、管理 data 与应用 home；选择来自 `state/selection.json`，维护锁为 `state/manager.lock`；两类 store 的 root、`.counters.json`、`.lock` 和对象 `.usage.lock` 独立。旧有效插件 metadata 不要求新增 kind 字段，旧选择缺失 configSnapshot 仍可读取。completion 前置记录未保存历史目标路径，后续查询必须报告 unknown 而非猜测。56个增量场景的逐项语义映射见末节；已核对唯一ID与实际文件，但有入口仍未完成真实／原生验证，任务1.2不计完整接受。
 
 ## Store 首切片与父回归
 
@@ -76,7 +76,7 @@
 
 原 reviewer 沿同会话 `f0e52375` 对冻结 `6ae48b2` 独立重建 manager/runtime，原 guard 换代竞态、canonical owner prefix、XDG transport、两类 completion canonicalization 四项均 Closed，无该 Linux 范围剩余 P0/P1/P2。实际竞态 runtime exit1、未进入应用、所有 claims 释放、凭据与 metadata 不变；正常 live runtime 删除拒绝，退出后显式删除允许。报告 `/var/tmp/dsh-remaining/reports/protocol-rereview-6ae48b2.md`，命令 receipt 与二进制 SHA 位于 `/var/tmp/dsh-protocol-rereview-6ae48b2/logs/`。它不批准真实 I/O／XDG 配置访问、Windows native 或整个 change。
 
-## 正在实施的门禁与提供方阻塞
+## 历史实施与提供方阻塞（已被当前结论更新）
 
 - Windows owner 独占 `/var/tmp/dsh-remaining/windows-io`，实施实际 current token SID、owner、DACL／继承和句柄身份检查；原生 CI 由父侧调度，未执行不算通过。新 wx/atomic temp 的私有 ACL 必须 creation-before-bytes；已有锁内部读取及创建专用检查未接入的站点不许用“最终单 syscall 窗口”掩盖。
 - 两真实上游运行包 owner `e3cddf8d` 于工作树 `/var/tmp/dsh-remaining/real-io` 被提供方 `session_blocked_by_cyber_policy` 权限拒绝，未产出 file-only 交付。父确认树/index 干净且仍为 `6ae48b2`；A→B→A 未通过。匿名 GitHub tags 403 的日志另明确为 rate limit，不是源码身份，TLS EOF 也不提供真实第二版本证据。
@@ -90,4 +90,104 @@ Windows 安全组件 `6a49d69aa4cbac94a06b8258a2b9633c2967a458` 已整合为 `e4
 
 **两架构均 failure**：PowerShell ACL 夹具 `execFileSync powershell.exe` 多次 `ETIMEDOUT`，不是 ACL 验证通过；240s 外层 runner 结束，未运行的用例也不算通过。失败原日志 `/var/tmp/dsh-remaining/parent-gates/windows-private-37156417848/failed.log`。原 Windows owner 已接回冻结 `30a70d7` 的修复与精确 atomic/lock 接入任务，父收到限定提交后重新整合／派 CI。不得用增加 timeout、Linux mocks 或 skip 代替真实执行。组件 native 通过之后仍需要真实 settings/provider/profile/restart 的 Windows 应用门禁。
 
-所有任务按完整 criterion 再更新；当前 OpenSpec 仍仅 1.1 checked，56 场景完整映射及各原生／产品门禁尚未完成。
+所有任务按完整 criterion 再更新；此历史节点仅1.1 checked。后续56场景映射已交付，原生／产品门禁仍须分别闭合。
+
+## 固定候选 500537c：真实两版本与 Opus 发现修复
+
+真实 rc.1 输入为 tag `dsh-v0.2.0-rc.1`、commit `4878cdabd87d4041bdaff61d04c966883b9fd07a`，rc.2 为 `639ed015397290b3745d163aafe02ffee4aa3f84`；raw app 各构建一次、固定 pnpm11.7.0，来源清单分别位于 `/var/tmp/dsh-opus-two-runtime/input-SHA256SUMS` 与 `/var/tmp/dsh-remaining/real-io-inputs/input-SHA256SUMS`，只复制字节到 scratch，不改 raw。rc.1／rc.2 bin.js 及大量应用路径不同；配置服务字节相同已经逐项验证，不是改标签的同一包。父最初 rc.1 未认证时实际 red，授权站点表后曾在未提交源码上 green；该历史不代替以下固定提交复跑。
+
+以下日志在 `/var/tmp/dsh-remaining/parent-gates/two-runtime-current/`；HOME/TMP/cache 均位于该专用根，产品 PATH 与驱动器分离：
+
+| 命令／边界 | 实际结果 | 日志 |
+| --- | --- | --- |
+| config-io + path 新复现，修复前 | exit1；10 pass /3 fail：真实 linked-root、合法空 kind、rc 类型诊断 | `review-findings-red.log` |
+| 同项修复及清理夹具纠正后 | exit0；13 pass /0 fail | `review-findings-green-final.log` |
+| 真实 profile helper 权限在映射后变化，修复前 | exit1；插件启停两份实现、optional/overlay loader 发生 unsafe read；sanitize 已错误移动文件 | `profile-seams-red.log` |
+| atomic/config + transform 最小修复后 | exit0；17 pass /0 fail；检查参数求值后真正进入 read 的标记，不用后续 atomic 拒绝掩盖先前读 | `profile-seams-green.log` |
+| 干净固定500537c：`bun test dsh-bun-build/test/runtime/two-runtime-config.test.ts dsh-bun-build/test/runtime/config-io.test.ts dsh-bun-build/test/runtime/atomic-config-io.test.ts dsh-manager/test/path.test.ts` | exit0；19 pass /0 fail，113.97s | `frozen-source-500537c.txt`、`frozen-500537c.log` |
+
+固定运行的 builder 身份为 `0.2.0-rc.1-b1.1.g500537c4` 和 `0.2.0-rc.2-b1.1.g500537c4`；实际 manager install／launch、settings/provider/import 更新、回切来源字节不变及直用／复制对照产物位于 `tmp/two-runtime-config-9ySYfi/`。真实单版本 I/O 位于 `tmp/real-config-io-AkoGsa/`，包括合法 linked data ancestor。
+
+首轮 Opus `02097f30` 冻结6ae48b2，P1-1 linked ancestor、P2-1 属性 I/O、P2-2 合法缺省 snapshot kind、P2-3 rc 类型诊断未关闭前 verdict BLOCK。父补丁复用 bootstrap 已验证物理根与既有 boundary helpers，不新建锁／事务；dump-config 的 `loaded.patchPath` 本身只用于存在性和已加载数据的标签，实际 optional／overlay helper 的读点已加入当前 C 路径检查及稳定错误重抛。`213b6796` 及同会话有界恢复 `232d391d` 对500537c复审均因提供方429 cooldown失败，第二次仍缺必需报告，不再自动循环或换路由。原有partial日志保留但不是批准；必须实际复跑并给逐项 disposition 后才记独立 Closed。
+
+## Windows 原生第二、三轮与第四轮采证
+
+第二轮 `37185833975` 在 PowerShell 日志格式调用处失败，第三轮 `37186974141` 修正格式后仍两架构失败；后者 x64 有实际 null-DACL 负例 pass 与17–19s夹具 END，ARM 仍出现20s超时，不能概括为全部未执行，也不能把 stdin 假说写作根因已修复。失败证据保留在 `parent-gates/windows-private-<run>/`。
+
+inner atomic/lock 的 read、复读、wx、rename、remove 检查已整合（`a070474`），真实 native service candidate runner 已整合（`48f161d`），但尚未通过 Windows 应用门禁。`b2ea0f1`／`b8d521b` 仅增加单调阶段时间、spawn前文件描述符输出持久化和 task-owned RUNNER_TEMP／PowerShell cache；不增加20s/240s限时、不减少15项断言、不修改生产 gate。第四轮 `37190005445` 对 `b8d521b73cb685e581705d412842ce3c08cad860` 两架构均failure，24份 `.stages` 最后均为 `directory-new-object-before`，token/rights阶段约23–40ms，尚未进入SetOwner/CreateDirectory。仅据此不能区分cmdlet发现与CLR构造器。
+
+第五轮 `37192195212` 固定 `0629c8bf8677e0a676cf2c66302c5fc23fe7c072`：原New-Object对照两架构20s超时；直接CLR构造337/338ms成功；显式系统模块导入后原New-Object以及Get-Acl/Set-Acl/Add-Type/JSON全部成功（3348/2722ms）。这支持自动发现／加载路径阻塞，而非CLR构造器本身；diagnostic exit0只表示采样完成。必需15项组件门禁两架构均13pass/2fail/0skip；实际失败为checkCreation正例拒绝和父退出后等待child result超时。根因尚未据此定案，原owner恢复为 `e22d6ccf` 继续，不放宽ACL或增超时。证据目录 `parent-gates/windows-private-37192195212/{artifacts,failed.log}`。组件、真实service和最终生产源码均通过之前，Windows managed install 不开放。
+
+## 新产品切片整合（待父统一候选复跑）
+
+- 文档 `ae8b497`：双语12文件，92个本地链接／锚点通过；隔离环境下path/launch/snapshots/completion 72pass/5skip/0fail，`parent-gates/docs-contract-0629c8b/cli.log`。无类型snapshot命令和共享HOME配置旧契约已纠正，历史实现报告原样保留。
+- 并发owner `7564868`、`c11d7fc` 整合为 `5ece699`、`d47afad`：同P的两个真实settings/provider会话、实际manager复制相对accounts/work.yaml、双向真实watcher、默认变化和live P/C删除保护。worker最终1pass/0fail/369断言，且错误C2→C1启动映射对照确实失败。`/var/tmp/dsh-real-config-concurrency/`保留初次watch文件/目录误判、red/green及hash；不声称实际上游restart或CI通过。
+- 产物夹具owner `922165c` 整合为 `7a28b5b`：两真实版本、两manager、实际pnpm安装插件、旧HOME哨兵、P/C复制及真实离线搬迁；worker 6pass/2skip/0fail/194断言，`/var/tmp/dsh-real-product-fixtures/`。Office和CI组合仍skip，手写respawn明确不是upstream restart。LOCAL预构建产物不替代CI验证。
+- 父 `b724763` 隔离config-io产品PATH并去掉旧硬编码builder：新增真实PATH断言先red（实际继承/usr/bin:/bin），修正为绝对驱动工具与空产品PATH后1pass/0fail/505断言。中间关于assemble-only夹具必有node shim的过强断言失败也保留，现允许无node或仅bundle内node，仍拒绝宿主Node/Bun/compiler。日志 `parent-gates/product-unified/logs/path-{red,green,green-final}.log`。后续将用同一clean HEAD新建两runtime，再将其原始manifest/hash送入真实安装/搬迁suite；此节不是已完成该联合复跑。
+
+## 56 场景语义映射（固定 500537c 生产源码；b8d521b 回归）
+
+这是一份可执行入口与缺口清单，不是56项已接受的声明。`M/` 表示 `dsh-manager/test/`，`R/` 表示 `dsh-bun-build/test/runtime/`，`U/` 表示 `dsh-bun-build/test/unit/`。表中“管理器层”使用真实 Zig 管理器与受控库存／fake-native 夹具，只证明管理行为；“真实应用”使用认证 rc.1/rc.2、实际 compiled entry、settings/provider，不能与前者互换。
+
+运行入口：`bun test <对应文件>`。真实 I/O 需 `DSH_BIN_REAL_IO_APP`、`DSH_BIN_TEST_PNPM`；两版本需另设 `DSH_BIN_REAL_IO_APP_A/B`。当前来源、命令和结果见上节 `frozen-500537c.log`（19/0）及 `full-b8d521b.log`（421 pass /80 skip /0 fail）。后者完整命令为 `bun test dsh-manager/test dsh-bun-build/test/unit dsh-bun-build/test/runtime`。这些是 Linux x64 结果，不外推 Windows x64/ARM、macOS 或其余支持目标；原生权限、使用保护及产品验证须在各规定平台执行。Windows 当前仍失败。所有测试入口须在专用 HOME/TMP/XDG/cache 下执行，不能使用真实凭据；两版本产品 PATH 已隔离，单版本 config-io 的产品 PATH 仍继承驱动 PATH，此运行环境缺口另列，不当作无宿主工具证明。
+
+| 场景 | 实际入口与被验证行为 | 当前证据／剩余缺口 |
+| --- | --- | --- |
+| CS-IDENTITY | `M/snapshots.test.ts`：两类同ID／daily、独立计数、旧metadata及旧selection | Linux管理器层通过；不是应用I/O证据 |
+| CS-AUTO | `M/versions.test.ts`：install/update/bootstrap逐类型继承；`R/two-runtime-config.test.ts`：真实B安装继承A的P/C | 两层Linux通过；规定原生矩阵待补 |
+| CS-CREATE | `M/snapshots.test.ts`：default/target/empty/name与来源字节；`R/two-runtime-config.test.ts`：真实跨版本复制试用 | Linux通过；原生矩阵待补 |
+| CS-EMPTY | `R/config-io.test.ts`：C3仅guard，真实provider无凭据、bundle默认、HOME哨兵不读 | 实际有断言，非字面ID匹配；Linux通过，Windows等待补 |
+| CS-GAPS | `M/snapshots.test.ts`：删除2/3回落1、新建4；`M/path.test.ts`：合法缺省类型不初始化 | 管理器层通过；全生命周期原生待补 |
+| CS-CONTENT | `M/snapshots.test.ts`：多profile/settings.imported/accounts独立复制、依赖/session等排除及合法basename回归 | 管理器文件层通过；不是完整应用服务验证 |
+| CS-PLUGIN-BASE | `R/config-io.test.ts`：真实插件URL在P、patch在C、生成cordis.yml只在P；`U/transform-app.test.ts` | 真实Linux通过；HMR仅已披露helper范围 |
+| CS-SWITCH | `R/config-io.test.ts`：同P的C1/C2更新/回切、provider watcher及来源字节 | 真实Linux串行通过；不能替代并发 |
+| CS-CONCURRENT | `R/two-runtime-config.test.ts` 的新并发切片待交付：同P两live C、默认选择变化、真实watcher | 固定候选没有专用并发证据；不得用串行C1→C2→C1抵扣 |
+| CS-FORMAT | `R/two-runtime-config.test.ts`：真实rc.1→rc.2导入/更新→rc.1原字节；两输入不同commit/bin.js | 固定500537c通过；原生平台与独立复审待完成 |
+| CS-CROSS | `R/two-runtime-config.test.ts`：B写A副本对比B显式直用A，编号/selection不暗改 | 固定500537c真实Linux通过 |
+| CS-EXTERNAL | `R/config-io.test.ts`：HOME、另一C、外部绝对路径、traversal、escaping link/dshHome；strace拒绝敏感open/watch | 实际断言通过，非仅“输出不含秘密”；Windows等尚缺 |
+| CS-LOCAL-PATH | `R/config-io.test.ts`：相对/绝对集合内path和dshHome；`R/two-runtime-config.test.ts`：真实accounts/work.yaml；`M/snapshots.test.ts`复制accounts | 已验证单C实际读写及存储复制；自定义相对路径复制后再启动新C的完整对照待补 |
+| CS-FAILURE | `M/snapshots.test.ts`：copy失败/中断/源变化/已复制文件篡改/目标换代/no-replace/外链硬链special | Linux管理器层通过；原store独审三项Closed，原生矩阵仍待补 |
+| CS-PERMISSIONS | `M/snapshots.test.ts`宽umask/暂存；`R/config-io.test.ts`私有创建/loose/hardlink；`R/atomic-config-io.test.ts`实际read/wx/rename入口；`R/windows-private-config.test.ts` | POSIX通过；Windows组件native失败，真实服务和最终gate移除均未接受 |
+| MC-EMPTY | `M/manager-control.test.ts`无JS PATH、只管理不写；`M/install.test.ts`与`M/path.test.ts`冷状态 | Linux管理器层通过；真实安装组合另有产物门禁 |
+| MC-BROKEN | `M/install.test.ts`损坏条目/force修复；`M/real-runtime.test.ts`真实归档修复入口 | 管理器层通过；真实归档suite此前skip且夹具需迁移，不能计通过 |
+| MC-NAMESPACE | `M/manager-control.test.ts`管理命令不进app；`M/launch.test.ts`、`M/snapshots.test.ts`leading边界 | Linux管理器层通过；实际argv/STDIN真实归档回归待补 |
+| MC-ARGS | `M/launch.test.ts`prompt/空参/manager词保留；`M/snapshots.test.ts`config单次参数；`M/real-runtime.test.ts`真实插件argv/STDIN/exit | transport通过；真实归档入口当前skip，不能以fake-native代替 |
+| MC-SNAPSHOT | `M/versions.test.ts`按版本顺序继承；`R/two-runtime-config.test.ts`真实安装继承P/C | Linux管理器及真实两版本通过；完整插件安装生命周期待补 |
+| MC-CROSS-SNAPSHOT | `M/launch.test.ts`显式use优先；`M/versions.test.ts`跨来源；`M/real-runtime.test.ts`真实插件跨用 | 管理器层通过；真实plugin-service跨用/原生组合待补 |
+| MC-ADDON | `M/addons.test.ts`管理不启动app；`M/real-runtime.test.ts`、`M/artifact-e2e-combined.test.ts`真实Office | 管理器层通过；真实addon/CI组合本轮skip |
+| MC-TYPED | `M/snapshots.test.ts`类型必填、legacy、按类型补全；`M/launch.test.ts`双pins；`M/completion*.test.ts` | Linux现有shell/管理器层通过；缺失shell及Windows原生仍skip |
+| MC-CONFIG-SELECT | `M/launch.test.ts`dual intent/alias/单次不写状态；`M/path.test.ts`effective与launch一致 | Linuxtransport通过；真实组合/平台待补 |
+| MC-AMBIGUOUS | `M/launch.test.ts`不同版本来源需use、canonical owner不重做prefix | 原Linux协议复审Closed；其他平台仍有门禁 |
+| MC-LAST | `M/versions.test.ts`unpin后全卸载保留两集合；`M/artifact-e2e-combined.test.ts`真实生命周期 | 管理器层通过；组合fixture漏C保留断言正迁移，CI结果待补 |
+| MC-REINSTALL | `M/versions.test.ts`force/全卸载重装保留counter/selection/内容；CI组合入口同上 | 管理器层通过；真实CI组合不可用本地产物替代 |
+| MC-IN-USE | `M/in-use.test.ts`双store整批保护；`M/versions.test.ts`guard换代；`R/snapshot-start.test.ts`runtime三claims；新真实并发切片 | guard原复现已Closed但stub进程不能抵扣真实应用与Windows父退出门禁 |
+| MC-CLEAN | `M/clean.test.ts`／`M/versions.test.ts`／`M/self-update.test.ts`受控残留与不卸载；`M/addons.test.ts` | Linux管理器层通过；Windows原生self-update/组合待补 |
+| MC-PINNED-CONFIG | `M/snapshots.test.ts`类型身份用例中固定C1、批删C2+C1拒绝且C2保留；`M/in-use.test.ts`双类型live整批保护 | 实际断言存在；固定与live区分，Windows/真实应用不能由fake填补 |
+| PATH-OVERVIEW | `M/path.test.ts`cold八scope、人类/JSON、effective/三职责 | Linux通过；不初始化；其他原生待补 |
+| PATH-EXPLAIN | `M/path.test.ts`真实symlink/离线移动/managed roots复用context | Linux通过；包装夹具和Windows原生待补 |
+| PATH-CURRENT | `M/path.test.ts`库存、双C override、真实manager launch载荷逐项对照 | manager+fake entry对照通过；实际profile组合path对照仍需最终验收 |
+| PATH-CONFLICT | `M/path.test.ts`foreign非空、wrong-type、坏metadata、rc变directory | Linux通过；无接管/修复；native矩阵待补 |
+| PATH-RUNTIME | `M/path.test.ts`并存库存、精确目标与坏metadata | Linux通过；未下载/执行 |
+| PATH-SNAPSHOTS | `M/path.test.ts`两类同ID、alias、卸载后的孤立snapshot | Linux通过；typed库存不合并 |
+| PATH-ADDONS | `M/path.test.ts`具体addon identity与slot | Linux通过；实际Office运行不属于此只读用例 |
+| PATH-TARGET-ERROR | `M/path.test.ts`missing/歧义/非法kind/非法addon或shell不回退 | Linux通过；合法缺省类型另按PATH-MISSING |
+| PATH-CACHES | `M/path.test.ts`管理cache与显式外部HOME默认应用cache | Linux通过；不称外部cache为snapshot配置 |
+| PATH-COMPLETION | `M/path.test.ts`实际注册路径、missing/legacy unknown/unregistered、wrong-type rc原因 | Linux13项定点已通过；native shell注册矩阵待补 |
+| PATH-MISSING | `M/path.test.ts`全冷布局、runtime已存在但某kind未建立，complete=true/selection unresolved | Linux通过，目录/state/计数不创建 |
+| PATH-UNREADABLE | `M/path.test.ts`inaccessible目录、坏selection，不当成空集合 | Linux普通用户通过；Windows语义需native |
+| PATH-READONLY | `M/path.test.ts`八类audit、pending self-update/locks不变、损坏选择不引导 | Linuxstrace/目录前后通过；其他平台不能由strace替代 |
+| PATH-SECRET | `M/path.test.ts`敏感sentinel未open、无子进程/网络 | Linux内核审计通过；Windows需实际对应证据 |
+| PATH-MODES | `M/path.test.ts`portable/managed/移动；`M/gentoo.test.ts`、`M/scoop.test.ts`、completion relocate | Linux相关夹具通过；Scoop/native/真实配置搬家仍缺 |
+| PATH-JSON | `M/path.test.ts`schemaVersion/records/diagnostics与人类输出、无ANSI、完整性/exit | Linux通过；最终native一致性待补 |
+| PS-CONTAIN | `M/storage.test.ts`管理路径与fake审计；`R/config-io.test.ts`实际HOME非配置边界；`M/real-runtime.test.ts`真实Bun/pnpm全文件审计 | 管理器层与局部I/O通过；真实pnpm+插件+两snapshot全状态审计fixture待迁移执行 |
+| PS-OVERRIDE | `M/storage.test.ts`外部home解释；`M/launch.test.ts`transport；`M/real-runtime.test.ts`外部HOME真实profile | transport通过；旧真实fixture错误期待读HOME配置，正按新契约迁移，不算通过 |
+| PS-MOVE | `M/storage.test.ts`fake-native离线搬移；`M/artifact-e2e-combined.test.ts`双CI包/真实plugin/Office/源不可访问 | 管理器层通过；实际C/credentials/path离线搬家及CI组合尚缺 |
+| RB-INDEPENDENT | `M/real-runtime.test.ts`同一真实archive两manager；`M/artifact-e2e-combined.test.ts`CI两manager | 当前入口skip/旧fixture待改；前置历史成功不替代新C协议真实验收 |
+| RB-LEGACY | `M/install.test.ts`拒旧混合归档；`M/launch.test.ts`协议/必需项错误不执行 | Linuxmanager负例通过；规定native待补 |
+| RB-CONFIG-PROTOCOL | `U/launch.test.ts`新字段必需；`M/launch.test.ts`、`M/snapshots.test.ts`旧协议拒绝 | unit/manager通过；真实当前包协议2有两版本证据，native矩阵仍待补 |
+| RB-HOME | `R/config-io.test.ts`真实P/C/home分工；`U/transform-app.test.ts`standalone；`M/real-runtime.test.ts`显式外部home | 默认home实际通过；外部home真实归档fixture迁移中 |
+| RB-CONFIG-CONTEXT | `R/snapshot-start.test.ts`缺失/错根/busy/无guard拒app；`R/config-io.test.ts`真实escaping/loose根拒ready | Linux组件及真实I/O通过；正常linked ancestor已修复且已定点通过；独审与Windows待补 |
+| RB-RESTART | `M/in-use.test.ts`FAKE_RESTART、`R/snapshot-start.test.ts`STUB_RESTART；CI组合手写respawn | 明确仅transport/respawn形状，不是实际上游内部重启入口；真实A/P1/C1冻结与父退出保护尚缺 |
+| RB-PLUGIN | `M/real-runtime.test.ts`真实插件安装/跨snapshot；`R/plugin-runtime.test.ts`实际pluginManager入口；`R/atomic-config-io.test.ts`启停helper读写 | 启停helper实际已通过；pluginManager真实入口的历史定点证据见前节，本轮plugin-runtime仍因work/app缺失skip。真实安装→开关/config→其他C不变的完整组合待迁移/执行 |
+
+关键可执行缺口：CS-CONCURRENT 的真实并发、RB-RESTART 的实际上游内部重启与Windows父退出、CS-LOCAL-PATH 的自定义路径复制后启动、real-runtime/CI组合旧HOME夹具迁移、规定原生平台与shell／Scoop／真实搬家。当前已有全部56行定位，但任务1.2仍不勾选：计划中的入口不冒充已实现可执行测试，ID出现次数也不是覆盖率。后续每份测试交付须对本表更新实际命令/结果，再决定完整criterion是否可接受。
