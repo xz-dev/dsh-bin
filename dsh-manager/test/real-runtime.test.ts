@@ -425,11 +425,27 @@ test.skipIf(!available)(`RB-PLUGIN / MC-SNAPSHOT / MC-CROSS-SNAPSHOT / PS-MOVE: 
 		return new Response(null, { status: 404 });
 	} });
 	const inherited = { PATH: path, HOME: userHome, USERPROFILE: userHome, NO_COLOR: "1", DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: `http://127.0.0.1:${server.port}`, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) };
-	const command = async (args: string[]) => {
-		const p = Bun.spawn([exe, ...args], { cwd: working, env: inherited, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+	const strace = process.platform === "linux" ? Bun.which("strace") : null;
+	const traceDir = process.env.DSH_REAL_RUNTIME_TRACE_DIR || join(fresh, "credential-traces");
+	if (strace) mkdirSync(traceDir, { recursive: true, mode: 0o700 });
+	const command = async (args: string[], extra: Record<string, string> = {}, trace?: string) => {
+		const p = Bun.spawn(trace ? [strace!, "-f", "-qq", "-e", "trace=file", "-o", trace, exe, ...args] : [exe, ...args], { cwd: working, env: { ...inherited, ...extra }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
 		const timer = setTimeout(() => p.kill("SIGKILL"), 120_000);
 		try { const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]); if (code !== 0) console.error(stdout, stderr); expect(code).toBe(0); return stdout; }
 		finally { clearTimeout(timer); if (p.exitCode === null) { p.kill("SIGKILL"); await p.exited; } }
+	};
+	const auditCredentialTrace = (trace: string, config: string) => {
+		const calls = readFileSync(trace, "utf8");
+		expect(calls.split("\n").filter(l => /\b(open|openat|openat2)\(/.test(l)).some(l => l.includes(join(config, ".credentials.yaml")))).toBe(true);
+		for (const line of calls.split("\n")) if (/\.credentials\.yaml|settings\.yaml|cordis\.patch\.yml/.test(line)) {
+			expect(line).not.toContain(tools);
+			expect(line).not.toContain(join(data, "home/.credentials.yaml"));
+		}
+	};
+	const credentialKey = "DSH_MOVE_CREDENTIAL_PROBE", credentialValue = "synthetic-move-key-before", updatedValue = "synthetic-move-key-after";
+	const checkCredential = (output: string, value = credentialValue) => {
+		const report = JSON.parse(output.split("\n").find(l => l.startsWith("REAL_SNAPSHOT_CREDENTIAL "))!.slice(25));
+		expect(report).toEqual({ provider: "LocalCredentialProvider", resolved: { value, source: "file" } });
 	};
 	try {
 		await command(["manager", "install", id]);
@@ -439,15 +455,32 @@ test.skipIf(!available)(`RB-PLUGIN / MC-SNAPSHOT / MC-CROSS-SNAPSHOT / PS-MOVE: 
 		const plugin = join(fresh, "dsh-snapshot-probe.tgz");
 		const bytes = await new Bun.Archive({
 			"package/package.json": JSON.stringify({ name: "dsh-snapshot-probe", version: "1.0.0", type: "module", main: "index.js" }),
-			"package/index.js": 'export function apply(ctx) { ctx.appReady.onReady(() => { const launch = JSON.parse(process.env.DSH_MANAGER_LAUNCH); console.log("REAL_SNAPSHOT_PLUGIN " + launch.snapshot.id); console.log("REAL_SNAPSHOT_LAUNCH " + JSON.stringify(launch)); ctx.appExit(0); }); }\n',
+			"package/index.js": `export const inject = ['credentials'];
+export function apply(ctx) {
+ ctx.appReady.onReady(() => { setTimeout(async () => {
+  try {
+   const launch = JSON.parse(process.env.DSH_MANAGER_LAUNCH);
+   if (process.env.DSH_MOVE_CREDENTIAL_SET) await ctx.credentials.set('${credentialKey}', process.env.DSH_MOVE_CREDENTIAL_SET);
+   const resolved = await ctx.credentials.resolve('${credentialKey}');
+   console.log('REAL_SNAPSHOT_CREDENTIAL ' + JSON.stringify({provider: ctx.credentials.constructor.name, resolved: resolved ?? null}));
+   console.log('REAL_SNAPSHOT_PLUGIN ' + launch.snapshot.id);
+   console.log('REAL_SNAPSHOT_LAUNCH ' + JSON.stringify(launch));
+   ctx.appExit(0);
+  } catch (error) { console.error(error); ctx.appExit(1); }
+ }, 0); });
+}
+`,
 		}, { compress: "gzip" }).bytes(); writeFileSync(plugin, bytes);
 		await command(["--use", id, "plugin", "--profile", "snapshot-probe", "add", plugin, "--offline", "--ignore-scripts", "--config.update-notifier=false"]);
 		expect(existsSync(join(profile, "node_modules/dsh-snapshot-probe/index.js"))).toBe(true);
 		const configA = join(data, "config-snapshots", `${id}@1`);
 		const shared = join(data, "home/profiles/snapshot-probe"); mkdirSync(shared, { recursive: true });
 		writeFileSync(join(shared, "cordis.patch.yml"), "- insert:\n    - id: old-snapshot-home-must-not-run\n      name: missing-home-plugin\n");
-		configPatch(configA, "snapshot-probe", "- insert:\n    - id: real-snapshot-probe\n      name: dsh-snapshot-probe\n");
-		expect(await command(["--use", id, "--snapshot", `${id}@1`, "--config-snapshot", `${id}@1`, "--profile", "snapshot-probe"])).toContain(`REAL_SNAPSHOT_PLUGIN ${id}@1`);
+		writeFileSync(join(data, "home/.credentials.yaml"), `version: 1\nrefs:\n  ${credentialKey}: synthetic-home-must-not-resolve\n`, { mode: 0o600 });
+		configPatch(configA, "snapshot-probe", "- insert:\n    - id: move-credentials\n      name: '@deepseek-ai/dsh-credentials-local'\n      config:\n        watch: false\n    - id: real-snapshot-probe\n      name: dsh-snapshot-probe\n");
+		const seeded = await command(["--use", id, "--snapshot", `${id}@1`, "--config-snapshot", `${id}@1`, "--profile", "snapshot-probe"], { DSH_MOVE_CREDENTIAL_SET: credentialValue });
+		expect(seeded).toContain(`REAL_SNAPSHOT_PLUGIN ${id}@1`); checkCredential(seeded);
+		if (process.platform !== "win32") expect(lstatSync(join(configA, ".credentials.yaml")).mode & 0o777).toBe(0o600);
 		expect(digest(join(data, "bundles", id))).toEqual(runtimeBefore); expect(readFileSync(exe)).toEqual(managerBefore);
 		const sourceBefore = digest(snapshotA), configBefore = digest(configA), sharedBefore = digest(join(data, "home"));
 		await command(["manager", "install", built.id]);
@@ -458,7 +491,9 @@ test.skipIf(!available)(`RB-PLUGIN / MC-SNAPSHOT / MC-CROSS-SNAPSHOT / PS-MOVE: 
 		expect(readFileSync(join(configB, "profiles/snapshot-probe/cordis.patch.yml"))).toEqual(readFileSync(join(configA, "profiles/snapshot-probe/cordis.patch.yml")));
 		if (process.platform !== "win32") expect(lstatSync(join(configB, "profiles/snapshot-probe/cordis.patch.yml")).ino).not.toBe(lstatSync(join(configA, "profiles/snapshot-probe/cordis.patch.yml")).ino);
 		expect(readFileSync(join(snapshotB, "profiles/snapshot-probe/node_modules/dsh-snapshot-probe/index.js"))).toEqual(readFileSync(join(profile, "node_modules/dsh-snapshot-probe/index.js")));
-		expect(await command(["--use", built.id, "--profile", "snapshot-probe"])).toContain(`REAL_SNAPSHOT_PLUGIN ${built.id}@1`);
+		expect(readFileSync(join(configB, ".credentials.yaml"))).toEqual(readFileSync(join(configA, ".credentials.yaml")));
+		const inheritedPlugin = await command(["--use", built.id, "--profile", "snapshot-probe"]);
+		expect(inheritedPlugin).toContain(`REAL_SNAPSHOT_PLUGIN ${built.id}@1`); checkCredential(inheritedPlugin);
 		const crossSource = digest(snapshotA), crossTarget = digest(snapshotB), crossConfig = digest(configB), seen = requests.length;
 		expect(await command(["--use", built.id, "--snapshot", `${id}@1`, "--config-snapshot", `${id}@1`, "--profile", "snapshot-probe"])).toContain(`REAL_SNAPSHOT_PLUGIN ${id}@1`);
 		expect(digest(snapshotA)).toEqual(crossSource); expect(digest(snapshotB)).toEqual(crossTarget); expect(digest(configA)).toEqual(configBefore); expect(digest(configB)).toEqual(crossConfig); expect(requests.length).toBe(seen);
@@ -468,6 +503,9 @@ test.skipIf(!available)(`RB-PLUGIN / MC-SNAPSHOT / MC-CROSS-SNAPSHOT / PS-MOVE: 
 		expect(digest(snapshotA)).toEqual(crossSource);
 		expect(digest(join(data, "home"))).toEqual(sharedBefore);
 		expect(digest(join(data, "bundles", id))).toEqual(runtimeBefore); expect(digest(join(data, "bundles", built.id))).toEqual(runtimeBBefore); expect(readFileSync(exe)).toEqual(managerBefore);
+		await command(["manager", "snapshot", "config", "new", "--use", id]);
+		const writableConfigId = `${id}@2`;
+		expect(readFileSync(join(data, "config-snapshots", writableConfigId, ".credentials.yaml"))).toEqual(readFileSync(join(configA, ".credentials.yaml")));
 		await command(["manager", "select", "--use", built.id, "--snapshot", `${id}@1`, "--config-snapshot", `${id}@1`]);
 		const preserved = Object.fromEntries(["bundles", "snapshots", "config-snapshots", "home", "state"].map(d => [d, digest(join(data, d))]));
 		const seenBeforeMove = requests.length;
@@ -476,7 +514,11 @@ test.skipIf(!available)(`RB-PLUGIN / MC-SNAPSHOT / MC-CROSS-SNAPSHOT / PS-MOVE: 
 		exe = join(moved, `dsh${EXE}`); data = join(moved, "dsh-bin");
 		expect(existsSync(tools)).toBe(false);
 		for (const runtime of [undefined, id, built.id]) {
-			const output = await command([...(runtime ? ["--use", runtime, "--snapshot", `${id}@1`, "--config-snapshot", `${id}@1`] : []), "--profile", "snapshot-probe"]);
+			const args = [...(runtime ? ["--use", runtime, "--snapshot", `${id}@1`, "--config-snapshot", `${id}@1`] : []), "--profile", "snapshot-probe"];
+			const trace = strace ? join(traceDir, `moved-${runtime ?? "selected"}.trace`) : undefined;
+			const output = await command(args, {}, trace);
+			checkCredential(output);
+			if (trace) auditCredentialTrace(trace, join(data, "config-snapshots", `${id}@1`));
 			const launch = JSON.parse(output.split("\n").find(l => l.startsWith("REAL_SNAPSHOT_LAUNCH "))!.slice(21));
 			expect(launch).toMatchObject({ runtime: runtime ?? built.id, dataRoot: data, home: join(data, "home"), snapshot: { id: `${id}@1`, dir: join(data, "snapshots", `${id}@1`) }, configSnapshot: { id: `${id}@1`, dir: join(data, "config-snapshots", `${id}@1`) } });
 		}
@@ -487,6 +529,25 @@ test.skipIf(!available)(`RB-PLUGIN / MC-SNAPSHOT / MC-CROSS-SNAPSHOT / PS-MOVE: 
 		for (const [d, bytes] of Object.entries(preserved)) expect(digest(join(data, d))).toEqual(bytes);
 		expect(requests.length).toBe(seenBeforeMove); expect(readFileSync(exe)).toEqual(managerBefore);
 		console.log("DSH_REAL_OFFLINE_MOVE " + JSON.stringify({ runtimes: [id, built.id], plugins: `${id}@1`, config: `${id}@1`, oldPathAbsent: true, sourceStopped: true, preservedSHA256: hash(Buffer.from(JSON.stringify(preserved))) }));
+		// Only the selected copied C may change through the actual provider; source C and B's C stay intact.
+		const sourceConfig = join(data, "config-snapshots", `${id}@1`), otherConfig = join(data, "config-snapshots", `${built.id}@1`), writableConfig = join(data, "config-snapshots", writableConfigId);
+		const sourceCredentialsBefore = digest(sourceConfig), otherCredentialsBefore = digest(otherConfig), homeBeforeUpdate = digest(join(data, "home")), pluginsBeforeUpdate = digest(join(data, "snapshots"));
+		await command(["manager", "select", "--use", built.id, "--snapshot", `${id}@1`, "--config-snapshot", writableConfigId]);
+		const stateBeforeUpdate = digest(join(data, "state"));
+		const copiedCredential = async (runtime: string | undefined, phase: string, set?: string) => {
+			const trace = strace ? join(traceDir, `copy-${phase}-${runtime ?? "selected"}.trace`) : undefined;
+			const output = await command([...(runtime ? ["--use", runtime, "--snapshot", `${id}@1`, "--config-snapshot", writableConfigId] : []), "--profile", "snapshot-probe"], set ? { DSH_MOVE_CREDENTIAL_SET: set } : {}, trace);
+			if (trace) auditCredentialTrace(trace, writableConfig);
+			return output;
+		};
+		for (const runtime of [undefined, id]) checkCredential(await copiedCredential(runtime, "before"));
+		checkCredential(await copiedCredential(undefined, "set", updatedValue), updatedValue);
+		for (const runtime of [undefined, id]) checkCredential(await copiedCredential(runtime, "after"), updatedValue);
+		expect(readFileSync(join(writableConfig, ".credentials.yaml"), "utf8")).toContain(updatedValue);
+		expect(digest(sourceConfig)).toEqual(sourceCredentialsBefore); expect(digest(otherConfig)).toEqual(otherCredentialsBefore); expect(digest(join(data, "home"))).toEqual(homeBeforeUpdate);
+		expect(digest(join(data, "snapshots"))).toEqual(pluginsBeforeUpdate); expect(digest(join(data, "state"))).toEqual(stateBeforeUpdate);
+		expect(digest(join(data, "bundles", id))).toEqual(runtimeBefore); expect(digest(join(data, "bundles", built.id))).toEqual(runtimeBBefore); expect(readFileSync(exe)).toEqual(managerBefore); expect(requests.length).toBe(seenBeforeMove);
+		console.log("DSH_REAL_MOVE_CREDENTIALS " + JSON.stringify({ provider: "LocalCredentialProvider", seeded: true, bothRuntimesResolvedAfterMove: true, updatedCopy: writableConfigId, sourceAndOtherConfigAndHomeUnchanged: true, sensitiveAccessAudit: strace ? "linux-strace" : "not-run", traceDir: strace ? traceDir : null }));
 		expect(tree(userHome)).toEqual([]);
 	} finally { await server.stop(true); }
 }, 360_000);
