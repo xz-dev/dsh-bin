@@ -1,10 +1,10 @@
-// CS-FORMAT / CS-CROSS / CS-SWITCH (task 3.5): two DIFFERENT authenticated upstream release packages A → B → A
+// CS-FORMAT / CS-CROSS / CS-SWITCH / CS-CONCURRENT (tasks 3.4/3.5): two DIFFERENT authenticated upstream release packages A → B → A
 // through the real manager install/launch path, real compiled entry, assembled bundles and real upstream
 // settings/credentials services. Missing inputs FAIL; this suite never silently skips.
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { appendBundle, emptyIndex } from "../../scripts/index.mjs";
@@ -16,6 +16,9 @@ import { transformApp } from "../../scripts/transform-app.mjs";
 const APP_A = process.env.DSH_BIN_REAL_IO_APP_A;
 const APP_B = process.env.DSH_BIN_REAL_IO_APP_B;
 const PNPM = process.env.DSH_BIN_TEST_PNPM;
+// LOCAL built-product reruns only; CI keeps the normal source-build path. Both archives/manifests
+// are verified before serving them to the actual manager (no raw-package rebuild or harness fork).
+const BUNDLES = process.env.DSH_BIN_TWO_RUNTIME_BUNDLES;
 const ROOT = resolve(import.meta.dir, "../..");
 const MANAGER_DIR = resolve(ROOT, "../dsh-manager");
 const TARGET = "linux-x64-modern";
@@ -50,6 +53,41 @@ export function apply(ctx, config) {
       home: ctx.profileContext.home, dir: ctx.profileContext.dir, patch: ctx.settings.documentPath,
       credentialFile: ctx.credentials.spec?.filename, plugin: import.meta.url });
     const mode = ctx.cmdlineArgs.get()[0];
+    if (mode === 'concurrent') {
+      const launch = JSON.parse(process.env.DSH_MANAGER_LAUNCH);
+      const events = [];
+      ctx.on('credentials/reference-updated', ref => { if (ref === 'IO_TEST_KEY') events.push(ref); });
+      const report = async () => ({ runtime: launch.runtime, snapshot: launch.snapshot,
+        configSnapshot: launch.configSnapshot, exe: process.execPath, pid: process.pid,
+        observation: await read(), credentialEvents: events.length });
+      const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req) {
+        try {
+          const command = await req.json();
+          if (command.op === 'update') {
+            await ctx.settings.update('io-probe', { label: command.label });
+            await ctx.credentials.set('IO_TEST_KEY', command.credential);
+          } else if (command.op === 'watch') {
+            // Subscribe BEFORE acknowledging arm; resolve only on a real provider notification.
+            const watched = new Promise((resolve, reject) => {
+              const timer = setTimeout(() => { off(); reject(new Error('credential watcher timeout')); }, 10000);
+              const off = ctx.on('credentials/reference-updated', ref => {
+                if (ref !== 'IO_TEST_KEY') return;
+                void ctx.credentials.resolve(ref).then(value => {
+                  if (value?.value === command.credential) { clearTimeout(timer); off(); resolve(); }
+                });
+              });
+            });
+            console.log('TWO_RUNTIME_ARMED ' + command.credential);
+            await watched;
+          } else if (command.op === 'exit') {
+            setTimeout(() => { server.stop(true); ctx.appExit(0); }, 0);
+          } else if (command.op !== 'read') throw new Error('unknown probe command');
+          return Response.json(await report());
+        } catch (e) { return new Response(String(e), { status: 500 }); }
+      } });
+      console.log('TWO_RUNTIME_READY ' + JSON.stringify({ url: server.url.origin, ...await report() }));
+      return;
+    }
     if (mode === 'import' && label() !== 'B-imported') {
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('settings import timeout')), 5000);
@@ -87,7 +125,7 @@ function digest(dir: string): Record<string, string> {
 }
 const content = (d: Record<string, string>) => Object.fromEntries(Object.entries(d).filter(([p]) => p !== "snapshot.json" && p !== ".usage.lock"));
 
-test("CS-FORMAT / CS-CROSS: real rc.1 → rc.2 auto inheritance, rc.2 settings/provider/import writes, back to rc.1 original bytes, copy vs direct cross use", async () => {
+test("CS-FORMAT / CS-CROSS / CS-CONCURRENT: real rc.1 → rc.2 → rc.1 plus simultaneous same-P independent settings/provider sessions", async () => {
 	expect(APP_A, "set DSH_BIN_REAL_IO_APP_A to authentic pre-transform dsh-v0.2.0-rc.1 app").toBeTruthy();
 	expect(APP_B, "set DSH_BIN_REAL_IO_APP_B to authentic pre-transform dsh-v0.2.0-rc.2 app").toBeTruthy();
 	expect(PNPM, "set DSH_BIN_TEST_PNPM to authenticated pnpm closure").toBeTruthy();
@@ -105,18 +143,32 @@ test("CS-FORMAT / CS-CROSS: real rc.1 → rc.2 auto inheritance, rc.2 settings/p
 
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "two-runtime-config-")));
 	console.log(`TWO_RUNTIME_ARTIFACT ${root}`);
-	// Standard path: transform → office split → one compiled entry → localBuild assemble/archive → runtime index.
+	// Standard path remains transform → split → compile → archive. Local reruns may reuse immutable
+	// actual products from that path; no change to CI acceptance or authenticated raw source closure.
 	const native = join(root, "dsh-native");
-	compileEntry("bun-linux-x64", native);
+	if (!BUNDLES) compileEntry("bun-linux-x64", native);
 	const index = emptyIndex(), assets = new Map<string, string>(), ids: Record<"A" | "B", string> = { A: "", B: "" };
 	for (const key of ["A", "B"] as const) {
 		const r = RELEASES[key], work = join(root, `work-${key}`);
-		cpSync(apps[key], join(work, "app"), { recursive: true });
-		transformApp(join(work, "app"));
-		splitOfficeAddon(join(work, "app"), join(work, "addon-office"));
-		symlinkSync(PNPM!, join(work, "pnpm-linux-x64"));
-		const built = localBuild({ out: join(root, "out"), channel: "release", run: 1, attempt: 1, upstreamCommit: r.commit, upstreamCommitTime: r.commitTime, upstreamVersion: r.version, work, native, targetId: TARGET });
-		writeFileSync(join(root, "out", `${built.tag}.json`), `${JSON.stringify(built.manifest, null, 2)}\n`);
+		let built;
+		if (BUNDLES) {
+			expect(Boolean(process.env.CI || process.env.GITHUB_ACTIONS), "prebuilt archive reuse is LOCAL evidence, not CI acceptance").toBe(false);
+			const manifests = readdirSync(BUNDLES).filter(f => f.endsWith(".json")).map(f => JSON.parse(readFileSync(join(BUNDLES, f), "utf8")));
+			const matches = manifests.filter(m => m.kind === "dsh-runtime" && m.upstream?.version === r.version);
+			expect(matches).toHaveLength(1);
+			const manifest = matches[0], asset = manifest.targets[TARGET], zip = join(BUNDLES, `${manifest.tag}-${asset.file}`);
+			expect(manifest.upstream).toMatchObject({ commit: r.commit, commitTime: r.commitTime, tag: r.tag });
+			expect(fileHash(zip), `${key} actual archive`).toBe(asset.sha256);
+			expect(lstatSync(zip).size).toBe(asset.size);
+			built = { id: manifest.id, tag: manifest.tag, manifest, zip, asset: { ...asset, name: asset.file } };
+		} else {
+			cpSync(apps[key], join(work, "app"), { recursive: true });
+			transformApp(join(work, "app"));
+			splitOfficeAddon(join(work, "app"), join(work, "addon-office"));
+			symlinkSync(PNPM!, join(work, "pnpm-linux-x64"));
+			built = localBuild({ out: join(root, "out"), channel: "release", run: 1, attempt: 1, upstreamCommit: r.commit, upstreamCommitTime: r.commitTime, upstreamVersion: r.version, work, native, targetId: TARGET });
+			writeFileSync(join(root, "out", `${built.tag}.json`), `${JSON.stringify(built.manifest, null, 2)}\n`);
+		}
 		appendBundle(index, built.manifest);
 		assets.set(`/download/${built.tag}/${built.asset.name}`, built.zip);
 		ids[key] = built.id;
@@ -130,13 +182,13 @@ test("CS-FORMAT / CS-CROSS: real rc.1 → rc.2 auto inheritance, rc.2 settings/p
 	} });
 	try {
 		const prefix = join(root, "manager-build");
-		execFileSync("zig", ["build", "-Dversion=1.0.0-two-runtime", "--prefix", prefix], { cwd: MANAGER_DIR, stdio: "inherit", timeout: 300_000 });
+		execFileSync(Bun.which("zig")!, ["build", "-Dversion=1.0.0-two-runtime", "--prefix", prefix, "--cache-dir", join(root, "zig-cache"), "--global-cache-dir", join(root, "zig-global-cache")], { cwd: MANAGER_DIR, stdio: "inherit", timeout: 300_000 });
 		const install = join(root, "install"), exe = join(install, "dsh"), data = join(install, "dsh-bin"), userHome = join(root, "user-home");
 		for (const d of [install, userHome, join(root, "tmp")]) mkdirSync(d, { recursive: true });
 		cpSync(join(prefix, "bin/dsh"), exe);
 		const env = { PATH: install, HOME: userHome, TMPDIR: join(root, "tmp"), NO_COLOR: "1", DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: server.url.origin };
 		let count = 0;
-		async function dsh(args: string[], label: string) {
+		async function dsh(args: string[], label: string, expectedCode = 0) {
 			const stem = `${String(++count).padStart(2, "0")}-${label}`, audit = join(root, `${stem}.audit`);
 			// Driver tools use absolute paths; the product cannot resolve host Node/Bun/compilers.
 			const proc = Bun.spawn([Bun.which("timeout")!, "--kill-after=2s", "120s", Bun.which("strace")!, "-f", "-qq", "-e", "trace=open,openat,rename,renameat,renameat2,inotify_add_watch", "-o", audit, exe, ...args],
@@ -144,7 +196,7 @@ test("CS-FORMAT / CS-CROSS: real rc.1 → rc.2 auto inheritance, rc.2 settings/p
 			const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
 			const code = await proc.exited;
 			writeFileSync(join(root, `${stem}.log`), `$ dsh ${args.join(" ")}\nexit ${code}\n${stdout}${stderr}`);
-			expect(code, `${stem}: ${stdout}${stderr}`).toBe(0);
+			expect(code, `${stem}: ${stdout}${stderr}`).toBe(expectedCode);
 			return { stdout, stderr, accesses: readFileSync(audit, "utf8") };
 		}
 		const home = join(data, "home"), config = (id: string) => join(data, "config-snapshots", id), plugins = (id: string) => join(data, "snapshots", id);
@@ -260,6 +312,130 @@ test("CS-FORMAT / CS-CROSS: real rc.1 → rc.2 auto inheritance, rc.2 settings/p
 
 		expect(digest(home)).toEqual(homeBytes);
 		for (const [f, hash] of Object.entries(pluginOriginal)) expect(fileHash(join(pkg, f)), `plugin ${f}`).toBe(hash);
+
+		// CS-CONCURRENT / task 3.4: same actual P, two actual application sessions, independent C1/C2.
+		// Plugin probe only drives public settings/provider APIs; it does not replace either service.
+		const P = B1, C1 = `${ids.B}@3`, C2 = `${ids.B}@4`;
+		for (const C of [C1, C2]) await dsh(["manager", "snapshot", "config", "new", "--use", ids.B, "--target", A1], `concurrent-copy-${C}`);
+		for (const [C, label] of [[C1, "C1"], [C2, "C2"]]) {
+			privateFile(join(config(C), "profiles/io/cordis.patch.yml"), patch(label));
+			privateFile(join(config(C), ".credentials.yaml"), creds(label));
+		}
+		// cordis.yml is generated output, not source/config content; all other P bytes stay covered.
+		const pluginSources = () => Object.fromEntries(Object.entries(digest(plugins(P))).filter(([p]) => !/(^|\/)cordis\.yml$/.test(p)));
+		const pOriginal = pluginSources(), c1Original = digest(config(C1));
+		await dsh(["manager", "select", "--use", ids.B, "--snapshot", P, "--config-snapshot", C1], "concurrent-default-C1");
+		expect(JSON.parse(readFileSync(join(data, "state/selection.json"), "utf8"))).toMatchObject({ snapshot: P, configSnapshot: C1 });
+		function session(C: string) {
+			const stem = `${String(++count).padStart(2, "0")}-concurrent-${C}`, audit = join(root, `${stem}.audit`);
+			// Task-owned red control: replace only this launch mapping's C with C === C2 ? C1 : C.
+			// Actual C2 service roots/values/watch registration then fail; never mutate production.
+			const args = ["--use", ids.B, "--snapshot", P, "--config-snapshot", C, "--profile", "io", "concurrent"];
+			const proc = Bun.spawn([Bun.which("timeout")!, "--kill-after=2s", "120s", Bun.which("strace")!, "-f", "-qq", "-e", "trace=open,openat,rename,renameat,renameat2,inotify_add_watch", "-o", audit, exe, ...args],
+				{ cwd: userHome, env, stdout: "pipe", stderr: "pipe" });
+			let stdout = "", stderr = "", ended = false;
+			async function collect(stream: ReadableStream<Uint8Array>, append: (s: string) => void) {
+				const decoder = new TextDecoder();
+				for await (const chunk of stream) append(decoder.decode(chunk, { stream: true }));
+				append(decoder.decode());
+			}
+			const done = Promise.all([proc.exited, collect(proc.stdout, s => { stdout += s; }), collect(proc.stderr, s => { stderr += s; })]).then(([code]) => {
+				ended = true;
+				writeFileSync(join(root, `${stem}.log`), `$ dsh ${args.join(" ")}\nexit ${code}\n${stdout}${stderr}`);
+				return code;
+			});
+			async function until(condition: () => boolean, description: string) {
+				const deadline = Date.now() + 15000;
+				while (!condition() && !ended && Date.now() < deadline) await Bun.sleep(10);
+				expect(condition(), `${stem}: ${description}\n${stdout}${stderr}`).toBe(true);
+			}
+			let url = "";
+			return { proc, done, audit, until,
+				async ready() {
+					await until(() => stdout.split("\n").slice(0, -1).some(l => l.startsWith("TWO_RUNTIME_READY ")), "real services ready");
+					const ready = JSON.parse(stdout.split("\n").find(l => l.startsWith("TWO_RUNTIME_READY "))!.slice(18));
+					url = ready.url;
+					// Wait for the actual kernel watcher registration, not an arbitrary settle sleep.
+					await until(() => readFileSync(audit, "utf8").split("\n").some(l => l.includes("inotify_add_watch(") && l.includes(`"${join(config(C), ".credentials.yaml")}"`) && / = [0-9]+$/.test(l)), "credential watcher registered on own C");
+					return ready;
+				},
+				async command(command: Record<string, string>) {
+					const response = await fetch(url, { method: "POST", body: JSON.stringify(command), signal: AbortSignal.timeout(15000) });
+					const body = await response.text(); expect(response.status, body).toBe(200);
+					const report = JSON.parse(body);
+					console.log(`TWO_RUNTIME_CONCURRENT ${JSON.stringify({ C, command, report })}`);
+					return report;
+				},
+				armed: (value: string) => until(() => stdout.includes(`TWO_RUNTIME_ARMED ${value}\n`), `watch armed ${value}`),
+				async stop() { if (!ended) { try { await this.command({ op: "exit" }); } catch { proc.kill(); } } await done; },
+			};
+		}
+		const sessions: ReturnType<typeof session>[] = [], observations: unknown[] = [];
+		const assertOwn = (report: any, C: string, label: string, credential: string) => {
+			expect(report.runtime).toBe(ids.B); expect(report.snapshot.id).toBe(P); expect(report.snapshot.dir).toBe(plugins(P));
+			expect(report.configSnapshot.id).toBe(C); expect(report.configSnapshot.dir).toBe(config(C)); expect(report.exe).toBe(bundleFile("B"));
+			expect(report.observation).toMatchObject({ label, credential: { value: credential, source: "file" }, home,
+				dir: join(plugins(P), "profiles/io"), patch: join(config(C), "profiles/io/cordis.patch.yml"), credentialFile: join(config(C), ".credentials.yaml") });
+			expect(report.observation.plugin).toContain(join(plugins(P), "profiles/io/node_modules/io-bundle"));
+			observations.push(report);
+		};
+		const atomicCredential = (C: string, value: string) => {
+			const dest = join(config(C), ".credentials.yaml"), temp = `${dest}.external-tmp`;
+			privateFile(temp, creds(value)); renameSync(temp, dest);
+		};
+		try {
+			const one = session(C1); sessions.push(one); const readyOne = await one.ready();
+			assertOwn(readyOne, C1, "C1", "synthetic-C1");
+			const two = session(C2); sessions.push(two); const readyTwo = await two.ready();
+			assertOwn(readyTwo, C2, "C2", "synthetic-C2"); expect(readyTwo.pid).not.toBe(readyOne.pid);
+			// Both command barriers execute while both processes remain live.
+			assertOwn(await one.command({ op: "read" }), C1, "C1", "synthetic-C1");
+			assertOwn(await two.command({ op: "read" }), C2, "C2", "synthetic-C2");
+			await dsh(["manager", "select", "--use", ids.B, "--snapshot", P, "--config-snapshot", C2], "concurrent-default-C2");
+			expect(JSON.parse(readFileSync(join(data, "state/selection.json"), "utf8"))).toMatchObject({ snapshot: P, configSnapshot: C2 });
+			const changed = await two.command({ op: "update", label: "C2-updated", credential: "synthetic-C2-updated" });
+			assertOwn(changed, C2, "C2-updated", "synthetic-C2-updated");
+			const stillOne = await one.command({ op: "read" }); assertOwn(stillOne, C1, "C1", "synthetic-C1"); expect(stillOne.credentialEvents).toBe(0);
+			expect(digest(config(C1))).toEqual(c1Original);
+			expect(readFileSync(join(config(C2), "profiles/io/cordis.patch.yml"), "utf8")).toContain("C2-updated");
+			expect(readFileSync(join(config(C2), ".credentials.yaml"), "utf8")).toContain("synthetic-C2-updated");
+			const c2Updated = digest(config(C2));
+			const watchOne = one.command({ op: "watch", credential: "synthetic-C1-external" });
+			try { await one.armed("synthetic-C1-external"); atomicCredential(C1, "C1-external"); } catch (e) { await watchOne.catch(() => {}); throw e; }
+			const reloadedOne = await watchOne; assertOwn(reloadedOne, C1, "C1", "synthetic-C1-external"); expect(reloadedOne.credentialEvents).toBeGreaterThan(0);
+			const c1Reloaded = digest(config(C1));
+			const stillTwo = await two.command({ op: "read" }); assertOwn(stillTwo, C2, "C2-updated", "synthetic-C2-updated"); expect(stillTwo.credentialEvents).toBe(changed.credentialEvents);
+			expect(digest(config(C2))).toEqual(c2Updated);
+			// C2 watcher also remains live after C1 reload; neither watcher is a fabricated callback.
+			const watchTwo = two.command({ op: "watch", credential: "synthetic-C2-external" });
+			try { await two.armed("synthetic-C2-external"); atomicCredential(C2, "C2-external"); } catch (e) { await watchTwo.catch(() => {}); throw e; }
+			const reloadedTwo = await watchTwo; assertOwn(reloadedTwo, C2, "C2-updated", "synthetic-C2-external"); expect(reloadedTwo.credentialEvents).toBeGreaterThan(changed.credentialEvents);
+			const finalOne = await one.command({ op: "read" }); assertOwn(finalOne, C1, "C1", "synthetic-C1-external"); expect(finalOne.credentialEvents).toBe(reloadedOne.credentialEvents);
+			expect(digest(config(C1))).toEqual(c1Reloaded);
+			expect(pluginSources()).toEqual(pOriginal); expect(digest(home)).toEqual(homeBytes);
+			// Clear fixed selection so failures prove live claims, not pin protection.
+			await dsh(["manager", "select", "--use", "latest"], "concurrent-clear-pins");
+			for (const [kind, id] of [["plugins", P], ["config", C1], ["config", C2]]) {
+				const removal = await dsh(["manager", "snapshot", kind, "remove", id], `concurrent-busy-${kind}-${id}`, 1);
+				expect(removal.stderr).toContain("in use"); expect(existsSync(kind === "plugins" ? plugins(id) : config(id))).toBe(true);
+			}
+			await one.stop(); expect(await one.done).toBe(0);
+			await dsh(["manager", "snapshot", "config", "remove", C1], "concurrent-release-C1"); expect(existsSync(config(C1))).toBe(false);
+			const stillBusy = await dsh(["manager", "snapshot", "plugins", "remove", P], "concurrent-P-still-busy", 1); expect(stillBusy.stderr).toContain("in use");
+			assertOwn(await two.command({ op: "read" }), C2, "C2-updated", "synthetic-C2-external");
+			await two.stop(); expect(await two.done).toBe(0);
+			for (const [i, s] of sessions.entries()) {
+				const accesses = readFileSync(s.audit, "utf8"), other = i === 0 ? C2 : C1;
+				for (const p of sensitiveHome) expect(accesses, `concurrent forbidden shared-home open ${p}`).not.toContain(`"${p}"`);
+				for (const p of [".credentials.yaml", "profiles/io/cordis.patch.yml", "settings.yaml"]) expect(accesses, `concurrent forbidden other-C open ${p}`).not.toContain(`"${join(config(other), p)}"`);
+			}
+			const outputs = { P: pluginSources(), C2: digest(config(C2)), home: digest(home) };
+			expect(outputs.P).toEqual(pOriginal); expect(outputs.home).toEqual(homeBytes);
+			await dsh(["manager", "snapshot", "config", "remove", C2], "concurrent-release-C2");
+			await dsh(["manager", "snapshot", "plugins", "remove", P], "concurrent-release-P");
+			expect(existsSync(config(C2))).toBe(false); expect(existsSync(plugins(P))).toBe(false);
+			writeFileSync(join(root, "concurrent-summary.json"), JSON.stringify({ P, C1, C2, pOriginal, c1Original, c1Reloaded, c2Updated, observations, outputs, restartGate: "RB-RESTART remains open: no internal app restart exercised" }, null, 2));
+		} finally { await Promise.all(sessions.map(s => s.stop())); }
 		writeFileSync(join(root, "summary.json"), JSON.stringify({ ids, aOriginal, homeBytes, pluginOriginal }, null, 2));
 	} finally {
 		server.stop(true);
