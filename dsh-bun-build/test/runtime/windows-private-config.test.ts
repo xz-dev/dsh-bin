@@ -10,7 +10,23 @@ const nativeTest = test.skipIf(!enabled);
 const helper = join(import.meta.dir, "fixtures/windows-private-fixture.ps1");
 const probe = join(import.meta.dir, "fixtures/windows-private-probe.ts");
 function fixture(action: string, path: string) {
-	return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", helper, action, path], { encoding: "utf8", timeout: 20_000 });
+	const started = Date.now();
+	process.stderr.write(`NATIVE_FIXTURE_BEGIN ${action} ${path}\n`);
+	try {
+		const result = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", helper, action, path], {
+			encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"],
+		});
+		process.stderr.write(`NATIVE_FIXTURE_END ${action} ${Date.now() - started}ms\n`);
+		return result;
+	} catch (error) {
+		const failure = error as { stdout?: Buffer | string; stderr?: Buffer | string; code?: string; status?: number; signal?: string };
+		// Preserve raw native failure output; no secret fixture content is passed to PowerShell.
+		const stem = join(process.env.TEMP!, `fixture-failed-${action}-${Date.now()}`);
+		writeFileSync(`${stem}.stdout`, failure.stdout ?? "");
+		writeFileSync(`${stem}.stderr`, failure.stderr ?? "");
+		process.stderr.write(`NATIVE_FIXTURE_FAILED ${action} ${Date.now() - started}ms code=${failure.code} status=${failure.status} signal=${failure.signal} artifact=${stem}\n${String(failure.stderr ?? "")}\n`);
+		throw error;
+	}
 }
 function inspect(path: string) { return JSON.parse(fixture("inspect", path)); }
 function setup() {

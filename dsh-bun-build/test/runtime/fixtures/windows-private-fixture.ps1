@@ -1,5 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$Action, [Parameter(Mandatory=$true)][string]$Path)
 $ErrorActionPreference = 'Stop'
+[Console]::Error.WriteLine("NATIVE_FIXTURE_PS_ENTER {0} {1}" -f $Action, $PID)
 $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $full = [System.Security.AccessControl.FileSystemRights]::FullControl
 $allow = [System.Security.AccessControl.AccessControlType]::Allow
@@ -10,7 +11,9 @@ function PrivateDirectory([string]$name) {
     $acl.SetOwner($user)
     $acl.SetAccessRuleProtection($true, $false)
     $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($user, $full, $inherit, $none, $allow)))
+    [Console]::Error.WriteLine('NATIVE_FIXTURE_PS_DIRECTORY_SECURITY_READY')
     [System.IO.Directory]::CreateDirectory($name, $acl) | Out-Null
+    [Console]::Error.WriteLine('NATIVE_FIXTURE_PS_DIRECTORY_CREATED')
 }
 switch ($Action) {
     'directory' { PrivateDirectory $Path }
@@ -69,3 +72,4 @@ public class NativeNullDacl {
     }
     default { throw "Unknown fixture action" }
 }
+[Console]::Error.WriteLine("NATIVE_FIXTURE_PS_EXIT {0}" -f $Action)
