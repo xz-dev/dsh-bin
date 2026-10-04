@@ -251,8 +251,8 @@ const Query = struct {
                 const e = @field(s.shells, field.name);
                 const registered = e != null and e.?.result == .registered;
                 const path = if (registered) e.?.path else null;
-                const reason = if (!registered) "not-registered" else if (path == null) "registration-path-not-recorded" else "recorded registration; not proof current shell loaded it";
                 const status = if (!registered) "not-created" else if (path) |p| if (!std.fs.path.isAbsolute(p)) "invalid" else pathStatus(p, false, "missing") else "unknown";
+                const reason = if (!registered) "not-registered" else if (path == null) "registration-path-not-recorded" else if (eq(u8, status, "conflict")) "recorded registration is no longer a regular file; not followed" else "recorded registration; not proof current shell loaded it";
                 for ([_][]const u8{ "completion.registration", "completion.script" }) |role| q.add(.{ .role = role, .path = path, .status = status, .source = "recorded-registration", .reason = reason, .id = field.name });
                 if (registered and path == null) q.fail("completion-path-unrecorded", "completion.registration", null, "historical registration has no recorded location; not guessed");
                 if (registered and e.?.binding != null) {
@@ -332,7 +332,8 @@ const Query = struct {
             const single = if (kind == .plugins) opts.snapshot else opts.config_snapshot;
             const fixed = if (!opts.overridesSnapshots() and stored != null) @import("manage.zig").snapshotChoice(stored.?, kind) else null;
             const s = picked[n] orelse snapshot.newest(inventories[n], id) orelse {
-                q.fail("snapshot-not-created", "snapshot", q.ctx.path(&.{kind.root()}), "no existing snapshot; launch would initialize but query does not");
+                // Enumeration succeeded. A missing default is a valid gap, not damaged storage;
+                // only a later launch may initialize it, never this read-only query.
                 result.reason = "snapshot-not-created";
                 return result;
             };

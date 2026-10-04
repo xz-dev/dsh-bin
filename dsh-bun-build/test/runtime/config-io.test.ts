@@ -141,8 +141,8 @@ test("CS-SWITCH: authentic settings/provider C1 → C2 update → C1, plugin bas
   });
   const originals = [join(configs[0], "profiles/io/cordis.patch.yml"), join(configs[0], ".credentials.yaml"), join(home, "profiles/io/cordis.patch.yml"), join(home, ".credentials.yaml"), join(home, ".env"), join(home, "settings.yaml"), join(home, "cordis.patch.yml"), join(home, "sentinel"), join(home, "sessions/sentinel.jsonl"), join(home, "cache/sentinel"), join(pd, "package.json"), join(pd, "pnpm-workspace.yaml"), join(pkg, "index.js"), join(pkg, "watch-config.js"), join(pkg, "cordis.patch.yml")].map(path => [path, readFileSync(path)] as const);
   let runCount = 0;
-  async function run(n: number, mode = "read", cwd = home, failure = false) {
-    const launch = { protocol: 2, runtime: RUNTIME, dataRoot: root, home, snapshot: { id: `${RUNTIME}@1`, dir: plugins }, configSnapshot: { id: `${RUNTIME}@${n}`, dir: configs[n - 1] }, addons: {}, cache: join(root, "cache"), tmp: join(root, "tmp"), manager: "test" };
+  async function run(n: number, mode = "read", cwd = home, failure = false, dataRoot = root) {
+    const launch = { protocol: 2, runtime: RUNTIME, dataRoot, home, snapshot: { id: `${RUNTIME}@1`, dir: join(dataRoot, "snapshots", `${RUNTIME}@1`) }, configSnapshot: { id: `${RUNTIME}@${n}`, dir: join(dataRoot, "config-snapshots", `${RUNTIME}@${n}`) }, addons: {}, cache: join(dataRoot, "cache"), tmp: join(dataRoot, "tmp"), manager: "test" };
     const stem = `run-${++runCount}-C${n}-${mode}`, audit = join(root, `${stem}.audit`);
     // Kernel audit, not absence-of-secret output: include failed opens and native watcher registrations.
     const proc = Bun.spawn(["timeout", "--kill-after=2s", "30s", "strace", "-f", "-qq", "-e", "trace=open,openat,rename,renameat,renameat2,inotify_add_watch", "-o", audit, join(bundle, "dsh-native"), "--profile", "io", mode], {
@@ -171,6 +171,11 @@ test("CS-SWITCH: authentic settings/provider C1 → C2 update → C1, plugin bas
   expect(second.before.label).toBe("C2"); expect(second.before.credential.value).toBe("synthetic-C2");
   expect(second.after.label).toBe("C2-updated"); expect(second.after.credential.value).toBe("synthetic-C2-updated");
   const again = await run(1); expect(again.before).toEqual(first.before); expect(again.after).toEqual(first.after);
+  // Same physical installation via a legitimate linked XDG ancestor: transport acceptance alone
+  // is insufficient; actual dotenv/profile/settings/provider I/O must consume the validated roots.
+  const linkedData = join(root, "linked-data"); symlinkSync(root, linkedData);
+  const linked = await run(1, "read", home, false, linkedData);
+  expect(linked.before).toEqual(first.before); expect(linked.after).toEqual(first.after);
   expect(second.accesses).toContain("inotify_add_watch");
   const alias = join(root, "home-alias"); symlinkSync(home, alias);
   expect((await run(1, "read", alias)).before).toEqual(first.before);

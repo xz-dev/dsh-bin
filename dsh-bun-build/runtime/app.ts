@@ -45,6 +45,7 @@ const claim = (dir: string, label: string, required = false) => {
 };
 // Raw config bridges never authorize managed configuration, including direct starts.
 delete process.env.DSH_BIN_CONFIG_SNAPSHOT_DIR;
+let validatedSnapshotRoots: [string, string] | undefined;
 if (launch) {
 	delete process.env.DSH_BIN_SNAPSHOT_DIR;
 	const root = realpathSync(launch.dataRoot);
@@ -57,6 +58,9 @@ if (launch) {
 		if (relative(realpathSync(dir), expected) !== "") fail(`${label} has a mismatched identity/root; start dsh through the dsh manager`);
 		claim(dir, label, true);
 	}
+	// Keep logical transport/HOME spellings, but bind application I/O to the physical roots
+	// just validated above. A legitimate linked XDG ancestor is not a linked snapshot root.
+	validatedSnapshotRoots = [join(root, "snapshots", launch.snapshot.id), join(root, "config-snapshots", launch.configSnapshot.id)];
 	process.env.DSH_HOME = launch.home;
 	process.env.DSH_BIN_SNAPSHOT_DIR = launch.snapshot.dir;
 	process.env.DSH_BIN_CONFIG_SNAPSHOT_DIR = launch.configSnapshot.dir;
@@ -88,7 +92,7 @@ const host = installHostPackages(appDir, {
 });
 installRequireBuiltin(join(appDir, "lib"), host.specifiers);
 installNodeModuleCompat();
-installConfigPaths(launch?.snapshot.dir, launch?.configSnapshot.dir, launch?.home);
+installConfigPaths(validatedSnapshotRoots?.[0], validatedSnapshotRoots?.[1], launch?.home);
 
 process.argv = dshArgv([process.argv[0]!, process.argv[1]!, ...user], process.execPath, binJs);
 const { runCli } = (await import(binJs)) as { runCli(): Promise<void> };

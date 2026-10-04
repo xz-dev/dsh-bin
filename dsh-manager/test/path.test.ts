@@ -41,6 +41,16 @@ test.skipIf(!hasZig)("PATH-MISSING / PATH-OVERVIEW / PATH-JSON: cold eight scope
 	expect(tree(i.dir)).toEqual(before); expect(tree(i.home)).toEqual([]); expect(started(i)).toBe(false);
 }, 120_000);
 
+test.skipIf(!hasZig)("PATH-MISSING: installed runtime with no snapshot kind is complete and does not initialize", () => {
+	for (const missing of ["plugins", "config"] as const) {
+		const i = newInstall(); addRuntime(i.data, A); seed(i, missing === "plugins" ? "config" : "plugins");
+		const before = tree(i.data), r = query(i);
+		expect(r.status).toBe(0); expect(r.value.complete).toBe(true);
+		expect(r.value.effective.status).toBe("unresolved"); expect(r.value.effective.reason).toBe("snapshot-not-created");
+		expect(r.value.diagnostics).toEqual([]); expect(tree(i.data)).toEqual(before); expect(started(i)).toBe(false);
+	}
+}, 120_000);
+
 test.skipIf(!hasZig)("PATH-CURRENT / PATH-SNAPSHOTS: typed aliases, override intent and orphan inventory agree with native launch", () => {
 	const i = newInstall(); addRuntime(i.data, A); addRuntime(i.data, B, { run: 2 });
 	const p1 = seed(i, "plugins"), p2 = seed(i, "plugins", B), c1 = seed(i, "config", A, 1, "daily"), c2 = seed(i, "config", B);
@@ -87,6 +97,11 @@ test.skipIf(!hasZig)("PATH-COMPLETION: real future registration records paths; m
 	const metadata = JSON.parse(readFileSync(join(i.data, "state/completion.json"), "utf8")); expect(metadata.shells.bash.path).toBe(rc);
 	const q = query(i, ["completion", "bash"]); expect(q.status).toBe(0); expect(record(q.value, "completion.registration").path).toBe(rc); expect(record(q.value, "completion.registration").status).toBe("exists"); expect(q.stdout).not.toContain("SECRET-RC");
 	renameSync(rc, `${rc}.moved`); const missing = query(i, ["completion", "bash"]); expect(record(missing.value, "completion.registration").status).toBe("missing");
+	// A directory is a cross-platform wrong-type fixture; no rc content is opened to diagnose it.
+	mkdirSync(rc); const conflict = query(i, ["completion", "bash"]);
+	expect(conflict.status).toBe(1); expect(record(conflict.value, "completion.registration").reason).toBe("recorded registration is no longer a regular file; not followed");
+	expect(conflict.value.diagnostics.some((d: any) => d.message === "recorded registration is no longer a regular file; not followed")).toBe(true);
+	rmSync(rc, { recursive: true });
 	writeFileSync(join(i.data, "state/completion.json"), JSON.stringify({ schema: 1, shells: { bash: { result: "registered" }, zsh: { result: "declined" } } }));
 	const old = query(i, ["completion", "bash"]); expect(record(old.value, "completion.registration").status).toBe("unknown"); expect(record(old.value, "completion.registration").path).toBe(null);
 	expect(record(query(i, ["completion", "fish"]).value, "completion.registration").reason).toBe("not-registered");
