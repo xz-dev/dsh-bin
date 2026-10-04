@@ -1,6 +1,7 @@
 //! Manager candidate identity: fixed build markers and native executable headers, never execute a download.
 const std = @import("std");
 const builtin = @import("builtin");
+const safe = @import("safe_open.zig");
 const options = @import("build_options");
 const protocol = @import("select.zig").protocol;
 pub const version_marker = "DSH_MANAGER_VERSION=" ++ options.version ++ "\x00";
@@ -56,7 +57,7 @@ pub fn openRegular(dir: std.fs.Dir, name: []const u8) !std.fs.File {
         const win = std.os.windows;
         const path = try win.sliceToPrefixedFileW(dir.fd, name);
         break :blk .{ .handle = try win.OpenFile(path.span(), .{ .dir = dir.fd, .access_mask = win.GENERIC_READ, .creation = win.FILE_OPEN, .filter = .any, .follow_symlinks = false }) };
-    } else .{ .handle = try std.posix.openat(dir.fd, name, .{ .ACCMODE = .RDONLY, .NOFOLLOW = true, .NONBLOCK = true }, 0) };
+    } else .{ .handle = try safe.openat(dir.fd, name, .{ .ACCMODE = .RDONLY, .NOFOLLOW = true, .NONBLOCK = true }, 0) };
     errdefer file.close();
     const stat = try file.stat();
     if (stat.kind != .file) return error.InvalidManagerFile;

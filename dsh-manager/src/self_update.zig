@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const options = @import("build_options");
 const util = @import("util.zig");
 const binary = @import("manager_binary.zig");
+const safe = @import("safe_open.zig");
 const index = @import("manager_index.zig");
 const install = @import("install.zig");
 const http = @import("http.zig");
@@ -28,7 +29,7 @@ pub fn run(ctx: *Ctx, args: []const []const u8) u8 {
 }
 fn prepare(ctx: *Ctx, force: bool) !void {
     // Pin this installation before the first network wait; no later path resolution selects a target.
-    var parent = try std.fs.cwd().openDir(ctx.dir, .{ .iterate = true, .no_follow = true });
+    var parent = try safe.openDir(std.fs.cwd(), ctx.dir, .{ .iterate = true, .no_follow = true });
     defer parent.close();
     const installed = if (builtin.os.tag == .windows) try @import("self_update_windows.zig").openFile(parent, std.fs.path.basename(ctx.exe), false) else try binary.validated(ctx.a, parent, std.fs.path.basename(ctx.exe), options.version);
     defer installed.close();
@@ -64,7 +65,7 @@ fn prepare(ctx: *Ctx, force: bool) !void {
     const staging = try install.fetchTreeHashed(ctx, tmp, candidate.asset, candidate.entry.tag, &trusted);
     defer tmp.deleteTree(staging) catch |err| util.warn("leftover tmp/{s}: {s}; run `dsh manager clean`", .{ staging, @errorName(err) });
     const expected = trusted.value orelse return error.MissingManagerEntry;
-    var tree = try tmp.openDir(staging, .{ .iterate = true, .no_follow = true });
+    var tree = try safe.openDir(tmp, staging, .{ .iterate = true, .no_follow = true });
     defer tree.close();
     var it = tree.iterate();
     const entry = try it.next() orelse return error.MissingManagerEntry;

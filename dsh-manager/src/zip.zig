@@ -5,6 +5,7 @@
 //! File bodies stream through fixed buffers; only path bookkeeping grows with archive metadata.
 const std = @import("std");
 const builtin = @import("builtin");
+const safe = @import("safe_open.zig");
 
 pub const Error = error{
     BadArchive,
@@ -104,7 +105,7 @@ fn claimPath(a: std.mem.Allocator, paths: *std.StringHashMap(Claim), dest: std.f
                     else => ioErr(e),
                 };
                 if (builtin.os.tag != .windows) {
-                    var dir = dest.openDir(spelling[0..end], .{ .iterate = true, .no_follow = true }) catch |e| return ioErr(e);
+                    var dir = safe.openDir(dest, spelling[0..end], .{ .iterate = true, .no_follow = true }) catch |e| return ioErr(e);
                     defer dir.close();
                     dir.chmod(0o755) catch |e| return ioErr(e);
                 }
@@ -136,7 +137,7 @@ fn checkExtra(reader: *std.Io.Reader, len: u16) Error!void {
 pub fn extract(a: std.mem.Allocator, archive_path: []const u8, dest_path: []const u8) Error!void {
     if (!std.fs.path.isAbsolute(dest_path)) return error.UnsafeEntryName;
     std.fs.cwd().makeDir(dest_path) catch |e| if (e != error.PathAlreadyExists) return ioErr(e);
-    var dest = std.fs.cwd().openDir(dest_path, .{ .iterate = true, .no_follow = true }) catch |e| return ioErr(e);
+    var dest = safe.openDir(std.fs.cwd(), dest_path, .{ .iterate = true, .no_follow = true }) catch |e| return ioErr(e);
     defer dest.close();
     return extractIn(a, archive_path, dest);
 }

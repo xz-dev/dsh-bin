@@ -2,6 +2,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const binary = @import("manager_binary.zig");
+const safe = @import("safe_open.zig");
 const util = @import("util.zig");
 const select = @import("select.zig");
 const state = @import("state.zig");
@@ -37,7 +38,7 @@ fn safeVersion(version: []const u8) bool {
 }
 
 fn list(ctx: *const Ctx, kind: Kind) ![]Meta {
-    var root = std.fs.cwd().openDir(ctx.path(&.{kind.root()}), .{ .iterate = true, .no_follow = true }) catch |err| switch (err) {
+    var root = safe.openDir(std.fs.cwd(), ctx.path(&.{kind.root()}), .{ .iterate = true, .no_follow = true }) catch |err| switch (err) {
         error.FileNotFound => return &.{},
         else => return err,
     };
@@ -54,7 +55,7 @@ pub fn listIn(ctx: *const Ctx, root: std.fs.Dir) ![]Meta {
         if (!safeVersion(v)) return error.InvalidSnapshot;
         const n = std.fmt.parseInt(u64, entry.name[v.len + 1 ..], 10) catch return error.InvalidSnapshot;
         if (n == 0 or entry.kind != .directory) return error.InvalidSnapshot;
-        var dir = try root.openDir(entry.name, .{ .no_follow = true });
+        var dir = try safe.openDir(root, entry.name, .{ .no_follow = true });
         defer dir.close();
         const bytes = try binary.readMetadata(ctx.a, dir, "snapshot.json", 1 << 20);
         const meta = try std.json.parseFromSliceLeaky(Meta, ctx.a, bytes, .{ .ignore_unknown_fields = true });
@@ -145,10 +146,10 @@ const Store = struct {
 };
 
 fn storeLock(ctx: *const Ctx, kind: Kind) !Store {
-    var data = try std.fs.cwd().openDir(ctx.data, .{ .iterate = true, .no_follow = true });
+    var data = try safe.openDir(std.fs.cwd(), ctx.data, .{ .iterate = true, .no_follow = true });
     defer data.close();
     _ = try makeDirectory(ctx, data, kind.root(), kind);
-    var root = try data.openDir(kind.root(), .{ .iterate = true, .no_follow = true });
+    var root = try safe.openDir(data, kind.root(), .{ .iterate = true, .no_follow = true });
     errdefer root.close();
     if ((try root.stat()).kind != .directory) return error.InvalidSnapshotStore;
     if (kind == .config) try privateAccess(ctx, data, kind.root(), .{ .handle = root.fd });
@@ -219,7 +220,7 @@ fn create(ctx: *const Ctx, kind: Kind, root: std.fs.Dir, all: []const Meta, vers
     const id = try std.fmt.allocPrint(ctx.a, "{s}@{d}", .{ version, n });
     const staging = try std.fmt.allocPrint(ctx.a, ".staging-{x}", .{std.crypto.random.int(u64)});
     if (!try makeDirectory(ctx, root, staging, kind)) return error.PathAlreadyExists;
-    var dir = try root.openDir(staging, .{ .iterate = true, .no_follow = true });
+    var dir = try safe.openDir(root, staging, .{ .iterate = true, .no_follow = true });
     const staging_stat = try dir.stat();
     var open = true;
     defer if (open) dir.close();
@@ -230,12 +231,12 @@ fn create(ctx: *const Ctx, kind: Kind, root: std.fs.Dir, all: []const Meta, vers
     _ = try makeDirectory(ctx, dir, "profiles", kind);
     var expected: std.StringHashMap(Expected) = .init(ctx.a);
     {
-        var profiles = try dir.openDir("profiles", .{ .no_follow = true });
+        var profiles = try safe.openDir(dir, "profiles", .{ .no_follow = true });
         defer profiles.close();
         try expected.put("profiles", .{ .kind = .directory, .identity = try identity(.{ .handle = profiles.fd }) });
     }
     if (source) |s| {
-        var src = try root.openDir(s.id, .{ .iterate = true, .no_follow = true });
+        var src = try safe.openDir(root, s.id, .{ .iterate = true, .no_follow = true });
         defer src.close();
         const source_stat = try src.stat();
         binary.testPause(ctx, "snapshot-copy", s.id); // Handles pinned before any handoff.
@@ -243,9 +244,9 @@ fn create(ctx: *const Ctx, kind: Kind, root: std.fs.Dir, all: []const Meta, vers
         if (kind == .config) {
             try copyConfig(ctx, src, dir, "", &expected);
         } else {
-            var profiles = try src.openDir("profiles", .{ .iterate = true, .no_follow = true });
+            var profiles = try safe.openDir(src, "profiles", .{ .iterate = true, .no_follow = true });
             defer profiles.close();
-            var dest = try dir.openDir("profiles", .{ .iterate = true, .no_follow = true });
+            var dest = try safe.openDir(dir, "profiles", .{ .iterate = true, .no_follow = true });
             defer dest.close();
             try copyProfiles(ctx, profiles, dest, try profiles.realpathAlloc(ctx.a, "."), "", &expected);
             try validateCopiedLinks(ctx, dest, try dest.realpathAlloc(ctx.a, "."), "");
@@ -283,7 +284,7 @@ fn create(ctx: *const Ctx, kind: Kind, root: std.fs.Dir, all: []const Meta, vers
     try @import("self_update.zig").publish(ctx.a, root, staging, id);
     errdefer if (sameDirectory(root, id, staging_stat)) root.deleteTree(id) catch {};
     if (!sameDirectory(root, id, staging_stat)) return error.SnapshotChanged;
-    var published = try root.openDir(id, .{ .iterate = true, .no_follow = true });
+    var published = try safe.openDir(root, id, .{ .iterate = true, .no_follow = true });
     defer published.close();
     try verifyTree(ctx, published, "", &expected);
     if (!sameDirectory(root, id, staging_stat)) return error.SnapshotChanged;
@@ -300,9 +301,9 @@ fn copyProfiles(ctx: *const Ctx, src: std.fs.Dir, dest: std.fs.Dir, base: []cons
             .file => try expected.put(key, try copyFile(ctx, src, dest, entry.name, .plugins)),
             .directory => {
                 try dest.makeDir(entry.name);
-                var source_dir = try src.openDir(entry.name, .{ .iterate = true, .no_follow = true });
+                var source_dir = try safe.openDir(src, entry.name, .{ .iterate = true, .no_follow = true });
                 defer source_dir.close();
-                var dest_dir = try dest.openDir(entry.name, .{ .no_follow = true });
+                var dest_dir = try safe.openDir(dest, entry.name, .{ .no_follow = true });
                 defer dest_dir.close();
                 try expected.put(key, .{ .kind = .directory, .identity = try identity(.{ .handle = dest_dir.fd }) });
                 const before = try source_dir.stat();
@@ -334,7 +335,7 @@ fn validateCopiedLinks(ctx: *const Ctx, dir: std.fs.Dir, base: []const u8, rel: 
         const child = try std.fs.path.join(ctx.a, &.{ rel, entry.name });
         switch (entry.kind) {
             .directory => {
-                var subdir = try dir.openDir(entry.name, .{ .iterate = true, .no_follow = true });
+                var subdir = try safe.openDir(dir, entry.name, .{ .iterate = true, .no_follow = true });
                 defer subdir.close();
                 try validateCopiedLinks(ctx, subdir, base, child);
             },
@@ -516,7 +517,7 @@ fn absent(parent: std.fs.Dir, name: []const u8) !void {
 }
 
 fn sameDirectory(parent: std.fs.Dir, name: []const u8, held: std.fs.File.Stat) bool {
-    var current = parent.openDir(name, .{ .no_follow = true }) catch return false;
+    var current = safe.openDir(parent, name, .{ .no_follow = true }) catch return false;
     defer current.close();
     const stat = current.stat() catch return false;
     return stat.kind == .directory and held.inode == stat.inode;
@@ -544,7 +545,7 @@ fn sameIdentity(a: Identity, b: Identity) bool {
 }
 
 fn namedDirectory(parent: std.fs.Dir, name: []const u8, held: Identity) bool {
-    var current = parent.openDir(name, .{ .no_follow = true }) catch return false;
+    var current = safe.openDir(parent, name, .{ .no_follow = true }) catch return false;
     defer current.close();
     if ((current.stat() catch return false).kind != .directory) return false;
     return sameIdentity(held, identity(.{ .handle = current.fd }) catch return false);
@@ -564,7 +565,7 @@ const Removal = struct {
 };
 
 fn pinRemoval(root: std.fs.Dir, name: []const u8) !Removal {
-    var dir = try root.openDir(name, .{ .no_follow = true });
+    var dir = try safe.openDir(root, name, .{ .no_follow = true });
     errdefer dir.close();
     if ((try dir.stat()).kind != .directory) return error.UnsafeSnapshotFile;
     const held = try identity(.{ .handle = dir.fd });
@@ -624,7 +625,7 @@ fn verifyEntries(ctx: *const Ctx, dir: std.fs.Dir, rel: []const u8, expected: *c
         count.* += 1;
         switch (entry.kind) {
             .directory => {
-                var subdir = dir.openDir(entry.name, .{ .iterate = true, .no_follow = true }) catch return error.SnapshotChanged;
+                var subdir = safe.openDir(dir, entry.name, .{ .iterate = true, .no_follow = true }) catch return error.SnapshotChanged;
                 defer subdir.close();
                 if (!sameIdentity(want.identity.?, try identity(.{ .handle = subdir.fd }))) return error.SnapshotChanged;
                 try verifyEntries(ctx, subdir, child, expected, count);
@@ -716,10 +717,10 @@ fn copyConfig(ctx: *const Ctx, src: std.fs.Dir, dest: std.fs.Dir, rel: []const u
             .file => try expected.put(child, try copyFile(ctx, src, dest, entry.name, .config)),
             .directory => {
                 _ = try makeDirectory(ctx, dest, entry.name, .config);
-                var source = try src.openDir(entry.name, .{ .iterate = true, .no_follow = true });
+                var source = try safe.openDir(src, entry.name, .{ .iterate = true, .no_follow = true });
                 defer source.close();
                 const held = try source.stat();
-                var target = try dest.openDir(entry.name, .{ .iterate = true, .no_follow = true });
+                var target = try safe.openDir(dest, entry.name, .{ .iterate = true, .no_follow = true });
                 defer target.close();
                 try expected.put(child, .{ .kind = .directory, .identity = try identity(.{ .handle = target.fd }) });
                 try copyConfig(ctx, source, target, child, expected);

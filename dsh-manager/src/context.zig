@@ -3,6 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const util = @import("util.zig");
+const safe = @import("safe_open.zig");
 const marker_bytes = "{\"kind\":\"dsh-manager-data\",\"schema\":1}\n";
 
 pub const is_windows = builtin.os.tag == .windows;
@@ -89,7 +90,7 @@ pub const Ctx = struct {
         var dir = std.fs.cwd().openDir(self.data, .{ .iterate = true, .no_follow = true }) catch |err| self.writeError(err);
         for (parts) |part| {
             dir.makeDir(part) catch |err| if (err != error.PathAlreadyExists) self.writeError(err);
-            const next = dir.openDir(part, .{ .iterate = true, .no_follow = true }) catch |err| self.writeError(err);
+            const next = safe.openDir(dir, part, .{ .iterate = true, .no_follow = true }) catch |err| self.writeError(err);
             if ((next.stat() catch |err| self.writeError(err)).kind != .directory) self.conflict();
             dir.close();
             dir = next;

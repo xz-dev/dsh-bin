@@ -353,7 +353,7 @@ fn collect(c: *Cleanup, root: Store) !void {
 }
 
 fn perform(ctx: *const Ctx) !void {
-    var root_dir = std.fs.cwd().openDir(ctx.data, .{ .iterate = true, .no_follow = true }) catch |err| {
+    var root_dir = @import("safe_open.zig").openDir(std.fs.cwd(), ctx.data, .{ .iterate = true, .no_follow = true }) catch |err| {
         if (err == error.FileNotFound) return;
         return err;
     };
