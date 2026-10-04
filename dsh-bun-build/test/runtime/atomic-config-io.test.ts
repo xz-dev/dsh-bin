@@ -71,6 +71,60 @@ try{await withFileLock(${JSON.stringify(filename)},()=>{throw new Error('must no
 	expect(readFileSync(filename, "utf8")).toBe("original"); expect(existsSync(filename + ".lock")).toBe(true);
 }, 30_000);
 
+test("real profile helpers recheck cached paths at read and sanitize rename, before touching unsafe config", () => {
+	const bootRel = "node_modules/@deepseek-ai/dsh-app-boot/lib/index.js";
+	const pluginRel = "node_modules/@deepseek-ai/dsh-plugin-manager/lib/index.js";
+	const typesRel = "node_modules/@deepseek-ai/dsh-plugin-manager/lib/types/patch.js";
+	for (const [file, hash] of [[bootRel, "234db45e1b3f8c683b5bc1f551948b2a2ec52a6468c7b6937725a23f1c0e0d96"], [pluginRel, "f46a48b3422927eea5605a70b78502e06ef9ceaa29d7a73f4a7f742361ff51c8"], [typesRel, "cc014a3a09880220026a22792d49628e484edfe99ba4e03658b64891816adfb5"]]) {
+		expect(createHash("sha256").update(readFileSync(join(APP!, file!))).digest("hex")).toBe(hash!);
+	}
+	const { root, app } = transformed(), marker = join(root, "unsafe-read");
+	// Test-only observation at the actual read call, after its argument guards. A later
+	// atomic-write rejection must not conceal an earlier secret read. No global fs patching.
+	for (const [file, from, to] of [
+		[bootRel, "mkdirSync, readFileSync, readdirSync", "mkdirSync, readFileSync as observedReadFileSync, readdirSync"],
+		[pluginRel, "open, readFile, rm", "open, readFile as observedReadFile, rm"],
+		[typesRel, "import { readFile }", "import { readFile as observedReadFile }"],
+	]) {
+		const filename = join(app, file!), original = readFileSync(filename, "utf8");
+		expect(original.split(from!).length).toBe(2);
+		const sync = file === bootRel, name = sync ? "readFileSync" : "readFile";
+		writeFileSync(filename, original.replace(from!, to!) + `
+import {statSync as observedStat,writeFileSync as observedMark} from 'node:fs';
+${sync ? "" : "async "}function ${name}(path,...args){
+  if(String(path).endsWith('cordis.patch.yml')&&(observedStat(path).mode&63))observedMark(${JSON.stringify(marker)},'unsafe-read');
+  return ${sync ? "observedReadFileSync" : "observedReadFile"}(path,...args);
+}
+${file === pluginRel ? "export {writePluginEnabled};" : ""}
+`);
+	}
+	const helper = resolve(import.meta.dir, "../../runtime/compat/config-paths.ts"), results = [];
+	for (const operation of ["plugin", "types", "optional", "overlay", "sanitize"]) {
+		const config = join(root, operation, "C"), plugins = join(root, operation, "P"), profile = join(plugins, "profiles/tui"), filename = join(config, "profiles/tui/cordis.patch.yml");
+		mkdirSync(config, { recursive: true, mode: 0o700 }); mkdirSync(profile, { recursive: true });
+		privateFile(filename, "# retained comment\n[]\n");
+		const source = `import {createConfigPaths} from ${JSON.stringify(helper)};
+import {chmodSync,existsSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+const p=${JSON.stringify(filename)}, profile=${JSON.stringify(profile)}, marker=${JSON.stringify(marker)};
+const paths=createConfigPaths(${JSON.stringify(plugins)},${JSON.stringify(config)}); let invalidate=false;
+const guarded={...paths,profileFile(...args){const path=paths.profileFile(...args); if(invalidate)chmodSync(path,420); return path}};
+Bun.plugin({name:'profile-io-test',setup(b){b.module('dsh-bin:config-paths',()=>({exports:{paths:guarded},loader:'object'}))}});
+const boot=await import(${JSON.stringify(join(app, bootRel))});
+const plugin=await import(${JSON.stringify(join(app, operation === "types" ? typesRel : pluginRel))});
+const action=()=>${operation === "sanitize" ? "boot.sanitizeProfile('dsh',profile,[])" : operation === "optional" ? "boot.loadOptionalPatches('dsh',p)" : operation === "overlay" ? "boot.loadOverlayPatches('dsh',p)" : "plugin.writePluginEnabled(p,'probe','probe',false)"};
+await action(); // Real legal operation first, not only a refusal probe.
+writeFileSync(p,'# retained comment\\n[]\\n',{mode:384}); chmodSync(p,384);
+if(existsSync(marker))rmSync(marker);
+${operation === "sanitize" ? "invalidate=true;" : "paths.check(p); chmodSync(p,420);"}
+let code; try{await action()}catch(e){code=e.code}
+console.log(JSON.stringify({code:code??null,unsafeRead:existsSync(marker),exists:existsSync(p),unchanged:existsSync(p)&&readFileSync(p,'utf8')==='# retained comment\\n[]\\n'}));`;
+		const result = Bun.spawnSync([process.execPath, "-e", source], { env: process.env, timeout: 20_000 });
+		expect(result.exitCode, `${operation}: ${result.stderr.toString()}`).toBe(0);
+		results.push({ operation, ...JSON.parse(result.stdout.toString().trim()) });
+	}
+	expect(results).toEqual(["plugin", "types", "optional", "overlay", "sanitize"].map(operation => ({ operation, code: "DSH_CONFIG_BOUNDARY", unsafeRead: false, exists: true, unchanged: true })));
+}, 60_000);
+
 test("real rc.2 unknown atomic syscall/alias fails before any transformed file published", () => {
 	const { app, atomic } = transformed();
 	for (const changed of ['await readFile(other, "utf8");', 'await rm(newPath, { force:true });']) {

@@ -64,6 +64,18 @@ export const CONFIG_SITES = [
 	rule(bootFile, 'async function auditStartupEntries(ctx, binName, warn = (line) => void process.stderr.write(line)) {\n\tconst failures = await inactiveEntries(ctx);', 'async function auditStartupEntries(ctx, binName, warn = (line) => void process.stderr.write(line)) {\n\tconst failures = await inactiveEntries(ctx);\n\t__dshBinPaths.assertStartup(failures);'),
 	rule(bootFile, 'if (!existsSync(patchPath)) writeFileSync(patchPath, PROFILE_PATCH_TEMPLATE);', 'if (!existsSync(patchPath)) writeFileSync(__dshBinPaths.checkCreation(patchPath), PROFILE_PATCH_TEMPLATE, __dshBinPaths.privateWriteOptions);'),
 	rule(bootFile, 'loadOptionalPatches(binName, context.patchPath)', 'loadOptionalPatches(binName, __dshBinPaths.check(context.patchPath))'),
+	// Cached/property paths must be checked where bytes are read or entries renamed,
+	// not only when profileFile/configFile originally produced the path.
+	rule(bootFile, 'content = readFileSync(file, "utf8");', 'content = readFileSync(__dshBinPaths.checkAuxiliary(file), "utf8");', 2),
+	...['patches', 'overlay'].map(kind => rule(bootFile,
+		`throw new Error(\`\${binName}: failed to read ${kind} \${file}: \${String(error)}\`);`,
+		`__dshBinPaths.rethrowBoundary(error);\n\t\tthrow new Error(\`\${binName}: failed to read ${kind} \${file}: \${String(error)}\`);`)),
+	rule(bootFile, 'renameSync(patchPath, backupPath);', 'renameSync(__dshBinPaths.check(patchPath), __dshBinPaths.check(backupPath));'),
+	...['node_modules/@deepseek-ai/dsh-plugin-manager/lib/index.js', 'node_modules/@deepseek-ai/dsh-plugin-manager/lib/types/patch.js'].flatMap(file => {
+		const q = file.includes('/types/') ? "'" : '"';
+		return [rule(file, `readFile(filename, ${q}utf8${q})`, `readFile(__dshBinPaths.check(filename), ${q}utf8${q})`),
+			rule(file, 'writeFileAtomic(filename, String(document),', 'writeFileAtomic(__dshBinPaths.check(filename), String(document),')];
+	}),
 	rule("node_modules/@deepseek-ai/dsh-hmr/lib/index.js", 'async function watchConfig(ctx, filename, options, refresh, inTransaction = () => false) {', 'async function watchConfig(ctx, filename, options, refresh, inTransaction = () => false) {\n\t__dshBinPaths.checkWatchPath(filename);'),
 	rule(bootFile, 'join(context.home, "cordis.patch.yml")', '__dshBinPaths.configFile(context.home, "cordis.patch.yml")'),
 	rule("lib/profile-boot-BZ2ZjNWi.js", 'join(resolveDshHome(), PROFILE_PATCH_FILENAME)', '__dshBinPaths.configFile(resolveDshHome(), PROFILE_PATCH_FILENAME)'),
