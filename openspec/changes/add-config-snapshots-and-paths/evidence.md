@@ -80,7 +80,14 @@
 
 - Windows owner 独占 `/var/tmp/dsh-remaining/windows-io`，实施实际 current token SID、owner、DACL／继承和句柄身份检查；原生 CI 由父侧调度，未执行不算通过。新 wx/atomic temp 的私有 ACL 必须 creation-before-bytes；已有锁内部读取及创建专用检查未接入的站点不许用“最终单 syscall 窗口”掩盖。
 - 两真实上游运行包 owner `e3cddf8d` 于工作树 `/var/tmp/dsh-remaining/real-io` 被提供方 `session_blocked_by_cyber_policy` 权限拒绝，未产出 file-only 交付。父确认树/index 干净且仍为 `6ae48b2`；A→B→A 未通过。匿名 GitHub tags 403 的日志另明确为 rate limit，不是源码身份，TLS EOF 也不提供真实第二版本证据。
-- I/O/path fresh reviewer `aff5cc75` 被提供方 `cyber_policy` 拒绝；冻结 `/var/tmp/dsh-remaining/io-path-review` 干净、仍为 `6ae48b2`，没有批准报告。workflow `b3bfc81a` 的总 receipt 明确一成功一失败。两条被拒绝 lane 均未换模型、重开会话、改写请求或切换执行方式规避限制，接受门禁继续阻塞。
+- I/O/path fresh reviewer `aff5cc75` 被提供方 `cyber_policy` 拒绝；冻结 `/var/tmp/dsh-remaining/io-path-review` 干净、仍为 `6ae48b2`，没有批准报告。workflow `b3bfc81a` 的总 receipt 明确一成功一失败。原拒绝回执和失败状态保留，不视为批准。
+- 随后用户明确答复“误报罢了，换成 opus 模型”，授权两条失败 lane 使用 Opus。workflow `bc1685bd-5e32-4b30-b894-98ce6cf90d1d` 以 `openai-api-extension/claude-opus-5-5:high` 启动同角色、fresh context 的独立审查与两真实版本实施；仍走 native pi-subagents，验收／权限边界不变。Windows 原 owner 独占现有 `transform-app.mjs` 的 rc.2 atomic/lock 接入，版本 owner 先构建第二真实输入及独立测试，在站点表修改前由父串行交接，不能并发覆盖。当前尚无替代 lane 的通过证据。
 - FreeBSD 独立平台基础切片在另一分支推进，原生产物／组件命令不替代本 change 的平台与真实 I/O 门禁，更不替代 FreeBSD 全产品支持。
+
+## Windows 原生组件首轮 CI
+
+Windows 安全组件 `6a49d69aa4cbac94a06b8258a2b9633c2967a458` 已整合为 `e456f8e`，创建专用检查及 native runner 已存在，但实际应用的 inner atomic/lock 站点接入未完成，managed install 仍 fail-closed。父新增原生专用手动 CI 后候选为 `30a70d728ce75f64de44e8bc802de986b186d6ea`，已推送配置分支并派发 [run 37156417848](https://github.com/xz-dev/dsh-bin/actions/runs/37156417848)。仅 Windows x64 (`windows-2022`) 与 ARM (`windows-11-arm`) 运行 15 项组件门禁；release 路径明确排除，无产品发布。
+
+**两架构均 failure**：PowerShell ACL 夹具 `execFileSync powershell.exe` 多次 `ETIMEDOUT`，不是 ACL 验证通过；240s 外层 runner 结束，未运行的用例也不算通过。失败原日志 `/var/tmp/dsh-remaining/parent-gates/windows-private-37156417848/failed.log`。原 Windows owner 已接回冻结 `30a70d7` 的修复与精确 atomic/lock 接入任务，父收到限定提交后重新整合／派 CI。不得用增加 timeout、Linux mocks 或 skip 代替真实执行。组件 native 通过之后仍需要真实 settings/provider/profile/restart 的 Windows 应用门禁。
 
 所有任务按完整 criterion 再更新；当前 OpenSpec 仍仅 1.1 checked，56 场景完整映射及各原生／产品门禁尚未完成。
