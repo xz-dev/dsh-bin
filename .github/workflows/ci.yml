@@ -125,7 +125,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-private-io-${{ matrix.runner }}
-          path: ${{ runner.temp }}/windows-private-io.log
+          path: |
+            ${{ runner.temp }}/windows-private-io.log
+            ${{ runner.temp }}/dsh-windows-private-io-*/native.stdout
+            ${{ runner.temp }}/dsh-windows-private-io-*/native.stderr
+            ${{ runner.temp }}/dsh-windows-private-io-*/tmp/fixture-failed-*.stdout
+            ${{ runner.temp }}/dsh-windows-private-io-*/tmp/fixture-failed-*.stderr
           if-no-files-found: error
   scoop:
     if: github.event_name != 'workflow_dispatch' || !inputs.windows_private_only
