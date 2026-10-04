@@ -9,6 +9,7 @@ import { text } from "node:stream/consumers";
 import { appendAddon, appendBundle, emptyIndex } from "../../dsh-bun-build/scripts/index.mjs";
 import { appendManager, emptyIndex as emptyManagerIndex, sha256, verifyZip } from "../scripts/release.mjs";
 import { tree } from "./harness.ts";
+import { acquireClaim } from "./claim-probe.ts";
 
 const artifacts = process.env.DSH_COMBINED_ARTIFACTS;
 const WIN = process.platform === "win32", suffix = WIN ? ".exe" : "";
@@ -27,20 +28,31 @@ function checkedAsset(dir: string, a: any) {
 	expect(bytes.length).toBe(a.size); expect(sha256(bytes)).toBe(a.sha256);
 	return bytes;
 }
+function configPatch(config: string, profile: string, content: string) {
+	const dir = join(config, "profiles", profile);
+	mkdirSync(dir, { recursive: true, mode: 0o700 });
+	writeFileSync(join(dir, "cordis.patch.yml"), content, { mode: 0o600 });
+	if (!WIN) {
+		for (const p of [config, join(config, "profiles"), dir]) expect(lstatSync(p).mode & 0o777).toBe(0o700);
+		expect(lstatSync(join(dir, "cordis.patch.yml")).mode & 0o777).toBe(0o600);
+	}
+}
 const PROBE = `export function apply(ctx) {
- ctx.appReady.onReady(() => {
-  console.log("COMBINED_PLUGIN " + JSON.stringify({launch:JSON.parse(process.env.DSH_MANAGER_LAUNCH),path:process.env.PATH,cwd:process.cwd(),home:process.env.HOME,restarted:process.env.COMBINED_CHILD === '1'}));
+ const input = (async () => { let text = ''; for await (const chunk of process.stdin) text += chunk; return text; })();
+ ctx.appReady.onReady(async () => {
+  console.log("COMBINED_PLUGIN " + JSON.stringify({launch:JSON.parse(process.env.DSH_MANAGER_LAUNCH),args:ctx.cmdlineArgs.get(),input:await input,path:process.env.PATH,cwd:process.cwd(),home:process.env.HOME,restarted:process.env.COMBINED_CHILD === '1'}));
   if (process.env.COMBINED_RESTART === '1' && !process.env.COMBINED_CHILD) {
-   // Same respawn shape as upstream dsh-tui; real compiled entry re-normalizes argv and reacquires claims.
-   const child = Bun.spawnSync([process.execPath,...process.execArgv,...process.argv.slice(1)], {env:{...process.env,COMBINED_CHILD:'1'},stdout:'pipe',stderr:'pipe'});
+   // Handwritten acceptance-probe respawn, NOT upstream dsh-tui's restart entrypoint.
+   const child = Bun.spawnSync([process.execPath,...process.execArgv,...process.argv.slice(1)], {env:{...process.env,COMBINED_CHILD:'1'},stdin:'ignore',stdout:'pipe',stderr:'pipe'});
    process.stdout.write(child.stdout); process.stderr.write(child.stderr); ctx.appExit(child.exitCode);
-  } else ctx.appExit(0);
+  } else setTimeout(() => ctx.appExit(Number(process.env.COMBINED_EXIT || 0)), process.env.COMBINED_HOLD === '1' ? 1000 : 0);
  });
 }`;
 
-test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addon, reinstall, restart, self-update and offline move${artifacts ? "" : skip}`, async () => {
+test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addon, reinstall, probe respawn, self-update and offline move${artifacts ? "" : skip}`, async () => {
 	const source = resolve(artifacts!);
-	const root = realpathSync(mkdtempSync(join(WIN ? tmpdir() : "/var/tmp", "dsh-combined-")));
+	const sourceBefore = digest(source);
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "dsh-combined-")));
 	let install = join(root, "original install"), exe = join(install, `dsh${suffix}`), data = join(install, "dsh-bin");
 	const home = join(root, "isolated-home"), cwd = join(root, "workspace");
 	for (const dir of [install, home, cwd]) mkdirSync(dir);
@@ -89,13 +101,27 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 		const env = (): Record<string, string> => {
 			// .cmd shims need Windows' command processor, not a host Node/Bun installation.
 			const path = WIN ? [install, system32] : [install];
-			for (const dir of path) for (const name of ["node", "bun"]) for (const ext of ["", ".exe", ".cmd", ".bat", ".com"]) expect(existsSync(join(dir, name + ext))).toBe(false);
+			for (const dir of path) for (const name of ["node", "bun", "zig", "cc", "gcc", "clang"]) for (const ext of ["", ".exe", ".cmd", ".bat", ".com"]) expect(existsSync(join(dir, name + ext))).toBe(false);
 			return { PATH: path.join(delimiter), HOME: home, USERPROFILE: home, APPDATA: home, LOCALAPPDATA: home, TMPDIR: root, TMP: root, TEMP: root, NO_COLOR: "1", DSH_MANAGER_TEST: "1", DSH_MANAGER_TEST_ORIGIN: server!.url.origin,
 				...(WIN ? { SystemRoot: systemRoot!, windir: systemRoot!, COMSPEC: join(system32, "cmd.exe"), PATHEXT: ".COM;.EXE;.BAT;.CMD" } : {}) };
 		};
-		const command = async (args: string[], extra: Record<string, string> = {}, expectedCode = 0) => {
-			const p = Bun.spawn([exe, ...args], { cwd, env: { ...env(), ...extra }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+		const command = async (args: string[], extra: Record<string, string> = {}, expectedCode = 0, input = "") => {
+			const p = Bun.spawn([exe, ...args], { cwd, env: { ...env(), ...extra }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+			p.stdin.write(input); p.stdin.end();
 			const stdout = Readable.fromWeb(p.stdout), stderr = Readable.fromWeb(p.stderr);
+			let observed = "", claimsChecked = false, claimsBusy = false;
+			if (extra.COMBINED_HOLD === "1") stdout.on("data", chunk => {
+				observed += chunk.toString();
+				const line = observed.split(/\r?\n/).find(l => l.startsWith("COMBINED_PLUGIN ") && l.endsWith("}"));
+				if (!line || claimsChecked) return;
+				const launch = JSON.parse(line.slice(16)).launch;
+				claimsBusy = true;
+				for (const guard of [join(data, "bundles", launch.runtime, ".usage.lock"), join(launch.snapshot.dir, ".usage.lock"), join(launch.configSnapshot.dir, ".usage.lock")]) {
+					const claim = acquireClaim(guard, "exclusive");
+					if (claim !== "busy") { claimsBusy = false; claim.release(); }
+				}
+				claimsChecked = true;
+			});
 			let timer: ReturnType<typeof setTimeout>;
 			try {
 				const [code, out, err] = await Promise.race([
@@ -103,14 +129,17 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 					new Promise<never>((_, reject) => { timer = setTimeout(() => { p.kill(); reject(new Error(`combined command timed out: ${args.join(" ")}`)); }, 180_000); }),
 				]);
 				if (code !== expectedCode) throw new Error(`combined command ${args.join(" ")}: exit ${code}\n${out}\n${err}`);
+				if (extra.COMBINED_HOLD === "1") { expect(claimsChecked).toBe(true); expect(claimsBusy).toBe(true); }
 				return { out, err };
 			} finally { clearTimeout(timer!); if (p.exitCode === null) p.kill(); stdout.destroy(); stderr.destroy(); }
 		};
 		const bundle = (id: string) => join(data, "bundles", id);
 		const snapshot = (id: string) => join(data, "snapshots", id);
-		const protectedData = () => Object.fromEntries(["bundles", "snapshots", "addons", "home", "state"].flatMap(dir => Object.entries(digest(join(data, dir))).filter(([p]) => p !== "manager.lock").map(([p, hash]) => [`${dir}/${p}`, hash])));
-		const probe = async (args: string[] = [], restart = false) => {
-			const r = await command([...args, "--profile", "combined"], restart ? { COMBINED_RESTART: "1" } : {});
+		const config = (id: string) => join(data, "config-snapshots", id);
+		const protectedData = () => Object.fromEntries(["bundles", "snapshots", "config-snapshots", "addons", "home", "state"].flatMap(dir => Object.entries(digest(join(data, dir))).filter(([p]) => p !== "manager.lock").map(([p, hash]) => [`${dir}/${p}`, hash])));
+		const appArgs = ["-p", "manager update --use latest", "with space", "", "--use", "app-tail"], appInput = "combined stdin\n第二行\n";
+		const probe = async (args: string[] = [], restart = false, exit = 0) => {
+			const r = await command([...args, "--profile", "combined", ...appArgs], { COMBINED_HOLD: "1", COMBINED_EXIT: String(exit), ...(restart ? { COMBINED_RESTART: "1" } : {}) }, exit, appInput);
 			const reports = r.out.split(/\r?\n/).filter(l => l.startsWith("COMBINED_PLUGIN ")).map(l => JSON.parse(l.slice(16)));
 			expect(reports).toHaveLength(restart ? 2 : 1);
 			for (const report of reports) {
@@ -119,6 +148,13 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 				// The only Node is the runtime's bundled shim, never a host Node/Bun executable.
 				expect(Bun.which(WIN ? "node.cmd" : "node", { PATH: report.path })?.startsWith(shim)).toBe(true); expect(Bun.which("bun", { PATH: report.path })).toBeNull();
 				expect(report.home).toBe(home); expect(report.cwd).toBe(cwd); expect(report.launch.dataRoot).toBe(data); expect(report.launch.home).toBe(join(data, "home"));
+				expect(report.args).toEqual(appArgs); expect(report.input).toBe(report.restarted ? "" : appInput);
+				expect(report.launch.snapshot.dir).toBe(snapshot(report.launch.snapshot.id));
+				expect(report.launch.configSnapshot.dir).toBe(config(report.launch.configSnapshot.id));
+				for (const guard of [join(bundle(report.launch.runtime), ".usage.lock"), join(report.launch.snapshot.dir, ".usage.lock"), join(report.launch.configSnapshot.dir, ".usage.lock")]) {
+					const claim = acquireClaim(guard, "exclusive");
+					expect(claim).not.toBe("busy"); if (claim !== "busy") claim.release();
+				}
 			}
 			return reports;
 		};
@@ -133,6 +169,7 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 		note("empty-install", {runtime: b.id, actualTarget});
 
 		const profile = join(snapshot(`${b.id}@1`), "profiles/combined"); mkdirSync(profile, { recursive: true });
+		const runtimeBeforePlugin = digest(bundle(b.id)), managerBeforePlugin = readFileSync(exe);
 		writeFileSync(join(profile, "package.json"), JSON.stringify({ name: "combined-profile", private: true, dsh: { profile: { bundles: [] } } }));
 		const plugin = join(root, "combined-plugin.tgz");
 		writeFileSync(plugin, await new Bun.Archive({
@@ -140,19 +177,38 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 		}, { compress: "gzip" }).bytes());
 		await command(["--use", b.id, "plugin", "--profile", "combined", "add", plugin, "--offline", "--ignore-scripts", "--config.update-notifier=false"]);
 		const shared = join(data, "home/profiles/combined"); mkdirSync(shared, { recursive: true });
-		writeFileSync(join(shared, "cordis.patch.yml"), "- insert:\n    - id: combined-probe\n      name: dsh-combined-probe\n");
+		writeFileSync(join(shared, "cordis.patch.yml"), "- insert:\n    - id: old-combined-home-must-not-run\n      name: missing-home-plugin\n");
+		for (const file of ["settings.yaml", "settings.yaml.imported", ".credentials.yaml"]) writeFileSync(join(data, "home", file), "HOME_SENTINEL_MUST_NOT_BE_READ_OR_IMPORTED\n", { mode: 0o600 });
+		configPatch(config(`${b.id}@1`), "combined", "- insert:\n    - id: combined-probe\n      name: dsh-combined-probe\n");
+		expect(digest(bundle(b.id))).toEqual(runtimeBeforePlugin); expect(readFileSync(exe)).toEqual(managerBeforePlugin);
+		expect(existsSync(join(profile, "cordis.patch.yml"))).toBe(false);
+		const homeConfigBefore = Object.fromEntries(["profiles/combined/cordis.patch.yml", "settings.yaml", "settings.yaml.imported", ".credentials.yaml"].map(p => [p, sha256(readFileSync(join(data, "home", p)))]));
+		const checkHomeConfig = () => { for (const [p, hash] of Object.entries(homeConfigBefore)) expect(sha256(readFileSync(join(data, "home", p)))).toBe(hash); };
 		for (const p of ["home/credentials.json", "home/sessions/keep.json", "home/config.json"]) { mkdirSync(join(data, p, ".."), { recursive: true }); writeFileSync(join(data, p), '{"keep":"user data"}'); }
-		expect((await probe())[0].launch.runtime).toBe(b.id);
+		expect((await probe())[0].launch.runtime).toBe(b.id); await probe([], false, 7);
+		const firstP = digest(snapshot(`${b.id}@1`)), firstC = digest(config(`${b.id}@1`));
 		await command(["manager", "install", a.id]);
 		const list = (await command(["manager", "list"])).out; expect(list).toContain(a.id); expect(list).toContain(b.id);
 		await command(["manager", "snapshot", "plugins", "new", "--use", b.id]);
-		const chosenSnapshot = `${b.id}@2`;
-		await command(["manager", "select", "--use", b.id, "--snapshot", chosenSnapshot]);
-		for (const runtime of [a.id, b.id]) expect((await probe(["--use", runtime, "--snapshot", chosenSnapshot]))[0].launch.snapshot.id).toBe(chosenSnapshot);
-		note("versions-snapshots-plugin", {runtimes: [a.id, b.id], snapshot: chosenSnapshot});
+		await command(["manager", "snapshot", "config", "new", "--use", b.id]);
+		const chosenSnapshot = `${b.id}@2`, chosenConfig = `${b.id}@2`;
+		expect(digest(snapshot(`${b.id}@1`))).toEqual(firstP); expect(digest(config(`${b.id}@1`))).toEqual(firstC);
+		expect(readFileSync(join(config(chosenConfig), "profiles/combined/cordis.patch.yml"))).toEqual(readFileSync(join(config(`${b.id}@1`), "profiles/combined/cordis.patch.yml")));
+		configPatch(config(chosenConfig), "combined", "# independently chosen C\n- insert:\n    - id: combined-probe\n      name: dsh-combined-probe\n");
+		expect(digest(config(`${b.id}@1`))).toEqual(firstC);
+		await command(["manager", "select", "--use", b.id, "--snapshot", chosenSnapshot, "--config-snapshot", chosenConfig]);
+		for (const runtime of [a.id, b.id]) {
+			const report = (await probe(["--use", runtime, "--snapshot", chosenSnapshot, "--config-snapshot", chosenConfig]))[0];
+			expect(report.launch.snapshot.id).toBe(chosenSnapshot); expect(report.launch.configSnapshot.id).toBe(chosenConfig);
+		}
+		// Empty C with same P must not load HOME's old plugin configuration.
+		await command(["manager", "snapshot", "config", "new", "--use", b.id, "--empty"]);
+		const empty = await command(["--use", b.id, "--snapshot", chosenSnapshot, "--config-snapshot", `${b.id}@3`, "--profile", "combined", "--dump-config"]);
+		expect(empty.out).not.toMatch(/combined-probe|old-combined-home|HOME_SENTINEL/); checkHomeConfig();
+		note("versions-snapshots-plugin", {runtimes: [a.id, b.id], snapshot: chosenSnapshot, configSnapshot: chosenConfig});
 
 		await command(["manager", "install", "--addon", "office"]);
-		await command(["manager", "select", "--use", b.id, "--snapshot", chosenSnapshot, "--addon", `office:${addon.version}`]);
+		await command(["manager", "select", "--use", b.id, "--snapshot", chosenSnapshot, "--config-snapshot", chosenConfig, "--addon", `office:${addon.version}`]);
 		const addonRoot = join(data, "addons/office", addon.version);
 		expect(json(join(addonRoot, "addon.json")).slot).toEqual(addon.slot);
 		expect((await probe())[0].launch.addons.office.version).toBe(addon.version);
@@ -160,30 +216,34 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 		const officeProfile = join(snapshot(chosenSnapshot), "profiles/office-combined"), officeShared = join(data, "home/profiles/office-combined");
 		mkdirSync(officeProfile, { recursive: true }); mkdirSync(officeShared, { recursive: true });
 		writeFileSync(join(officeProfile, "package.json"), JSON.stringify({ name: "office-combined", private: true, dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless"] } } }));
-		writeFileSync(join(officeShared, "cordis.patch.yml"), "- insert:\n    - id: office-to-pdf\n      name: '@deepseek-ai/dsh-office-to-pdf'\n    - id: skill-office\n      name: '@deepseek-ai/dsh-skill-office'\n");
+		writeFileSync(join(officeShared, "cordis.patch.yml"), "- insert:\n    - id: old-office-home-must-not-run\n      name: missing-home-plugin\n");
+		const officeSentinel = readFileSync(join(officeShared, "cordis.patch.yml"));
+		configPatch(config(chosenConfig), "office-combined", "- insert:\n    - id: office-to-pdf\n      name: '@deepseek-ai/dsh-office-to-pdf'\n    - id: skill-office\n      name: '@deepseek-ai/dsh-skill-office'\n");
 		const office = async () => {
 			const r = await command(["--profile", "office-combined", "hi"], {}, 1);
 			expect(r.err).toContain("MISSING_CREDENTIAL"); expect(r.err).not.toMatch(/DeclaredDegradation|did not activate|failed to import/);
+			checkHomeConfig(); expect(readFileSync(join(data, "home/profiles/office-combined/cordis.patch.yml"))).toEqual(officeSentinel);
+			expect(existsSync(join(snapshot(chosenSnapshot), "profiles/office-combined/cordis.patch.yml"))).toBe(false);
 		};
 		await office(); note("real-office-addon", {tag: addon.tag, slot: addon.slot});
 
 		// Deletion refuses an explicit pin. Choose latest first, then restore the saved selection after reinstall.
 		await command(["manager", "select", "--use", "latest"]);
-		const preserved = Object.fromEntries(["snapshots", "home", "addons"].map(d => [d, digest(join(data, d))]));
+		const preserved = Object.fromEntries(["snapshots", "config-snapshots", "home", "addons"].map(d => [d, digest(join(data, d))]));
 		await command(["manager", "uninstall", a.id, b.id]);
 		expect(readdirSync(join(data, "bundles"))).toEqual([]);
 		online = false; const beforeOffline = requests.length;
 		await command(["manager", "list"]); await command(["manager", "info"]); expect(requests.length).toBe(beforeOffline);
 		online = true; await command(["manager", "install", b.id]); await command(["manager", "install", a.id]);
 		for (const [d, hashes] of Object.entries(preserved)) expect(digest(join(data, d))).toEqual(hashes);
-		await command(["manager", "select", "--use", b.id, "--snapshot", chosenSnapshot, "--addon", `office:${addon.version}`]);
-		expect((await probe())[0].launch.snapshot.id).toBe(chosenSnapshot);
+		await command(["manager", "select", "--use", b.id, "--snapshot", chosenSnapshot, "--config-snapshot", chosenConfig, "--addon", `office:${addon.version}`]);
+		const reinstalled = (await probe())[0]; expect(reinstalled.launch.snapshot.id).toBe(chosenSnapshot); expect(reinstalled.launch.configSnapshot.id).toBe(chosenConfig);
 		note("uninstall-all-reinstall", {preservedPaths: Object.values(preserved).reduce((n, d) => n + Object.keys(d).length, 0)});
 
 		online = false; const offlineRequests = requests.length;
 		const restarted = await probe([], true); expect(restarted.map(r => r.restarted)).toEqual([false, true]);
-		for (const r of restarted) expect(r.launch.snapshot.id).toBe(chosenSnapshot);
-		expect(requests.length).toBe(offlineRequests); note("offline-in-app-restart", {processes: 2});
+		for (const r of restarted) { expect(r.launch.snapshot.id).toBe(chosenSnapshot); expect(r.launch.configSnapshot.id).toBe(chosenConfig); }
+		expect(requests.length).toBe(offlineRequests); note("offline-probe-respawn", {processes: 2, upstreamRestartEntrypointVerified: false});
 
 		online = true; const beforeUpdate = protectedData(), oldManagerHash = sha256(readFileSync(exe));
 		const update = await command(["manager", "self-update"]);
@@ -207,12 +267,16 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 		renameSync(sealed, install); // Entire install moved; original name no longer resolves on either OS.
 		exe = join(install, `dsh${suffix}`); data = join(install, "dsh-bin");
 		const movedState = protectedData(), selectedReport = (await probe())[0];
-		expect(selectedReport.launch.runtime).toBe(b.id); expect(selectedReport.launch.snapshot.id).toBe(chosenSnapshot);
+		expect(selectedReport.launch.runtime).toBe(b.id); expect(selectedReport.launch.snapshot.id).toBe(chosenSnapshot); expect(selectedReport.launch.configSnapshot.id).toBe(chosenConfig);
+		const paths = JSON.parse((await command(["manager", "path", "--json"])).out);
+		expect(paths.effective.plugins.id).toBe(chosenSnapshot); expect(paths.effective.config.id).toBe(chosenConfig);
+		for (const record of paths.records) if (record.path) expect(record.path.startsWith(original)).toBe(false);
+		expect(paths.records.some((r: any) => r.kind === "config" && r.id === chosenConfig && r.path === config(chosenConfig))).toBe(true);
 		for (const runtime of [a.id, b.id]) {
 			expect(existsSync(bundle(runtime))).toBe(true);
-			const movedReport = (await probe(["--use", runtime, "--snapshot", chosenSnapshot, "--addon", `office:${addon.version}`]))[0];
+			const movedReport = (await probe(["--use", runtime, "--snapshot", chosenSnapshot, "--config-snapshot", chosenConfig, "--addon", `office:${addon.version}`]))[0];
 			expect(movedReport.launch.runtime).toBe(runtime);
-			expect(movedReport.launch.snapshot.id).toBe(chosenSnapshot); expect(movedReport.launch.addons.office.dir).toBe(join(data, "addons/office", addon.version));
+			expect(movedReport.launch.snapshot.id).toBe(chosenSnapshot); expect(movedReport.launch.configSnapshot.id).toBe(chosenConfig); expect(movedReport.launch.addons.office.dir).toBe(join(data, "addons/office", addon.version));
 		}
 		await office();
 		// A real app boot may create a new session; it must preserve every pre-move user/runtime path.
@@ -220,8 +284,11 @@ test.skipIf(!artifacts)(`DL-REAL-E2E: two CI runtimes/managers, real plugin/addo
 		for (const [path, hash] of Object.entries(movedState)) expect(afterMove[path]).toBe(hash);
 		expect(existsSync(original)).toBe(false);
 		await command(["manager", "clean"]); // Also removes the retired Windows helper/candidate, never user data.
+		const afterClean = protectedData();
+		for (const [path, hash] of Object.entries(afterMove)) expect(afterClean[path]).toBe(hash);
 		expect(requests.length).toBe(requestsBeforeMove);
-		note("offline-move", {runtimes: [a.id, b.id], snapshot: chosenSnapshot, oldPathAbsent: true, sourceStopped: true, unchangedPaths: Object.keys(movedState).length});
+		note("offline-move", {runtimes: [a.id, b.id], snapshot: chosenSnapshot, configSnapshot: chosenConfig, oldPathAbsent: true, sourceStopped: true, unchangedPaths: Object.keys(movedState).length});
+		checkHomeConfig(); expect(digest(source)).toEqual(sourceBefore);
 		expect(tree(home)).toEqual([]); expect(tree(cwd)).toEqual([]);
 		const outside = tree(root).filter(p => !p.startsWith("moved/portable install/dsh-bin/"));
 		expect(outside).toEqual(["combined-plugin.tgz", "isolated-home", "moved", "moved/portable install", "moved/portable install/dsh-bin", `moved/portable install/dsh${suffix}`, "workspace"].sort());
