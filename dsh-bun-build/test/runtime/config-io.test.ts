@@ -28,7 +28,8 @@ export function apply(ctx, config) {
       credential: await ctx.credentials.resolve('IO_TEST_KEY'),
       homeFallback: await ctx.credentials.resolve('IO_HOME_ONLY'),
       processOnly: await ctx.credentials.resolve('IO_PROCESS_ONLY'),
-      cache: dshCachePath(),
+      cache: dshCachePath(), path: process.env.PATH,
+      tools: Object.fromEntries(['node', 'bun', 'zig', 'cc', 'gcc', 'clang'].map(name => [name, Bun.which(name)])),
       home: ctx.profileContext.home, dir: ctx.profileContext.dir, patch: ctx.settings.documentPath,
       plugin: import.meta.url });
     const mode = ctx.cmdlineArgs.get()[0];
@@ -91,18 +92,24 @@ test("CS-SWITCH: authentic settings/provider C1 → C2 update → C1, plugin bas
   };
   for (const [file, hash] of Object.entries(sourceHashes)) expect(createHash("sha256").update(readFileSync(join(APP!, file))).digest("hex"), `authenticated service bytes ${file}`).toBe(hash);
   const root = mkdtempSync(join(tmpdir(), "real-config-io-"));
+  const emptyPath = join(root, "empty-product-path"); mkdirSync(emptyPath);
+  const assertProductPath = (report: any) => {
+    expect(report.path).toBe(`${join(root, "bundles", RUNTIME, "bin")}:${emptyPath}`);
+    expect(report.tools).toMatchObject({ bun: null, zig: null, cc: null, gcc: null, clang: null });
+    expect([null, join(root, "bundles", RUNTIME, "bin/node")]).toContain(report.tools.node);
+  };
   writeFileSync(join(root, "source-hashes.json"), JSON.stringify(sourceHashes, null, 2));
   console.log(`REAL_IO_ARTIFACT ${root}`);
   const app = join(root, "app-input"); cpSync(APP!, app, { recursive: true });
   transformApp(app);
   if (existsSync(join(app, "node_modules", KIT))) splitOfficeAddon(app, join(root, "office"));
   const native = join(root, "dsh-native");
-  execFileSync("bun", [join(ROOT, "scripts/compile-entry.mjs"), "bun-linux-x64", native], { timeout: 120_000 });
+  execFileSync(process.execPath, [join(ROOT, "scripts/compile-entry.mjs"), "bun-linux-x64", native], { timeout: 120_000 });
   const bundle = join(root, "bundles", RUNTIME);
   assembleBundle({ target: "linux-x64-modern", out: bundle, app, pnpm: PNPM, native,
     identity: { id: RUNTIME, tag: "dsh-v0.2.0-rc.2", channel: "rc" },
     upstream: { commit: "639ed015397290b3745d163aafe02ffee4aa3f84", commitTime: "2026-09-29T09:21:31.000Z", version: RUNTIME },
-    run: 1, attempt: 1, builderCommit: "10a6a9fd7993f61b32f1194e4b65ae10bd7e18a4" });
+    run: 1, attempt: 1, builderCommit: execFileSync(Bun.which("git")!, ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim() });
   const home = join(root, "home"), plugins = join(root, "snapshots", `${RUNTIME}@1`);
   const pd = join(plugins, "profiles/io"), pkg = join(pd, "node_modules/io-bundle");
   privateFile(join(plugins, ".usage.lock"), "");
@@ -145,8 +152,8 @@ test("CS-SWITCH: authentic settings/provider C1 → C2 update → C1, plugin bas
     const launch = { protocol: 2, runtime: RUNTIME, dataRoot, home, snapshot: { id: `${RUNTIME}@1`, dir: join(dataRoot, "snapshots", `${RUNTIME}@1`) }, configSnapshot: { id: `${RUNTIME}@${n}`, dir: join(dataRoot, "config-snapshots", `${RUNTIME}@${n}`) }, addons: {}, cache: join(dataRoot, "cache"), tmp: join(dataRoot, "tmp"), manager: "test" };
     const stem = `run-${++runCount}-C${n}-${mode}`, audit = join(root, `${stem}.audit`);
     // Kernel audit, not absence-of-secret output: include failed opens and native watcher registrations.
-    const proc = Bun.spawn(["timeout", "--kill-after=2s", "30s", "strace", "-f", "-qq", "-e", "trace=open,openat,rename,renameat,renameat2,inotify_add_watch", "-o", audit, join(bundle, "dsh-native"), "--profile", "io", mode], {
-      cwd, env: { PATH: process.env.PATH!, HOME: home, DSH_HOME: home, TMPDIR: root, XDG_CACHE_HOME: join(root, "cache"), DSH_MANAGER_LAUNCH: JSON.stringify(launch), IO_PROCESS_ONLY: "synthetic-inherited-process", NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
+    const proc = Bun.spawn([Bun.which("timeout")!, "--kill-after=2s", "30s", Bun.which("strace")!, "-f", "-qq", "-e", "trace=open,openat,rename,renameat,renameat2,inotify_add_watch", "-o", audit, join(bundle, "dsh-native"), "--profile", "io", mode], {
+      cwd, env: { PATH: emptyPath, HOME: home, DSH_HOME: home, TMPDIR: root, XDG_CACHE_HOME: join(root, "cache"), DSH_MANAGER_LAUNCH: JSON.stringify(launch), IO_PROCESS_ONLY: "synthetic-inherited-process", NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
 
     const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
     const code = await proc.exited;
@@ -159,6 +166,7 @@ test("CS-SWITCH: authentic settings/provider C1 → C2 update → C1, plugin bas
     const line = stdout.split("\n").find(l => l.startsWith("IO_REPORT "));
     expect(line, stdout + stderr).toBeTruthy();
     const report = JSON.parse(line!.slice(10));
+    assertProductPath(report.before); assertProductPath(report.after);
     if (existsSync(report.before.patch)) expect(accesses.includes(`"${report.before.patch}"`), `profile read ${report.before.patch}`).toBe(true);
     return { ...report, accesses };
   }
@@ -249,11 +257,12 @@ test("CS-SWITCH: authentic settings/provider C1 → C2 update → C1, plugin bas
   privateFile(join(standalone, "profiles/io/cordis.patch.yml"), patch("standalone"));
   privateFile(join(standalone, ".credentials.yaml"), creds("standalone"));
   privateFile(join(standalone, ".env"), "IO_HOME_ONLY=synthetic-standalone-home-fallback\n");
-  const direct = Bun.spawnSync(["timeout", "--kill-after=2s", "30s", join(bundle, "dsh-native"), "--profile", "io", "update"], { cwd: standalone,
-    env: { PATH: process.env.PATH!, HOME: standalone, DSH_HOME: standalone, DSH_BIN_CONFIG_SNAPSHOT_DIR: configs[0], TMPDIR: root, XDG_CACHE_HOME: join(root, "cache"), NO_COLOR: "1" } });
+  const direct = Bun.spawnSync([Bun.which("timeout")!, "--kill-after=2s", "30s", join(bundle, "dsh-native"), "--profile", "io", "update"], { cwd: standalone,
+    env: { PATH: emptyPath, HOME: standalone, DSH_HOME: standalone, DSH_BIN_CONFIG_SNAPSHOT_DIR: configs[0], TMPDIR: root, XDG_CACHE_HOME: join(root, "cache"), NO_COLOR: "1" } });
   writeFileSync(join(root, "standalone.log"), direct.stdout.toString() + direct.stderr.toString());
   expect(direct.exitCode, direct.stderr.toString()).toBe(0);
   const directReport = JSON.parse(direct.stdout.toString().split("\n").find(l => l.startsWith("IO_REPORT "))!.slice(10));
+  assertProductPath(directReport.before); assertProductPath(directReport.after);
   expect(directReport.before.label).toBe("standalone"); expect(directReport.before.credential.value).toBe("synthetic-standalone");
   expect(directReport.before.homeFallback.value).toBe("synthetic-standalone-home-fallback");
   expect(directReport.after.credential.value).toBe("synthetic-C2-updated");
