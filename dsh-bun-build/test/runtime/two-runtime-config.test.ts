@@ -35,6 +35,8 @@ const SERVICES = {
 	"node_modules/@deepseek-ai/dsh-credentials-local/lib/index.js": "1688f17801d5809abace4ef6228b771625a0153c043d7d4dba21b398ec4056eb",
 	"node_modules/@deepseek-ai/dsh-app-boot/lib/index.js": "234db45e1b3f8c683b5bc1f551948b2a2ec52a6468c7b6937725a23f1c0e0d96",
 	"node_modules/@deepseek-ai/dsh-config-editor/lib/index.js": "373e05c8250d25dda983ccf6e214a55e3792a211d1a7b883affcd66de47b5bf8",
+	"node_modules/@deepseek-ai/dsh-hmr/lib/index.js": "75686a16199f90f5b580d96923d3d5c52a513402b399ad723d92506d00ea7676",
+	"node_modules/@deepseek-ai/dsh-atomic-write/lib/index.js": "5f07978ef594a2711b2da301d5cb73a835cf1a48c1f8920ab5c6625137e12029",
 };
 
 const PROBE = `import z from '@deepseek-ai/schemastery';
@@ -136,8 +138,9 @@ test("CS-FORMAT / CS-CROSS: real rc.1 → rc.2 auto inheritance, rc.2 settings/p
 		let count = 0;
 		async function dsh(args: string[], label: string) {
 			const stem = `${String(++count).padStart(2, "0")}-${label}`, audit = join(root, `${stem}.audit`);
-			const proc = Bun.spawn(["timeout", "--kill-after=2s", "120s", "strace", "-f", "-qq", "-e", "trace=open,openat,rename,renameat,renameat2,inotify_add_watch", "-o", audit, exe, ...args],
-				{ cwd: userHome, env: { ...env, PATH: `${install}:${process.env.PATH}` }, stdout: "pipe", stderr: "pipe" });
+			// Driver tools use absolute paths; the product cannot resolve host Node/Bun/compilers.
+			const proc = Bun.spawn([Bun.which("timeout")!, "--kill-after=2s", "120s", Bun.which("strace")!, "-f", "-qq", "-e", "trace=open,openat,rename,renameat,renameat2,inotify_add_watch", "-o", audit, exe, ...args],
+				{ cwd: userHome, env, stdout: "pipe", stderr: "pipe" });
 			const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
 			const code = await proc.exited;
 			writeFileSync(join(root, `${stem}.log`), `$ dsh ${args.join(" ")}\nexit ${code}\n${stdout}${stderr}`);

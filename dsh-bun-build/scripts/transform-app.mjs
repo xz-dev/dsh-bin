@@ -110,7 +110,8 @@ export const CONFIG_SITES = [
 		['import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";', 'import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";'],
 	].map(([from, to]) => rule("node_modules/@deepseek-ai/dsh-atomic-write/lib/index.js", from, to)),
 ];
-export const CONFIG_SITES_BY_VERSION = { "0.2.0-rc.2": CONFIG_SITES };
+// Authenticated rc.1/rc.2 config-service bytes match; both must satisfy every exact site count.
+export const CONFIG_SITES_BY_VERSION = { "0.2.0-rc.1": CONFIG_SITES, "0.2.0-rc.2": CONFIG_SITES };
 const occurrences = (text, needle) => text.split(needle).length - 1;
 function rewriteConfigSites(texts, sites, rewritten) {
 	for (const { file, from, to, count } of sites) {
