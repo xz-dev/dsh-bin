@@ -6,7 +6,7 @@
 
 The Zig manager owns installation, selection, snapshots, addons, completion and self-update. It does not run JavaScript for management. The Bun runtime bundle contains upstream dsh, embedded Bun/pnpm, dependencies and runtime adaptation; it has no manager executable or management engine.
 
-They communicate through a versioned manifest and launch context. The manager resolves a runtime, snapshot, home and addon before starting the application. The runtime consumes those locations; an in-app restart retains them instead of reading a changed default selection.
+They communicate through a versioned manifest and launch context. Protocol 2 carries independent plugin and configuration roots alongside the runtime, home and addon. The runtime uses process-local path mapping; it does not switch public plugin links or a global current-config pointer. The fixed context is also the internal-restart contract; actual upstream restart acceptance is still pending in this branch.
 
 ## Portable layout
 
@@ -17,8 +17,9 @@ installation/
     .dsh-bin-data.json         ownership marker
     bundles/<runtime-id>/     read-only runtime bundles
     addons/office/<addon-id>/  installed addons
-    snapshots/<runtime>@<n>/  per-profile plugin runtime files
-    home/                     default application home
+    snapshots/<runtime>@<n>/  per-profile plugin runtime files (P)
+    config-snapshots/<runtime>@<n>/  private configuration and local credentials (C)
+    home/                     default application home; sessions and non-config state
     cache/                    downloads, Bun/transpiler/npm/pnpm caches
     state/                    selection, channel, completion choices, locks
     tmp/                      installation/update residue
@@ -26,7 +27,7 @@ installation/
 
 A managed package's `.dsh-manager-install.json` beside the executable explicitly declares Portage/Scoop ownership. Without a marker the mode is portable, even in a read-only directory. Unknown/corrupt markers fail rather than selecting another location. The [managed roots and DSH_HOME override](install.md#where-data-lives) separate package content from user data.
 
-The manager's controlled application environment directs known caches and temporary files into this root; it does not globally replace user HOME or sandbox plugins. Workspace changes and user-configured external paths remain the user's responsibility. Stop sessions before moving a portable installation; no cross-OS move or live move is promised.
+The manager's controlled application environment directs known caches and temporary files into this root; it does not globally replace user HOME or sandbox plugins. Managed configuration and built-in local credential paths are confined to C, including explicit overrides; shared-home fallback is not allowed. Independent project `.env`, inherited environment and arbitrary plugin/workspace I/O retain upstream semantics and are outside the snapshot guarantee. Stop sessions before moving a portable installation; no cross-OS move or live move is promised.
 
 ## Release identities
 
@@ -57,7 +58,7 @@ Updates use same-volume staging and checked replacement. Process interruption is
 
 Runtime adaptation preserves upstream commands but is not an unchanged Node.js build. Node-internal hot reload (`@deepseek-ai/dsh-hmr`) is inactive. Office plugins need a compatible [office addon](office-addon.md). Plugin installation belongs to dsh and writes to the selected [snapshot](snapshots.md); the manager does not repair plugin dependencies automatically.
 
-Completion describes fixed upstream CLI declarations, not runtime-generated plugin commands. Usage protection covers managed runtime processes, including their restarts, not every isolated child. An explicit external home or a plugin's external path lies outside the portable guarantee. Only new-format runtimes with a supported launch protocol are accepted.
+Completion describes fixed upstream CLI declarations, not runtime-generated plugin commands. Runtime/P/C usage claims protect selected collections; the actual upstream restart and Windows parent-exit cases remain acceptance gates, not a promise to track every isolated child. An explicit external home or arbitrary plugin external path lies outside the portable guarantee; built-in local credential paths instead must stay in C. Protocol-2 bundles are required, while valid old plugin metadata and selections without C remain readable. See [compatibility and current limitations](snapshots.md#compatibility-and-development-status).
 
 ## Development ownership
 

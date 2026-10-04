@@ -6,7 +6,7 @@
 
 Zig 管理器拥有安装、选择、快照、addon、补全和 self-update，管理操作不运行 JavaScript。Bun 运行包包含上游 dsh、内嵌 Bun/pnpm、依赖和运行适配，不含管理器可执行文件或管理引擎。
 
-两者通过版本化 manifest 和启动上下文配合。管理器启动前解析运行包、快照、home、addon；运行包只消费这些位置，应用内重启保留原上下文，不读取后来修改的默认选择。
+两者通过版本化 manifest 和启动上下文配合。协议 2 分别携带插件根、配置根，以及运行包、home、addon。运行包使用进程局部路径映射，不切换公共插件链接或全局 current-config 指针。内部重启也须保留固定上下文；本分支的实际上游重启验收尚未完成。
 
 ## 便携布局
 
@@ -17,8 +17,9 @@ installation/
     .dsh-bin-data.json         拥有权标记
     bundles/<runtime-id>/     只读运行包
     addons/office/<addon-id>/  已安装 addon
-    snapshots/<runtime>@<n>/  各 profile 插件运行文件
-    home/                     默认应用 home
+    snapshots/<runtime>@<n>/  各 profile 插件运行文件（P）
+    config-snapshots/<runtime>@<n>/  私有配置与本地凭据（C）
+    home/                     默认应用 home；会话及非配置状态
     cache/                    下载、Bun/transpiler/npm/pnpm 缓存
     state/                    选择、渠道、补全选择、锁
     tmp/                      安装/更新残留
@@ -26,7 +27,7 @@ installation/
 
 托管包在可执行文件旁用 `.dsh-manager-install.json` 明确声明 Portage/Scoop 拥有权。没有标记就是便携模式，即使目录只读；未知或损坏标记会失败，不另选位置。[托管数据根与 DSH_HOME](install.md#数据放在哪里)将包内容和用户数据分开。
 
-受控应用环境将已知缓存和临时文件指向数据根，不全局替换用户 HOME，也不是插件沙箱。工作区修改和用户配置的外部路径仍由用户负责。搬迁前停止会话，不承诺跨系统搬迁或运行中搬迁。
+受控应用环境将已知缓存和临时文件指向数据根，不全局替换用户 HOME，也不是插件沙箱。受管理配置及内建本地凭据路径（含显式覆盖）限制在 C 内，不允许共享 home 回退。独立项目 `.env`、继承环境以及任意插件／工作区 I/O 保持上游语义，不属于快照保证。搬迁前停止会话，不承诺跨系统搬迁或运行中搬迁。
 
 ## 发布身份
 
@@ -57,7 +58,7 @@ installation/
 
 运行适配保留上游命令，但不是完全未修改的 Node.js 构建。依赖 Node 内部机制的 hot reload（`@deepseek-ai/dsh-hmr`）不可用；office 插件需要兼容 [office addon](office-addon.md)。插件安装归应用，在所选[快照](snapshots.md)中写入；管理器不自动修复依赖。
 
-补全描述固定上游 CLI，不含运行时动态插件命令。占用保护覆盖受管理 runtime 及重启，不追踪全部孤立子进程。显式外部 home 或插件外部路径不在便携保证内。仅接受新格式、受支持启动协议的运行包。
+补全描述固定上游 CLI，不含运行时动态插件命令。运行包/P/C 的使用声明保护所选集合；实际上游重启和 Windows 父退出仍是验收门禁，不承诺追踪全部孤立子进程。显式外部 home 或任意插件外部路径不在便携保证内；内建本地凭据路径则必须留在 C 内。运行包要求协议 2，有效旧插件 metadata 及缺 C 的旧选择仍兼容，见[兼容性与当前限制](snapshots.md#兼容性与开发状态)。
 
 ## 开发归属
 

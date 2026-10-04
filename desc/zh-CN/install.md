@@ -53,9 +53,29 @@ dsh manager info
 
 符号链接位置和当前工作目录不改变数据根。便携目录必须可写；失败时点明路径，不改用 HOME，也不要求管理员权限。非空、无关的同名 `dsh-bin` 目录会报冲突，不自动接管。
 
-数据根包含运行包、addon、快照、状态、缓存、临时文件，以及默认应用 home（`dsh-bin/home`）。非空白 `DSH_HOME` 只改变应用 home：配置、凭据、会话和共享 profile 设置；空值或纯空白采用默认 home；`~` 展开为用户家目录，相对值按原调用工作目录解析。运行包、快照和管理缓存仍在数据根。外部 `DSH_HOME` 不在整体搬迁保证内。
+数据根包含运行包、addon、插件和配置快照、状态、缓存、临时文件，以及默认应用 home（`dsh-bin/home`）。非空白 `DSH_HOME` 只改变应用 home 及会话等非配置状态，不移动 P/C，不导入旧 home 设置，也不授权读取 home 凭据。空值或纯空白采用默认 home；`~` 展开为用户家目录，相对值按原调用工作目录解析。运行包、两类快照和管理缓存仍在数据根。外部 `DSH_HOME` 不在整体搬迁保证内。
 
 搬迁前停止会话，将管理器和**完整 `dsh-bin/` 目录**一起移动，目标平台必须兼容。只移动管理器会成为新的独立安装。用户指定的外部路径不会自动复制或改写。
+
+## 不启动应用查询路径
+
+```sh
+dsh manager path
+dsh manager path --json
+dsh manager path self
+dsh manager path home
+dsh manager path runtime <runtime>
+dsh manager path snapshot plugins <snapshot>
+dsh manager path snapshot config <snapshot>
+dsh manager path addon office:<addon>
+dsh manager path cache
+dsh manager path tmp
+dsh manager path completion powershell
+```
+
+省略库存目标可列出本地条目；`path snapshot` 同时列出两类。总览说明可执行文件、数据根、home、路径来源及有效运行包/P/C/addon 选择。它不创建缺失目录或快照、不自举运行包、不获取操作锁、不注册补全、不启动子进程、不联网，也不读取配置或凭据正文。独立项目 `.env` 和继承环境变量保持上游语义，查询不会枚举秘密后端。
+
+JSON 包含 `schemaVersion: 1`、`complete`、`records`、`effective` 和 `diagnostics`。缺少默认项时，库存查询可以完整而选择未解析，不会创建快照填补空缺。显式目标不存在或歧义、非法类型、不可访问或冲突的存储，均非零退出并给诊断，不静默回退 latest。旧补全注册没有记录位置时报告 unknown，不读取 shell rc 猜测。
 
 ## 托管包
 
@@ -105,4 +125,4 @@ scoop uninstall dsh
 
 两者均保留用户运行包、快照、配置、凭据和会话。补全注册是独立的用户状态，不再需要时应在删除管理器前撤销。
 
-删除数据根是另一项破坏性操作：会删除运行包、快照和**默认**应用 home，包括凭据、会话。先备份并核对路径。显式外部 `DSH_HOME` 不随数据根删除。`manager clean` 不是卸载或擦除用户数据的命令。
+删除数据根是另一项破坏性操作：会删除运行包、两类快照（包括 C 内本地凭据）及**默认**应用 home 中的会话。先备份并核对路径。显式外部 `DSH_HOME` 不随数据根删除。`manager clean` 不是卸载或擦除用户数据的命令。

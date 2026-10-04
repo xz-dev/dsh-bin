@@ -45,6 +45,17 @@ dsh manager completion install pwsh --profile <absolute-profile-path> --dry-run
 
 Registration preserves other configuration and refuses foreign completion conflicts. Repeated registration is idempotent. The command prints the actual target and how to load it in the **current** session; otherwise open a new shell that loads that profile. A child process cannot activate completion in its parent shell. Windows PowerShell execution policy may need to allow your profile according to your local policy.
 
+Snapshot completion is typed: `manager snapshot plugins ...` and `manager snapshot config ...` use separate inventories; `--snapshot` and `--config-snapshot` complete their corresponding kind. Path-query completion is also local and does not initialize a missing collection.
+
+Inspect recorded registration locations without reading shell rc contents:
+
+```sh
+dsh manager path completion
+dsh manager path completion pwsh --json
+```
+
+New registrations record their actual location and binding. Older records without a location report unknown rather than guessing from the current environment.
+
 ## Remove registration
 
 ```sh

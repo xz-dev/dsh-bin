@@ -45,6 +45,17 @@ dsh manager completion install pwsh --profile <absolute-profile-path> --dry-run
 
 注册保留其他配置，拒绝 foreign completion 冲突；重复注册幂等。命令输出实际目标及**当前**会话加载方法，也可以启动会加载该 profile 的新 shell。子进程不能替父 shell 激活补全。Windows PowerShell 的执行策略应按本地政策允许加载 profile。
 
+快照补全按类型分开：`manager snapshot plugins ...` 与 `manager snapshot config ...` 使用各自库存，`--snapshot` 和 `--config-snapshot` 只补全对应类型。路径查询补全同样本地执行，不初始化缺失集合。
+
+不读取 shell rc 正文即可查看已记录的注册位置：
+
+```sh
+dsh manager path completion
+dsh manager path completion pwsh --json
+```
+
+新注册记录实际位置与绑定方式；旧记录缺少位置时报告 unknown，不根据当前环境猜测。
+
 ## 撤销注册
 
 ```sh

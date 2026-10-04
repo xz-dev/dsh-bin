@@ -6,8 +6,10 @@ English | [简体中文](README.zh-CN.md)
 
 - **Independent updates.** `dsh manager update` installs a runtime; `dsh manager self-update` updates only the manager.
 - **Versions side by side.** Install a new runtime without replacing old ones. Choose an installed version for one launch or save a default.
-- **Plugin snapshots.** Keep plugin files per runtime in numbered snapshots. Shared configuration, credentials and sessions stay in the application home.
+- **Independent plugin and configuration snapshots.** Select plugin files separately from private configuration and local credentials. Sessions remain in application home.
 - **Portable by default.** Keep the manager and its adjacent `dsh-bin/` directory together. Stop sessions before moving them to a compatible system.
+
+This development branch uses launch protocol 2; it is not an announced release. Windows managed application startup remains blocked pending native acceptance. See [compatibility and validation status](desc/en/snapshots.md#compatibility-and-development-status).
 
 ## Install
 
@@ -24,7 +26,9 @@ dsh                              # first ordinary launch installs a runtime if n
 dsh manager --help               # native commands; no runtime needed
 dsh manager info                 # install mode, data root and application home
 dsh manager update               # install the current channel's newest runtime
-dsh manager snapshot new --name before-change
+dsh manager path --json          # read-only locations and effective choices
+dsh manager snapshot plugins new --name before-plugin-change
+dsh manager snapshot config new --name before-config-change
 dsh manager self-update          # portable manager only; runtimes and data stay
 dsh manager clean                # offline cache/residue cleanup, not data deletion
 ```
@@ -35,8 +39,9 @@ First interactive launch asks about shell completion **before** checking or down
 
 - [Install, data locations, managed packages and uninstall](desc/en/install.md)
 - [Versions and independent updates](desc/en/versions.md)
-- [Choosing a runtime, snapshot and addon](desc/en/select.md)
-- [Plugin snapshots](desc/en/snapshots.md)
+- [Choosing a runtime, plugin/config snapshot and addon](desc/en/select.md)
+- [Plugin and configuration snapshots](desc/en/snapshots.md)
+- [Read-only path queries](desc/en/install.md#inspect-paths-without-starting-the-application)
 - [Office addon](desc/en/office-addon.md)
 - [Bash, Zsh, Fish and PowerShell completion](desc/en/completion.md)
 - [Layout, release identities, trust and development](desc/en/how-it-works.md)

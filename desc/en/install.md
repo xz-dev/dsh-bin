@@ -53,9 +53,29 @@ dsh manager info
 
 A symlink or a different working directory does not change the root. A portable directory must be writable: failure reports the path, without falling back to HOME or requesting administrator rights. A nonempty unrelated `dsh-bin` directory is a conflict, not adopted automatically.
 
-The root holds runtimes, addons, snapshots, state, caches, temporary files and default application home (`dsh-bin/home`). A nonblank `DSH_HOME` changes only application home: configuration, credentials, sessions and shared profile settings. Empty/whitespace-only values use the default home. `~` expands to user home; relative values resolve from the original working directory. Runtimes, snapshots and manager caches stay in the data root. An external `DSH_HOME` is outside the portable move guarantee.
+The root holds runtimes, addons, plugin and configuration snapshots, state, caches, temporary files and default application home (`dsh-bin/home`). A nonblank `DSH_HOME` changes only application home and non-configuration state such as sessions: it does not move P or C, import old home settings, or grant access to home credentials. Empty/whitespace-only values use the default home. `~` expands to user home; relative values resolve from the original working directory. Runtimes, both snapshot kinds and manager caches stay in the data root. An external `DSH_HOME` is outside the portable move guarantee.
 
 Stop sessions before moving the manager **and its whole `dsh-bin/` directory** together, on a compatible platform. Moving only the manager starts a new independent installation. User-specified external paths are not copied or rewritten.
+
+## Inspect paths without starting the application
+
+```sh
+dsh manager path
+dsh manager path --json
+dsh manager path self
+dsh manager path home
+dsh manager path runtime <runtime>
+dsh manager path snapshot plugins <snapshot>
+dsh manager path snapshot config <snapshot>
+dsh manager path addon office:<addon>
+dsh manager path cache
+dsh manager path tmp
+dsh manager path completion powershell
+```
+
+Omit an inventory target to list local entries; `path snapshot` lists both kinds. The overview explains the executable, data root, home, path sources and effective runtime/P/C/addon choices. It does not create missing directories or snapshots, bootstrap a runtime, acquire operation locks, register completion, start subprocesses, use the network or read configuration/credential bodies. Independent project `.env` and inherited environment retain upstream semantics; this query does not enumerate secret backends.
+
+JSON has `schemaVersion: 1`, `complete`, `records`, `effective` and `diagnostics`. Missing defaults may leave selection unresolved while the inventory query remains complete; no snapshot is created to fill the gap. Missing or ambiguous explicit targets, invalid kinds, inaccessible or conflicting storage return a nonzero exit with diagnostics, not a silent latest fallback. A legacy completion registration without a recorded location reports unknown; the query never reads shell rc content to guess it.
 
 ## Managed packages
 
@@ -105,4 +125,4 @@ scoop uninstall dsh
 
 Both preserve user runtimes, snapshots, configuration, credentials and sessions. Completion registration is separate user state; remove it before deleting the manager if no longer needed.
 
-Deleting the data root is a separate, destructive decision: it removes runtimes, snapshots and the **default** application home, including credentials and sessions. Back it up and inspect the path first. An explicit external `DSH_HOME` is not removed by deleting the data root. `manager clean` is not an uninstall or data-erasure command.
+Deleting the data root is a separate, destructive decision: it removes runtimes, both snapshot kinds (including C's local credentials) and the **default** application home with its sessions. Back it up and inspect the path first. An explicit external `DSH_HOME` is not removed by deleting the data root. `manager clean` is not an uninstall or data-erasure command.

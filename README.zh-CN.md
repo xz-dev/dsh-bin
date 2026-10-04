@@ -6,8 +6,10 @@
 
 - **各自更新。** `dsh manager update` 安装运行包；`dsh manager self-update` 只更新管理器。
 - **多版本并存。** 装新运行包不替换旧版本，可以单次选版，也可以保存默认选择。
-- **插件快照。** 插件运行文件按运行包存入编号快照；共享配置、凭据和会话留在应用 home。
+- **插件与配置独立快照。** 分别选择插件文件、私有配置与本地凭据；会话仍留在应用 home。
 - **默认便携。** 管理器和相邻的 `dsh-bin/` 一起保存。停止会话后，可整体移到兼容平台上的新位置。
+
+本开发分支使用启动协议 2，不代表已经公开发布。Windows 受管理应用启动仍因原生验收未完成而禁用，见[兼容性与开发状态](desc/zh-CN/snapshots.md#兼容性与开发状态)。
 
 ## 安装
 
@@ -24,7 +26,9 @@ dsh                              # 普通首次启动在需要时自动安装运
 dsh manager --help               # 原生管理命令，不需要先有运行包
 dsh manager info                 # 安装模式、数据根和应用 home
 dsh manager update               # 安装当前渠道最新运行包
-dsh manager snapshot new --name before-change
+dsh manager path --json          # 只读查询位置与有效选择
+dsh manager snapshot plugins new --name before-plugin-change
+dsh manager snapshot config new --name before-config-change
 dsh manager self-update          # 仅便携管理器；运行包和数据不变
 dsh manager clean                # 离线清理缓存和残留，不删除用户数据
 ```
@@ -35,8 +39,9 @@ dsh manager clean                # 离线清理缓存和残留，不删除用户
 
 - [安装、数据位置、托管包和卸载](desc/zh-CN/install.md)
 - [版本和独立更新](desc/zh-CN/versions.md)
-- [选择运行包、快照和 addon](desc/zh-CN/select.md)
-- [插件快照](desc/zh-CN/snapshots.md)
+- [选择运行包、插件／配置快照和 addon](desc/zh-CN/select.md)
+- [插件与配置快照](desc/zh-CN/snapshots.md)
+- [不启动应用的只读路径查询](desc/zh-CN/install.md#不启动应用查询路径)
 - [Office addon](desc/zh-CN/office-addon.md)
 - [Bash、Zsh、Fish 和 PowerShell 补全](desc/zh-CN/completion.md)
 - [布局、发布身份、信任和开发](desc/zh-CN/how-it-works.md)
