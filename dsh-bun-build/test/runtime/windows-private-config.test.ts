@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createConfigPaths, installConfigPaths } from "../../runtime/compat/config-paths.ts";
 
@@ -10,23 +10,26 @@ const nativeTest = test.skipIf(!enabled);
 const helper = join(import.meta.dir, "fixtures/windows-private-fixture.ps1");
 const probe = join(import.meta.dir, "fixtures/windows-private-probe.ts");
 function fixture(action: string, path: string) {
-	const started = Date.now();
-	process.stderr.write(`NATIVE_FIXTURE_BEGIN ${action} ${path}\n`);
+	const started = Date.now(), stem = join(process.env.TEMP!, `fixture-${action}-${started}`);
+	const stdout = openSync(`${stem}.stdout`, "wx"), stderr = openSync(`${stem}.stderr`, "wx");
+	writeFileSync(`${stem}.stages`, "", { flag: "wx" });
+	// Write before spawn: even an outer runner kill leaves request identity and partial raw streams.
+	writeFileSync(`${stem}.request.json`, JSON.stringify({ action, path, started, timeoutMs: 20_000 }));
+	process.stderr.write(`NATIVE_FIXTURE_BEGIN ${action} ${path} artifact=${stem}\n`);
 	try {
-		const result = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", helper, action, path], {
-			encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"],
+		execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", helper, action, path], {
+			timeout: 20_000, stdio: ["ignore", stdout, stderr],
+			env: { ...process.env, DSH_WINDOWS_PRIVATE_IO_TRACE: `${stem}.stages` },
 		});
-		process.stderr.write(`NATIVE_FIXTURE_END ${action} ${Date.now() - started}ms\n`);
-		return result;
+		writeFileSync(`${stem}.result.json`, JSON.stringify({ elapsedMs: Date.now() - started, status: 0 }));
+		process.stderr.write(`NATIVE_FIXTURE_END ${action} ${Date.now() - started}ms artifact=${stem}\n`);
+		return readFileSync(`${stem}.stdout`, "utf8");
 	} catch (error) {
-		const failure = error as { stdout?: Buffer | string; stderr?: Buffer | string; code?: string; status?: number; signal?: string };
-		// Preserve raw native failure output; no secret fixture content is passed to PowerShell.
-		const stem = join(process.env.TEMP!, `fixture-failed-${action}-${Date.now()}`);
-		writeFileSync(`${stem}.stdout`, failure.stdout ?? "");
-		writeFileSync(`${stem}.stderr`, failure.stderr ?? "");
-		process.stderr.write(`NATIVE_FIXTURE_FAILED ${action} ${Date.now() - started}ms code=${failure.code} status=${failure.status} signal=${failure.signal} artifact=${stem}\n${String(failure.stderr ?? "")}\n`);
+		const failure = error as { code?: string; status?: number; signal?: string };
+		writeFileSync(`${stem}.result.json`, JSON.stringify({ elapsedMs: Date.now() - started, code: failure.code, status: failure.status, signal: failure.signal }));
+		process.stderr.write(`NATIVE_FIXTURE_FAILED ${action} ${Date.now() - started}ms code=${failure.code} status=${failure.status} signal=${failure.signal} artifact=${stem}\n${readFileSync(`${stem}.stderr`, "utf8")}\n`);
 		throw error;
-	}
+	} finally { closeSync(stdout); closeSync(stderr); }
 }
 function inspect(path: string) { return JSON.parse(fixture("inspect", path)); }
 function setup() {

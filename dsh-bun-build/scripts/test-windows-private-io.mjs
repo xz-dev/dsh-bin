@@ -6,13 +6,15 @@ import { join, resolve } from "node:path";
 
 if (process.platform !== "win32") throw new Error("native Windows configuration I/O gate requires Windows; NOT RUN");
 if (Bun.version !== "1.4.2") throw new Error("native Windows configuration I/O gate requires pinned Bun 1.4.2");
-const root = mkdtempSync(join(tmpdir(), "dsh-windows-private-io-"));
+// CI artifact collection is rooted at RUNNER_TEMP, not the account's unrelated LocalAppData Temp.
+const root = mkdtempSync(join(process.env.RUNNER_TEMP ?? tmpdir(), "dsh-windows-private-io-"));
 const home = join(root, "home"), tmp = join(root, "tmp"), cache = join(root, "cache");
-for (const p of [home, tmp, cache]) mkdirSync(p);
+for (const p of [home, tmp, cache, join(home, "AppData/Roaming"), join(home, "AppData/Local"), join(cache, "PowerShell")]) mkdirSync(p, { recursive: true });
 const env = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR,
 	COMSPEC: process.env.COMSPEC, PATHEXT: process.env.PATHEXT,
 	HOME: home, USERPROFILE: home, APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local"),
 	TMPDIR: tmp, TMP: tmp, TEMP: tmp, XDG_CACHE_HOME: cache, BUN_INSTALL_CACHE_DIR: cache,
+	PSModuleAnalysisCachePath: join(cache, "PowerShell", "ModuleAnalysisCache"),
 	DSH_WINDOWS_PRIVATE_IO_NATIVE: "1", NO_COLOR: "1" };
 console.log(`NATIVE_WINDOWS_PRIVATE_IO_ARTIFACT ${root}`);
 const child = Bun.spawn([process.execPath, "test", resolve(import.meta.dir, "../test/runtime/windows-private-config.test.ts")], {
