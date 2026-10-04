@@ -114,7 +114,14 @@ jobs:
         with: { persist-credentials: false }
       - uses: oven-sh/setup-bun@v2
         with: { bun-version: "1.4.2" }
+      - name: Native constructor controls (diagnostic only, not acceptance)
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'windows-constructor-comparison.log'
+          bun dsh-bun-build/scripts/test-windows-private-io.mjs --constructor-compare 2>&1 | Tee-Object -FilePath $log
+          exit $LASTEXITCODE
       - name: Native private-I/O component gate (15 required cases, no skips)
+        if: always()
         shell: pwsh
         run: |
           $log = Join-Path $env:RUNNER_TEMP 'windows-private-io.log'
@@ -127,6 +134,9 @@ jobs:
           name: windows-private-io-${{ matrix.runner }}
           path: |
             ${{ runner.temp }}/windows-private-io.log
+            ${{ runner.temp }}/windows-constructor-comparison.log
+            ${{ runner.temp }}/dsh-windows-private-io-*/constructor-comparison.json
+            ${{ runner.temp }}/dsh-windows-private-io-*/tmp/constructor-*
             ${{ runner.temp }}/dsh-windows-private-io-*/native.stdout
             ${{ runner.temp }}/dsh-windows-private-io-*/native.stderr
             ${{ runner.temp }}/dsh-windows-private-io-*/tmp/fixture-*.stdout
