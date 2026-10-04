@@ -125,7 +125,7 @@ function digest(dir: string): Record<string, string> {
 }
 const content = (d: Record<string, string>) => Object.fromEntries(Object.entries(d).filter(([p]) => p !== "snapshot.json" && p !== ".usage.lock"));
 
-test("CS-FORMAT / CS-CROSS / CS-CONCURRENT: real rc.1 → rc.2 → rc.1 plus simultaneous same-P independent settings/provider sessions", async () => {
+test("CS-FORMAT / CS-CROSS / CS-CONCURRENT / CS-LOCAL-PATH: real rc.1 → rc.2 → rc.1 plus simultaneous same-P copied relative-provider sessions", async () => {
 	expect(APP_A, "set DSH_BIN_REAL_IO_APP_A to authentic pre-transform dsh-v0.2.0-rc.1 app").toBeTruthy();
 	expect(APP_B, "set DSH_BIN_REAL_IO_APP_B to authentic pre-transform dsh-v0.2.0-rc.2 app").toBeTruthy();
 	expect(PNPM, "set DSH_BIN_TEST_PNPM to authenticated pnpm closure").toBeTruthy();
@@ -313,14 +313,23 @@ test("CS-FORMAT / CS-CROSS / CS-CONCURRENT: real rc.1 → rc.2 → rc.1 plus sim
 		expect(digest(home)).toEqual(homeBytes);
 		for (const [f, hash] of Object.entries(pluginOriginal)) expect(fileHash(join(pkg, f)), `plugin ${f}`).toBe(hash);
 
-		// CS-CONCURRENT / task 3.4: same actual P, two actual application sessions, independent C1/C2.
+		// CS-CONCURRENT / CS-LOCAL-PATH: same P, two real sessions; C2 is an actual manager copy of
+		// C1's relative-provider config, so both read/write accounts/work.yaml relative to OWN C.
 		// Plugin probe only drives public settings/provider APIs; it does not replace either service.
 		const P = B1, C1 = `${ids.B}@3`, C2 = `${ids.B}@4`;
-		for (const C of [C1, C2]) await dsh(["manager", "snapshot", "config", "new", "--use", ids.B, "--target", A1], `concurrent-copy-${C}`);
-		for (const [C, label] of [[C1, "C1"], [C2, "C2"]]) {
-			privateFile(join(config(C), "profiles/io/cordis.patch.yml"), patch(label));
-			privateFile(join(config(C), ".credentials.yaml"), creds(label));
-		}
+		const credentialPath = "accounts/work.yaml", credentialFile = (C: string) => join(config(C), credentialPath);
+		const localPatch = (label: string) => `- id: credentials-local\n  config: {"path":"${credentialPath}"}\n${patch(label)}`;
+		await dsh(["manager", "snapshot", "config", "new", "--use", ids.B, "--target", A1], `concurrent-copy-${C1}`);
+		privateFile(join(config(C1), "profiles/io/cordis.patch.yml"), localPatch("C1"));
+		privateFile(credentialFile(C1), creds("C1"));
+		const c1Seed = digest(config(C1));
+		await dsh(["manager", "snapshot", "config", "new", "--use", ids.B, "--target", C1], `concurrent-copy-${C2}`);
+		expect(JSON.parse(readFileSync(join(config(C2), "snapshot.json"), "utf8")).source).toBe(C1);
+		expect(content(digest(config(C2)))).toEqual(content(c1Seed)); expect(digest(config(C1))).toEqual(c1Seed);
+		for (const C of [C1, C2]) expect(lstatSync(credentialFile(C)).nlink).toBe(1);
+		expect(lstatSync(credentialFile(C2)).ino).not.toBe(lstatSync(credentialFile(C1)).ino);
+		privateFile(join(config(C2), "profiles/io/cordis.patch.yml"), localPatch("C2"));
+		const defaultCredentialHash = fileHash(join(config(C2), ".credentials.yaml"));
 		// cordis.yml is generated output, not source/config content; all other P bytes stay covered.
 		const pluginSources = () => Object.fromEntries(Object.entries(digest(plugins(P))).filter(([p]) => !/(^|\/)cordis\.yml$/.test(p)));
 		const pOriginal = pluginSources(), c1Original = digest(config(C1));
@@ -356,7 +365,7 @@ test("CS-FORMAT / CS-CROSS / CS-CONCURRENT: real rc.1 → rc.2 → rc.1 plus sim
 					const ready = JSON.parse(stdout.split("\n").find(l => l.startsWith("TWO_RUNTIME_READY "))!.slice(18));
 					url = ready.url;
 					// Wait for the actual kernel watcher registration, not an arbitrary settle sleep.
-					await until(() => readFileSync(audit, "utf8").split("\n").some(l => l.includes("inotify_add_watch(") && l.includes(`"${join(config(C), ".credentials.yaml")}"`) && / = [0-9]+$/.test(l)), "credential watcher registered on own C");
+					await until(() => readFileSync(audit, "utf8").split("\n").some(l => l.includes("inotify_add_watch(") && l.includes(`"${credentialFile(C)}"`) && / = [0-9]+$/.test(l)), "credential watcher registered on own C");
 					return ready;
 				},
 				async command(command: Record<string, string>) {
@@ -375,22 +384,22 @@ test("CS-FORMAT / CS-CROSS / CS-CONCURRENT: real rc.1 → rc.2 → rc.1 plus sim
 			expect(report.runtime).toBe(ids.B); expect(report.snapshot.id).toBe(P); expect(report.snapshot.dir).toBe(plugins(P));
 			expect(report.configSnapshot.id).toBe(C); expect(report.configSnapshot.dir).toBe(config(C)); expect(report.exe).toBe(bundleFile("B"));
 			expect(report.observation).toMatchObject({ label, credential: { value: credential, source: "file" }, home,
-				dir: join(plugins(P), "profiles/io"), patch: join(config(C), "profiles/io/cordis.patch.yml"), credentialFile: join(config(C), ".credentials.yaml") });
+				dir: join(plugins(P), "profiles/io"), patch: join(config(C), "profiles/io/cordis.patch.yml"), credentialFile: credentialFile(C) });
 			expect(report.observation.plugin).toContain(join(plugins(P), "profiles/io/node_modules/io-bundle"));
 			observations.push(report);
 		};
 		const atomicCredential = (C: string, value: string) => {
-			const dest = join(config(C), ".credentials.yaml"), temp = `${dest}.external-tmp`;
+			const dest = credentialFile(C), temp = `${dest}.external-tmp`;
 			privateFile(temp, creds(value)); renameSync(temp, dest);
 		};
 		try {
 			const one = session(C1); sessions.push(one); const readyOne = await one.ready();
 			assertOwn(readyOne, C1, "C1", "synthetic-C1");
 			const two = session(C2); sessions.push(two); const readyTwo = await two.ready();
-			assertOwn(readyTwo, C2, "C2", "synthetic-C2"); expect(readyTwo.pid).not.toBe(readyOne.pid);
+			assertOwn(readyTwo, C2, "C2", "synthetic-C1"); expect(readyTwo.pid).not.toBe(readyOne.pid);
 			// Both command barriers execute while both processes remain live.
 			assertOwn(await one.command({ op: "read" }), C1, "C1", "synthetic-C1");
-			assertOwn(await two.command({ op: "read" }), C2, "C2", "synthetic-C2");
+			assertOwn(await two.command({ op: "read" }), C2, "C2", "synthetic-C1");
 			await dsh(["manager", "select", "--use", ids.B, "--snapshot", P, "--config-snapshot", C2], "concurrent-default-C2");
 			expect(JSON.parse(readFileSync(join(data, "state/selection.json"), "utf8"))).toMatchObject({ snapshot: P, configSnapshot: C2 });
 			const changed = await two.command({ op: "update", label: "C2-updated", credential: "synthetic-C2-updated" });
@@ -398,7 +407,8 @@ test("CS-FORMAT / CS-CROSS / CS-CONCURRENT: real rc.1 → rc.2 → rc.1 plus sim
 			const stillOne = await one.command({ op: "read" }); assertOwn(stillOne, C1, "C1", "synthetic-C1"); expect(stillOne.credentialEvents).toBe(0);
 			expect(digest(config(C1))).toEqual(c1Original);
 			expect(readFileSync(join(config(C2), "profiles/io/cordis.patch.yml"), "utf8")).toContain("C2-updated");
-			expect(readFileSync(join(config(C2), ".credentials.yaml"), "utf8")).toContain("synthetic-C2-updated");
+			expect(readFileSync(credentialFile(C2), "utf8")).toContain("synthetic-C2-updated");
+			expect(fileHash(join(config(C2), ".credentials.yaml"))).toBe(defaultCredentialHash);
 			const c2Updated = digest(config(C2));
 			const watchOne = one.command({ op: "watch", credential: "synthetic-C1-external" });
 			try { await one.armed("synthetic-C1-external"); atomicCredential(C1, "C1-external"); } catch (e) { await watchOne.catch(() => {}); throw e; }
@@ -426,15 +436,17 @@ test("CS-FORMAT / CS-CROSS / CS-CONCURRENT: real rc.1 → rc.2 → rc.1 plus sim
 			await two.stop(); expect(await two.done).toBe(0);
 			for (const [i, s] of sessions.entries()) {
 				const accesses = readFileSync(s.audit, "utf8"), other = i === 0 ? C2 : C1;
+				expect(accesses, "custom provider must not read own default credential file").not.toContain(`"${join(config(i === 0 ? C1 : C2), ".credentials.yaml")}"`);
 				for (const p of sensitiveHome) expect(accesses, `concurrent forbidden shared-home open ${p}`).not.toContain(`"${p}"`);
-				for (const p of [".credentials.yaml", "profiles/io/cordis.patch.yml", "settings.yaml"]) expect(accesses, `concurrent forbidden other-C open ${p}`).not.toContain(`"${join(config(other), p)}"`);
+				for (const p of [".credentials.yaml", credentialPath, "profiles/io/cordis.patch.yml", "settings.yaml"]) expect(accesses, `concurrent forbidden other-C open ${p}`).not.toContain(`"${join(config(other), p)}"`);
 			}
 			const outputs = { P: pluginSources(), C2: digest(config(C2)), home: digest(home) };
 			expect(outputs.P).toEqual(pOriginal); expect(outputs.home).toEqual(homeBytes);
+			expect(outputs.C2[".credentials.yaml"]).toBe(defaultCredentialHash);
 			await dsh(["manager", "snapshot", "config", "remove", C2], "concurrent-release-C2");
 			await dsh(["manager", "snapshot", "plugins", "remove", P], "concurrent-release-P");
 			expect(existsSync(config(C2))).toBe(false); expect(existsSync(plugins(P))).toBe(false);
-			writeFileSync(join(root, "concurrent-summary.json"), JSON.stringify({ P, C1, C2, pOriginal, c1Original, c1Reloaded, c2Updated, observations, outputs, restartGate: "RB-RESTART remains open: no internal app restart exercised" }, null, 2));
+			writeFileSync(join(root, "concurrent-summary.json"), JSON.stringify({ P, C1, C2, credentialPath, c1Seed, defaultCredentialHash, pOriginal, c1Original, c1Reloaded, c2Updated, observations, outputs, restartGate: "RB-RESTART remains open: no internal app restart exercised" }, null, 2));
 		} finally { await Promise.all(sessions.map(s => s.stop())); }
 		writeFileSync(join(root, "summary.json"), JSON.stringify({ ids, aOriginal, homeBytes, pluginOriginal }, null, 2));
 	} finally {
