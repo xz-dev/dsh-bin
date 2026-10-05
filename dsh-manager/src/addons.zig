@@ -216,7 +216,9 @@ fn perform(ctx: *Ctx, t: Table, query: ?[]const u8, force: bool) !void {
     var original: ?std.fs.Dir = if (@import("builtin").os.tag == .freebsd and exists) try @import("safe_open.zig").openDir(parent, c.version, .{ .no_follow = true }) else null;
     defer if (original) |*held| held.close();
     if (exists) _ = try readIn(ctx, parent, c.version, c.version);
-    if (original) |held| if (!installer.sameDirectory(parent, c.version, held)) return error.AddonDirectoryConflict;
+    if (@import("builtin").os.tag == .freebsd) {
+        if (original) |held| if (!installer.sameDirectory(parent, c.version, held)) return error.AddonDirectoryConflict;
+    }
     if (exists and !force) {
         var current = try parent.openDir(c.version, .{ .no_follow = true });
         defer current.close();
