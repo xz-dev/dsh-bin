@@ -149,8 +149,10 @@ try {
 		cpSync(join(source, "runtime"), join(candidate, "runtime"), { recursive: true });
 		cpSync(join(source, "scripts/compile-entry.mjs"), join(candidate, "scripts/compile-entry.mjs"));
 		const originalSources = digest(candidate), path = "runtime/compat/config-paths.ts", original = readFileSync(join(candidate, path), "utf8");
-		assert.equal(original.split(gate).length, 2, "exact Windows fail-closed block must occur once");
-		writeFileSync(join(candidate, path), original.replace(gate, ""));
+		const sourceGate = original.includes("\r\n") ? gate.replaceAll("\n", "\r\n") : gate;
+		save("source-gate-input.json", { originalHead, path, sourceSHA: hash(original), lfMatches: original.split(gate).length - 1, crlfMatches: original.split(gate.replaceAll("\n", "\r\n")).length - 1 });
+		assert.equal(original.split(sourceGate).length, 2, "exact Windows fail-closed block must occur once");
+		writeFileSync(join(candidate, path), original.replace(sourceGate, ""));
 		const candidateSources = digest(candidate);
 		assert.deepEqual(Object.keys(originalSources).filter(p => originalSources[p] !== candidateSources[p]), [path]);
 		for (const p of ["app.ts", "launch.ts", "usage-claim.ts", "compat/windows-private-access.ts"]) assert.equal(fileHash(join(source, "runtime", p)), candidateSources[`runtime/${p}`]);
