@@ -142,6 +142,8 @@ for (const shell of ["powershell", "pwsh"] as const) {
 		const active = psRun(i, `. ${psQuote(path)}; . ${psQuote(path)}; ${tabs("dsh manager in")}; ${tabs("dsh.exe manager in")}`);
 		expect(active.status).toBe(0); expect(words(active.stdout).filter((word) => word === "install")).toHaveLength(2); expect(active.stderr).toBe("");
 		addRuntime(i.data, "1.0.0"); mkdirSync(join(i.data, "snapshots/1.0.0@1"), { recursive: true });
+		writeFileSync(join(i.data, "snapshots/1.0.0@1/snapshot.json"), JSON.stringify({ id: "1.0.0@1", version: "1.0.0", n: 1, alias: null }));
+		writeFileSync(join(i.data, "snapshots/1.0.0@1/.usage.lock"), "");
 		const local = psRun(i, `. ${psQuote(path)}; ${tabs("dsh --use 1")}; ${tabs("dsh manager select --snapshot 1")}`);
 		expect(local.status).toBe(0); expect(words(local.stdout)).toEqual(expect.arrayContaining(["1.0.0", "1.0.0@1"]));
 		const uninstall = run(i, args(i, "uninstall"));
