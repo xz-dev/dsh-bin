@@ -786,7 +786,7 @@ fn privateAccess(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, file: st
         var security = try PrivateSecurity.init(ctx.a);
         defer security.deinit();
         const path = try win.sliceToPrefixedFileW(parent.fd, name);
-        const handle = try win.OpenFile(path.span(), .{ .dir = parent.fd, .access_mask = 0x40000 | win.FILE_READ_ATTRIBUTES, .creation = win.FILE_OPEN, .filter = .dir_only, .follow_symlinks = false }); // WRITE_DAC
+        const handle = try win.OpenFile(path.span(), .{ .dir = parent.fd, .access_mask = win.READ_CONTROL | win.WRITE_DAC | win.FILE_READ_ATTRIBUTES, .creation = win.FILE_OPEN, .filter = .dir_only, .follow_symlinks = false }); // Read/update the security descriptor; no file-content access.
         defer win.CloseHandle(handle);
         const target = std.fs.File{ .handle = handle };
         if ((try target.stat()).kind != .directory or (try target.stat()).inode != (try file.stat()).inode) return error.SnapshotChanged;
