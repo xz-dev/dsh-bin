@@ -181,6 +181,10 @@ jobs:
         run: |
           powershell.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
           pwsh.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+      - name: Isolate test state
+        shell: bash
+        run: >-
+          bun -e 'const fs = require("node:fs"), p = require("node:path"); const root = p.join(process.env.RUNNER_TEMP, "dsh-ci-test"), home = p.join(root, "home"), cache = p.join(root, "cache"), tmp = p.join(root, "tmp"); const env = { HOME: home, USERPROFILE: home, APPDATA: p.join(home, "roaming"), LOCALAPPDATA: p.join(home, "local"), XDG_CONFIG_HOME: p.join(home, "config"), XDG_DATA_HOME: p.join(home, "data"), XDG_STATE_HOME: p.join(home, "state"), XDG_CACHE_HOME: cache, TMPDIR: tmp, TMP: tmp, TEMP: tmp, ZIG_GLOBAL_CACHE_DIR: p.join(cache, "zig-global"), ZIG_LOCAL_CACHE_DIR: p.join(cache, "zig-local"), BUN_INSTALL_CACHE_DIR: p.join(cache, "bun") }; for (const value of Object.values(env)) fs.mkdirSync(value, { recursive: true }); fs.appendFileSync(process.env.GITHUB_ENV, Object.entries(env).map(([key, value]) => `${key}=${value}\n`).join(""));'
       - name: dsh-manager
         working-directory: dsh-manager
         run: zig build test && bun test ./test

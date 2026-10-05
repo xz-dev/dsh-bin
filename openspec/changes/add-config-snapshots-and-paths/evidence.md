@@ -2,7 +2,17 @@
 
 ## 当前结论
 
-这是 `add-config-snapshots-and-paths` 的实施期记录，不是完整验收。父固定 `c18afcc95c832d3a519e2a936a2c7b0593f9cb9b`，以认证 raw 副本组装真实 rc.1/rc.2，two-runtime/config-I/O/atomic/path 联合 **19pass/0fail/1668assert**；同批真实产品 **6pass/2skip/0fail/194assert**，Office/CI组合 skip 不抵扣。生产行为与500537c一致。原四项协议发现独立 Closed（仅 Linux transport）；Opus复审 `213b6796`、`232d391d` 两次429无报告，仍blocked，不自动重试。Windows第六轮 `37194327297` 两架构各13pass/2fail/0skip，生产managed gate仍关闭，新token launcher未整合或原生运行。用户已确认固定 rc.1/rc.2 按实际上游能力验收：无入口的内部进程重启子项标不适用而非通过，真实服务重挂载、父退出、新进程上下文和使用保护继续必验；Windows owner策略未获修改批准。56场景映射不等于全部接受。规定原生矩阵、shell/Scoop、Office/CI组合和独审仍有缺口；不具备发布、合并、同步或归档条件。下文旧结果保留为历史。
+这是 `add-config-snapshots-and-paths` 的实施期记录，不是完整验收。最新生产修复为 `6ca967efb6e23586ff5a97df23474a8492cc06c4`：Windows manager 的 ACL 更新句柄补 `READ_CONTROL`，原生 Scoop 对照通过，owner/DACL 内容/token 未改。固定 c18afcc 的 Linux 联合 19pass、凭据搬迁父复跑和 d0770c1 同PID真实重挂载结果保留，各有下述限定范围。Windows真实 manager→C→配置服务及父退出、规定平台、Office/CI组合和 Opus 独审仍缺；生产 Windows managed gate 保持关闭，owner 修订未获批准，token launcher 未整合。固定 rc.1/rc.2 内部进程重启子项经用户批准为不适用，而非通过；真实重挂载、父退出和新进程自身保护仍必验。56场景映射不等于完整接受，不具备发布、合并、同步或归档条件。
+
+## 最新父核验（2026-10-05）
+
+- `507d76e` 已整合凭据搬迁测试并由父实际复跑：6pass/1skip/0fail/656assert，真实 LocalCredentialProvider resolve/set、8个 Linux trace，旧路径不可访问且源停止；Office仍skip。证据 `parent-gates/move-credentials-507d76e/`，日志 SHA256 `2fd958f599eaf56144517110bdc94bccfa05db90032e2a3d62ce572f565be891`。
+- `d0770c1` 的同PID重挂载由父实跑：1pass/0fail/447assert；真实 ConfigEditor.edit 导致 provider 替换、apply→dispose→apply，PID和启动时A/P1/C1不变，R/P/C删除前后受保护、退出后释放。不包含 dispose 间隙采样、Windows或父退出。证据 `parent-gates/real-remount-current/`，日志 SHA256 `0a539e769982ecd93b0558f0ec994b51e011a53b70cff78052401c0f30c80fec`。
+- `1e22408` 修复 PowerShell 补全夹具缺合法旧snapshot metadata/guard，父 Linux task-local pwsh回归21pass/12skip/0fail；skip不算原生接受。
+- `f2258bd` 的原生 Scoop run `37301356322` 确认 SetSecurityInfo 返回5。只补 READ_CONTROL 的 `6ca967e` 在 run `37303357863` 为1pass/0fail/49assert，覆盖真实Scoop安装/升级/卸载；不是完整Windows runtime接受。原失败 SHA256 `4e1b3d7c7de03b97221a781ea8934ef9e23aee2db14bbf3545c069be7479c5a1`；green日志 SHA256 `4cb2287ae8bb0a651c40d89f0cd2e15aded21442ad4a3b4f39252a87c82968d6`，在 `parent-gates/windows-acl-access-f2258bd/`。
+- 双版本强前置入口现为 `dsh-bun-build/test/runtime/two-runtime-config.native.ts`，文件内容未变；普通目录发现不再误执行，显式调用缺认证输入仍exit1，不增加skip。Linux发现沙箱及缺输入前后日志在 `parent-gates/explicit-native-discovery/`；此仅证明入口分离，不新增产品接受。
+
+下文2026-10-04及更早的候选、未整合和失败描述保留为历史，以上状态覆盖其过期断言。
 
 ## 固定候选、真实能力及最新交付状态（2026-10-04）
 
@@ -142,25 +152,25 @@ inner atomic/lock 的 read、复读、wx、rename、remove 检查已整合（`a0
 | 场景 | 实际入口与被验证行为 | 当前证据／剩余缺口 |
 | --- | --- | --- |
 | CS-IDENTITY | `M/snapshots.test.ts`：两类同ID／daily、独立计数、旧metadata及旧selection | Linux管理器层通过；不是应用I/O证据 |
-| CS-AUTO | `M/versions.test.ts`：install/update/bootstrap逐类型继承；`R/two-runtime-config.test.ts`：真实B安装继承A的P/C | 两层Linux通过；规定原生矩阵待补 |
-| CS-CREATE | `M/snapshots.test.ts`：default/target/empty/name与来源字节；`R/two-runtime-config.test.ts`：真实跨版本复制试用 | Linux通过；原生矩阵待补 |
+| CS-AUTO | `M/versions.test.ts`：install/update/bootstrap逐类型继承；`R/two-runtime-config.native.ts`：真实B安装继承A的P/C | 两层Linux通过；规定原生矩阵待补 |
+| CS-CREATE | `M/snapshots.test.ts`：default/target/empty/name与来源字节；`R/two-runtime-config.native.ts`：真实跨版本复制试用 | Linux通过；原生矩阵待补 |
 | CS-EMPTY | `R/config-io.test.ts`：C3仅guard，真实provider无凭据、bundle默认、HOME哨兵不读 | 实际有断言，非字面ID匹配；Linux通过，Windows等待补 |
 | CS-GAPS | `M/snapshots.test.ts`：删除2/3回落1、新建4；`M/path.test.ts`：合法缺省类型不初始化 | 管理器层通过；全生命周期原生待补 |
 | CS-CONTENT | `M/snapshots.test.ts`：多profile/settings.imported/accounts独立复制、依赖/session等排除及合法basename回归 | 管理器文件层通过；不是完整应用服务验证 |
 | CS-PLUGIN-BASE | `R/config-io.test.ts`：真实插件URL在P、patch在C、生成cordis.yml只在P；`U/transform-app.test.ts` | 真实Linux通过；HMR仅已披露helper范围 |
 | CS-SWITCH | `R/config-io.test.ts`：同P的C1/C2更新/回切、provider watcher及来源字节 | 真实Linux串行通过；不能替代并发 |
-| CS-CONCURRENT | `R/two-runtime-config.test.ts` 的新并发切片待交付：同P两live C、默认选择变化、真实watcher | 固定候选没有专用并发证据；不得用串行C1→C2→C1抵扣 |
-| CS-FORMAT | `R/two-runtime-config.test.ts`：真实rc.1→rc.2导入/更新→rc.1原字节；两输入不同commit/bin.js | 固定500537c通过；原生平台与独立复审待完成 |
-| CS-CROSS | `R/two-runtime-config.test.ts`：B写A副本对比B显式直用A，编号/selection不暗改 | 固定500537c真实Linux通过 |
+| CS-CONCURRENT | `R/two-runtime-config.native.ts`：同P两live C、默认选择变化、真实watcher | c18afcc父联合实跑及d0770c1重挂载切片通过；非Windows/父退出接受 |
+| CS-FORMAT | `R/two-runtime-config.native.ts`：真实rc.1→rc.2导入/更新→rc.1原字节；两输入不同commit/bin.js | 固定500537c通过；原生平台与独立复审待完成 |
+| CS-CROSS | `R/two-runtime-config.native.ts`：B写A副本对比B显式直用A，编号/selection不暗改 | 固定500537c真实Linux通过 |
 | CS-EXTERNAL | `R/config-io.test.ts`：HOME、另一C、外部绝对路径、traversal、escaping link/dshHome；strace拒绝敏感open/watch | 实际断言通过，非仅“输出不含秘密”；Windows等尚缺 |
-| CS-LOCAL-PATH | `R/config-io.test.ts`：相对/绝对集合内path和dshHome；`R/two-runtime-config.test.ts`：真实accounts/work.yaml；`M/snapshots.test.ts`复制accounts | 已验证单C实际读写及存储复制；自定义相对路径复制后再启动新C的完整对照待补 |
+| CS-LOCAL-PATH | `R/config-io.test.ts`：相对/绝对集合内path和dshHome；`R/two-runtime-config.native.ts`：真实accounts/work.yaml；`M/snapshots.test.ts`复制accounts | c18afcc父联合已验证相对accounts复制后启动新C及源保护；规定原生矩阵仍待补 |
 | CS-FAILURE | `M/snapshots.test.ts`：copy失败/中断/源变化/已复制文件篡改/目标换代/no-replace/外链硬链special | Linux管理器层通过；原store独审三项Closed，原生矩阵仍待补 |
 | CS-PERMISSIONS | `M/snapshots.test.ts`宽umask/暂存；`R/config-io.test.ts`私有创建/loose/hardlink；`R/atomic-config-io.test.ts`实际read/wx/rename入口；`R/windows-private-config.test.ts` | POSIX通过；Windows组件native失败，真实服务和最终gate移除均未接受 |
 | MC-EMPTY | `M/manager-control.test.ts`无JS PATH、只管理不写；`M/install.test.ts`与`M/path.test.ts`冷状态 | Linux管理器层通过；真实安装组合另有产物门禁 |
 | MC-BROKEN | `M/install.test.ts`损坏条目/force修复；`M/real-runtime.test.ts`真实归档修复入口 | 管理器层通过；真实归档suite此前skip且夹具需迁移，不能计通过 |
 | MC-NAMESPACE | `M/manager-control.test.ts`管理命令不进app；`M/launch.test.ts`、`M/snapshots.test.ts`leading边界 | Linux管理器层通过；实际argv/STDIN真实归档回归待补 |
 | MC-ARGS | `M/launch.test.ts`prompt/空参/manager词保留；`M/snapshots.test.ts`config单次参数；`M/real-runtime.test.ts`真实插件argv/STDIN/exit | transport通过；真实归档入口当前skip，不能以fake-native代替 |
-| MC-SNAPSHOT | `M/versions.test.ts`按版本顺序继承；`R/two-runtime-config.test.ts`真实安装继承P/C | Linux管理器及真实两版本通过；完整插件安装生命周期待补 |
+| MC-SNAPSHOT | `M/versions.test.ts`按版本顺序继承；`R/two-runtime-config.native.ts`真实安装继承P/C | Linux管理器及真实两版本通过；完整插件安装生命周期待补 |
 | MC-CROSS-SNAPSHOT | `M/launch.test.ts`显式use优先；`M/versions.test.ts`跨来源；`M/real-runtime.test.ts`真实插件跨用 | 管理器层通过；真实plugin-service跨用/原生组合待补 |
 | MC-ADDON | `M/addons.test.ts`管理不启动app；`M/real-runtime.test.ts`、`M/artifact-e2e-combined.test.ts`真实Office | 管理器层通过；真实addon/CI组合本轮skip |
 | MC-TYPED | `M/snapshots.test.ts`类型必填、legacy、按类型补全；`M/launch.test.ts`双pins；`M/completion*.test.ts` | Linux现有shell/管理器层通过；缺失shell及Windows原生仍skip |
