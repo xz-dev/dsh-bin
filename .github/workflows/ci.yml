@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       windows_private_only: { description: "Run native Windows private-I/O component gates only; no release or full-app approval", type: boolean, default: false }
+      windows_manager_first_use_only: { description: "Run actual Windows manager/config first-use diagnostic; production gate remains closed", type: boolean, default: false }
       release_dry_run: { description: "Build both release artifacts without publishing", type: boolean, default: false }
       manager_version: { type: string, default: "1.0.0-rc.1" }
       runtime_upstream: { type: string, default: "dsh-v0.1.7-rc.2" }
@@ -25,7 +26,7 @@ jobs:
   # Caller grants cover the skipped publish jobs; every build/verify job explicitly stays read-only.
   # Write permissions belong only to these two calls, never ordinary CI or pull requests.
   manager-release-dry-run:
-    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run && !inputs.windows_private_only
+    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run && !inputs.windows_private_only && !inputs.windows_manager_first_use_only
     permissions: { contents: write, actions: read, id-token: write, attestations: write }
     uses: ./.github/workflows/manager-release.yml
     with:
@@ -36,7 +37,7 @@ jobs:
       accepted_artifact: ${{ inputs.accepted_runtime_artifact }}
       accepted_sha256: ${{ inputs.accepted_runtime_sha256 }}
   runtime-release-dry-run:
-    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run && !inputs.windows_private_only
+    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run && !inputs.windows_private_only && !inputs.windows_manager_first_use_only
     permissions: { contents: write, actions: read, id-token: write, attestations: write }
     uses: ./.github/workflows/runtime-release.yml
     with:
@@ -48,7 +49,7 @@ jobs:
       accepted_artifact: ${{ inputs.accepted_manager_artifact }}
       accepted_sha256: ${{ inputs.accepted_manager_sha256 }}
   combined-artifact-e2e:
-    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run && !inputs.windows_private_only && inputs.e2e_runs != ''
+    if: github.event_name == 'workflow_dispatch' && inputs.release_dry_run && !inputs.windows_private_only && !inputs.windows_manager_first_use_only && inputs.e2e_runs != ''
     permissions: { contents: read, actions: read }
     strategy:
       fail-fast: false
@@ -102,8 +103,53 @@ jobs:
           TMP: ${{ runner.temp }}
           TEMP: ${{ runner.temp }}
         run: bun test ./dsh-manager/test/artifact-e2e-combined.test.ts
+  windows-manager-first-use:
+    if: github.event_name == 'workflow_dispatch' && inputs.windows_manager_first_use_only
+    runs-on: windows-2022
+    permissions: { contents: read, actions: read }
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: "1.4.2" }
+      - uses: mlugg/setup-zig@v2
+        with: { version: "0.15.2" }
+      - name: Isolate diagnostic driver state
+        shell: bash
+        run: >-
+          bun -e 'const fs = require("node:fs"), p = require("node:path"), root = p.join(process.env.RUNNER_TEMP, "first-use-driver"); const dirs = { HOME: "home", USERPROFILE: "home", APPDATA: "home/roaming", LOCALAPPDATA: "home/local", XDG_CONFIG_HOME: "config", XDG_CACHE_HOME: "cache", TMPDIR: "tmp", TMP: "tmp", TEMP: "tmp", BUN_INSTALL_CACHE_DIR: "cache/bun", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "cache/transpiler", ZIG_GLOBAL_CACHE_DIR: "cache/zig-global", ZIG_LOCAL_CACHE_DIR: "cache/zig-local" }; for (const [key, name] of Object.entries(dirs)) { const value = p.join(root, name); fs.mkdirSync(value, { recursive: true }); fs.appendFileSync(process.env.GITHUB_ENV, `${key}=${value}\n`); }'
+      - name: Download pinned existing CI artifact (metadata token only)
+        shell: pwsh
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $archive = Join-Path $env:RUNNER_TEMP 'first-use-ci-artifact.zip'
+          Invoke-WebRequest 'https://api.github.com/repos/xz-dev/dsh-bin/actions/artifacts/11301612298/zip' -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' } -OutFile $archive
+          if ((Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -ne 'f121fd6732e7fd38af8823819e18a173d5bc5e3602c804790ac5e83457eedcfc') { throw 'CI artifact digest mismatch' }
+      - name: Actual manager creates and selects C, then authentic services run
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:RUNNER_TEMP 'first-use-ci-artifact.zip'
+          $zig = (Get-Command zig).Source
+          $git = (Get-Command git).Source
+          bun dsh-manager/test/windows-manager-first-use.native.ts $archive $zig $git
+          exit $LASTEXITCODE
+      - name: Preserve first-use diagnostic evidence, not product approval
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-manager-first-use
+          path: |
+            ${{ runner.temp }}/dsh-manager-first-use-*/*.json
+            ${{ runner.temp }}/dsh-manager-first-use-*/*.diff
+            ${{ runner.temp }}/dsh-manager-first-use-*/*.stdout
+            ${{ runner.temp }}/dsh-manager-first-use-*/*.stderr
+          if-no-files-found: warn
   windows-private-io:
-    if: github.event_name == 'workflow_dispatch' && inputs.windows_private_only
+    if: github.event_name == 'workflow_dispatch' && inputs.windows_private_only && !inputs.windows_manager_first_use_only
     strategy:
       fail-fast: false
       matrix:
@@ -150,10 +196,10 @@ jobs:
             ${{ runner.temp }}/dsh-windows-private-io-*/tmp/private-case-*/control/*.stderr
           if-no-files-found: error
   scoop:
-    if: github.event_name != 'workflow_dispatch' || !inputs.windows_private_only
+    if: github.event_name != 'workflow_dispatch' || (!inputs.windows_private_only && !inputs.windows_manager_first_use_only)
     uses: ./.github/workflows/scoop-check.yml
   test:
-    if: github.event_name != 'workflow_dispatch' || !inputs.windows_private_only
+    if: github.event_name != 'workflow_dispatch' || (!inputs.windows_private_only && !inputs.windows_manager_first_use_only)
     strategy:
       fail-fast: false
       matrix:
