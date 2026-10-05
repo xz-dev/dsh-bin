@@ -50,7 +50,14 @@ jobs:
       - name: PS-SCOOP and DL-MANAGED real install upgrade uninstall
         working-directory: dsh-manager
         shell: pwsh
-        env: { DSH_SCOOP_TEST: "1" }
+        env:
+          DSH_SCOOP_TEST: "1"
+          TMPDIR: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+          XDG_CACHE_HOME: ${{ runner.temp }}/dsh-scoop-cache
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/dsh-scoop-zig-global
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/dsh-scoop-zig-local
         run: |
           bun test ./test/scoop-lifecycle.test.ts
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
