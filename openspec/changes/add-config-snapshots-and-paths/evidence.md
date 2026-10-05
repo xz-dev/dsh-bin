@@ -22,6 +22,16 @@
 - rc.1 `4878cdabd87d4041bdaff61d04c966883b9fd07a`、rc.2 `639ed015397290b3745d163aafe02ffee4aa3f84` 的认证源码、raw和实际ZIP显示CLI无已识别的内部进程重启入口，Loader.exit空hook，Fiber.restart为同PID重挂载。证据 `/var/tmp/dsh-real-config-restart/logs/restart-entry-proof.json`，SHA256 `7b50e9e5e64e3907318995fa5422856f0ac9d79d1532bff0056c46e461d7b5c9`。用户已明确选择“按现有上游能力验收”；RB-RESTART仍需真实重挂载与独立父退出分项，不因适用范围澄清就整体通过。
 - CI候选A `37197218229`、B `37197221512` 都固定c18afcc且整体failure。A已核对manager与12目标runtime构建/aggregate成功，组合和publish为skip；两run均有Linux/macOS/Windows test及Scoop失败，包含PowerShell snapshot候选缺失和Windows manager PrivateAccessFailed。Office `37197223893` publish=false构建success；均未公开发布，构建不是组合接受。失败日志在 `parent-gates/ci-products-c18afcc/`，A/B SHA256分别 `21eba8632b6a70aa571be472bd4b34041facad0b06d35e58ee85f3d6d89f5b9e`、`3166ed3f2e1c37dfb37f613832c2160b560ff2372deddc520385b7f947514392`。
 
+## Required explicit gates
+
+普通 CI 不执行以下认证输入门禁；缺输入时显式调用仍必须失败，不能把普通 CI 的 green 或 skip 算作它们通过。使用既有、只读认证 rc.1/rc.2 输入和 pnpm，保持 HOME/TMP/cache 在任务目录；每次最终接受均记录固定源码、输入指纹、命令与实际结果：
+
+```sh
+bun test dsh-bun-build/test/runtime/two-runtime-config.native.ts dsh-bun-build/test/runtime/config-io.native.ts dsh-bun-build/test/runtime/atomic-config-io.native.ts dsh-manager/test/path.test.ts
+```
+
+必需输入为 `DSH_BIN_REAL_IO_APP_A`、`DSH_BIN_REAL_IO_APP_B`、`DSH_BIN_REAL_IO_APP` 与 `DSH_BIN_TEST_PNPM`；已认证本地归档复跑还使用各测试现有的本地产物入口，不能冒充 CI 组合输入。以下固定旧提交的历史命令保留原文件名。
+
 ## 前置与保留场景核对
 
 前置 `split-dsh-manager` 已验收并归档，main 基线为 `5b3ed0fec0cbb6832cfa1b216f0cecc11d33e791`。manager-control、portable-storage、runtime-bundles 的 11 个 MODIFIED requirement 目标均存在，19 个前置场景标题全部保留。机器核对记录：`/var/tmp/dsh-remaining/parent-gates/config-modified-retention.json`。严格校验 `openspec validate add-config-snapshots-and-paths --strict --no-interactive` exit 0，日志 `config-strict-abefea6.log`（同目录）。
@@ -154,18 +164,18 @@ inner atomic/lock 的 read、复读、wx、rename、remove 检查已整合（`a0
 | CS-IDENTITY | `M/snapshots.test.ts`：两类同ID／daily、独立计数、旧metadata及旧selection | Linux管理器层通过；不是应用I/O证据 |
 | CS-AUTO | `M/versions.test.ts`：install/update/bootstrap逐类型继承；`R/two-runtime-config.native.ts`：真实B安装继承A的P/C | 两层Linux通过；规定原生矩阵待补 |
 | CS-CREATE | `M/snapshots.test.ts`：default/target/empty/name与来源字节；`R/two-runtime-config.native.ts`：真实跨版本复制试用 | Linux通过；原生矩阵待补 |
-| CS-EMPTY | `R/config-io.test.ts`：C3仅guard，真实provider无凭据、bundle默认、HOME哨兵不读 | 实际有断言，非字面ID匹配；Linux通过，Windows等待补 |
+| CS-EMPTY | `R/config-io.native.ts`：C3仅guard，真实provider无凭据、bundle默认、HOME哨兵不读 | 实际有断言，非字面ID匹配；Linux通过，Windows等待补 |
 | CS-GAPS | `M/snapshots.test.ts`：删除2/3回落1、新建4；`M/path.test.ts`：合法缺省类型不初始化 | 管理器层通过；全生命周期原生待补 |
 | CS-CONTENT | `M/snapshots.test.ts`：多profile/settings.imported/accounts独立复制、依赖/session等排除及合法basename回归 | 管理器文件层通过；不是完整应用服务验证 |
-| CS-PLUGIN-BASE | `R/config-io.test.ts`：真实插件URL在P、patch在C、生成cordis.yml只在P；`U/transform-app.test.ts` | 真实Linux通过；HMR仅已披露helper范围 |
-| CS-SWITCH | `R/config-io.test.ts`：同P的C1/C2更新/回切、provider watcher及来源字节 | 真实Linux串行通过；不能替代并发 |
+| CS-PLUGIN-BASE | `R/config-io.native.ts`：真实插件URL在P、patch在C、生成cordis.yml只在P；`U/transform-app.test.ts` | 真实Linux通过；HMR仅已披露helper范围 |
+| CS-SWITCH | `R/config-io.native.ts`：同P的C1/C2更新/回切、provider watcher及来源字节 | 真实Linux串行通过；不能替代并发 |
 | CS-CONCURRENT | `R/two-runtime-config.native.ts`：同P两live C、默认选择变化、真实watcher | c18afcc父联合实跑及d0770c1重挂载切片通过；非Windows/父退出接受 |
 | CS-FORMAT | `R/two-runtime-config.native.ts`：真实rc.1→rc.2导入/更新→rc.1原字节；两输入不同commit/bin.js | 固定500537c通过；原生平台与独立复审待完成 |
 | CS-CROSS | `R/two-runtime-config.native.ts`：B写A副本对比B显式直用A，编号/selection不暗改 | 固定500537c真实Linux通过 |
-| CS-EXTERNAL | `R/config-io.test.ts`：HOME、另一C、外部绝对路径、traversal、escaping link/dshHome；strace拒绝敏感open/watch | 实际断言通过，非仅“输出不含秘密”；Windows等尚缺 |
-| CS-LOCAL-PATH | `R/config-io.test.ts`：相对/绝对集合内path和dshHome；`R/two-runtime-config.native.ts`：真实accounts/work.yaml；`M/snapshots.test.ts`复制accounts | c18afcc父联合已验证相对accounts复制后启动新C及源保护；规定原生矩阵仍待补 |
+| CS-EXTERNAL | `R/config-io.native.ts`：HOME、另一C、外部绝对路径、traversal、escaping link/dshHome；strace拒绝敏感open/watch | 实际断言通过，非仅“输出不含秘密”；Windows等尚缺 |
+| CS-LOCAL-PATH | `R/config-io.native.ts`：相对/绝对集合内path和dshHome；`R/two-runtime-config.native.ts`：真实accounts/work.yaml；`M/snapshots.test.ts`复制accounts | c18afcc父联合已验证相对accounts复制后启动新C及源保护；规定原生矩阵仍待补 |
 | CS-FAILURE | `M/snapshots.test.ts`：copy失败/中断/源变化/已复制文件篡改/目标换代/no-replace/外链硬链special | Linux管理器层通过；原store独审三项Closed，原生矩阵仍待补 |
-| CS-PERMISSIONS | `M/snapshots.test.ts`宽umask/暂存；`R/config-io.test.ts`私有创建/loose/hardlink；`R/atomic-config-io.test.ts`实际read/wx/rename入口；`R/windows-private-config.test.ts` | POSIX通过；Windows组件native失败，真实服务和最终gate移除均未接受 |
+| CS-PERMISSIONS | `M/snapshots.test.ts`宽umask/暂存；`R/config-io.native.ts`私有创建/loose/hardlink；`R/atomic-config-io.native.ts`实际read/wx/rename入口；`R/windows-private-config.test.ts` | POSIX通过；Windows组件native失败，真实服务和最终gate移除均未接受 |
 | MC-EMPTY | `M/manager-control.test.ts`无JS PATH、只管理不写；`M/install.test.ts`与`M/path.test.ts`冷状态 | Linux管理器层通过；真实安装组合另有产物门禁 |
 | MC-BROKEN | `M/install.test.ts`损坏条目/force修复；`M/real-runtime.test.ts`真实归档修复入口 | 管理器层通过；真实归档suite此前skip且夹具需迁移，不能计通过 |
 | MC-NAMESPACE | `M/manager-control.test.ts`管理命令不进app；`M/launch.test.ts`、`M/snapshots.test.ts`leading边界 | Linux管理器层通过；实际argv/STDIN真实归档回归待补 |
@@ -197,15 +207,15 @@ inner atomic/lock 的 read、复读、wx、rename、remove 检查已整合（`a0
 | PATH-SECRET | `M/path.test.ts`敏感sentinel未open、无子进程/网络 | Linux内核审计通过；Windows需实际对应证据 |
 | PATH-MODES | `M/path.test.ts`portable/managed/移动；`M/gentoo.test.ts`、`M/scoop.test.ts`、completion relocate | Linux相关夹具通过；Scoop/native/真实配置搬家仍缺 |
 | PATH-JSON | `M/path.test.ts`schemaVersion/records/diagnostics与人类输出、无ANSI、完整性/exit | Linux通过；最终native一致性待补 |
-| PS-CONTAIN | `M/storage.test.ts`管理路径与fake审计；`R/config-io.test.ts`实际HOME非配置边界；`M/real-runtime.test.ts`真实Bun/pnpm全文件审计 | 管理器层与局部I/O通过；真实pnpm+插件+两snapshot全状态审计fixture待迁移执行 |
+| PS-CONTAIN | `M/storage.test.ts`管理路径与fake审计；`R/config-io.native.ts`实际HOME非配置边界；`M/real-runtime.test.ts`真实Bun/pnpm全文件审计 | 管理器层与局部I/O通过；真实pnpm+插件+两snapshot全状态审计fixture待迁移执行 |
 | PS-OVERRIDE | `M/storage.test.ts`外部home解释；`M/launch.test.ts`transport；`M/real-runtime.test.ts`外部HOME真实profile | transport通过；旧真实fixture错误期待读HOME配置，正按新契约迁移，不算通过 |
 | PS-MOVE | `M/storage.test.ts`fake-native离线搬移；`M/artifact-e2e-combined.test.ts`双CI包/真实plugin/Office/源不可访问 | 管理器层通过；实际C/credentials/path离线搬家及CI组合尚缺 |
 | RB-INDEPENDENT | `M/real-runtime.test.ts`同一真实archive两manager；`M/artifact-e2e-combined.test.ts`CI两manager | 当前入口skip/旧fixture待改；前置历史成功不替代新C协议真实验收 |
 | RB-LEGACY | `M/install.test.ts`拒旧混合归档；`M/launch.test.ts`协议/必需项错误不执行 | Linuxmanager负例通过；规定native待补 |
 | RB-CONFIG-PROTOCOL | `U/launch.test.ts`新字段必需；`M/launch.test.ts`、`M/snapshots.test.ts`旧协议拒绝 | unit/manager通过；真实当前包协议2有两版本证据，native矩阵仍待补 |
-| RB-HOME | `R/config-io.test.ts`真实P/C/home分工；`U/transform-app.test.ts`standalone；`M/real-runtime.test.ts`显式外部home | 默认home实际通过；外部home真实归档fixture迁移中 |
-| RB-CONFIG-CONTEXT | `R/snapshot-start.test.ts`缺失/错根/busy/无guard拒app；`R/config-io.test.ts`真实escaping/loose根拒ready | Linux组件及真实I/O通过；正常linked ancestor已修复且已定点通过；独审与Windows待补 |
+| RB-HOME | `R/config-io.native.ts`真实P/C/home分工；`U/transform-app.test.ts`standalone；`M/real-runtime.test.ts`显式外部home | 默认home实际通过；外部home真实归档fixture迁移中 |
+| RB-CONFIG-CONTEXT | `R/snapshot-start.test.ts`缺失/错根/busy/无guard拒app；`R/config-io.native.ts`真实escaping/loose根拒ready | Linux组件及真实I/O通过；正常linked ancestor已修复且已定点通过；独审与Windows待补 |
 | RB-RESTART | 认证源码/raw/ZIP的`restart-entry-proof.json`；已有`M/in-use.test.ts`、`R/snapshot-start.test.ts`仍仅transport | 用户批准固定rc.1/rc.2的内部进程重启子项不适用（非通过）；真实公开配置入口驱动的同PID重挂载待补，真实父退出/新进程验证/三claims不豁免 |
-| RB-PLUGIN | `M/real-runtime.test.ts`真实插件安装/跨snapshot；`R/plugin-runtime.test.ts`实际pluginManager入口；`R/atomic-config-io.test.ts`启停helper读写 | 启停helper实际已通过；pluginManager真实入口的历史定点证据见前节，本轮plugin-runtime仍因work/app缺失skip。真实安装→开关/config→其他C不变的完整组合待迁移/执行 |
+| RB-PLUGIN | `M/real-runtime.test.ts`真实插件安装/跨snapshot；`R/plugin-runtime.test.ts`实际pluginManager入口；`R/atomic-config-io.native.ts`启停helper读写 | 启停helper实际已通过；pluginManager真实入口的历史定点证据见前节，本轮plugin-runtime仍因work/app缺失skip。真实安装→开关/config→其他C不变的完整组合待迁移/执行 |
 
 当前关键缺口：RB-RESTART 的真实服务重挂载与Windows父退出、规定原生平台、shell/Scoop失败、Office/CI组合、独审；固定rc.1/rc.2内部进程重启按用户确认标不适用，不以同PID或手写respawn冒充通过。CS-CONCURRENT与CS-LOCAL-PATH已由父c18afcc真实联合通过；真实产品夹具迁移及P/C离线搬迁已父复跑，凭据搬迁追加候选仍待父验证。当前有全部56行定位，但任务1.2不勾选：计划入口不冒充可执行测试，ID数量不是覆盖率。历史表中未更新行由本节和顶部最新实际结果补充，不外推完整criterion。

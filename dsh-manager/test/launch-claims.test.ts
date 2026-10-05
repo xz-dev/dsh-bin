@@ -61,7 +61,8 @@ test.skipIf(!hasZig)("RB-CLAIM: ordinary parent-independent runtime protects all
 		for (const g of [join(i.bundle, ".usage.lock"), join(i.data, "snapshots", `${VERSION}@1`, ".usage.lock"), i.guard]) expect(acquireClaim(g, "exclusive")).toBe("busy");
 		const removal = run(i, ["manager", "snapshot", "config", "remove", `${VERSION}@1`]);
 		expect(removal.status).toBe(1); expect(removal.stderr).toContain("in use"); expect(existsSync(i.config)).toBe(true);
-	} finally { s.child.stdin.end(); expect(await s.done).toBe(0); }
+	} finally { s.child.stdin.end(); await s.done; }
+	expect(await s.done, s.stderr()).toBe(0);
 	expect(run(i, ["manager", "snapshot", "config", "remove", `${VERSION}@1`]).status).toBe(0);
 });
 
