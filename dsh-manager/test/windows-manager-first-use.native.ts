@@ -178,8 +178,9 @@ try {
 		writeZip(composed, entries.map(e => ({ name: e.name, dir: e.dir, mode: e.mode, ...(e.dir ? {} : { data: readFileSync(join(bundle, e.name)) }) })));
 		const verification = join(root, "composed-verification"), verifiedEntries = extractZip(composed, verification);
 		assert.deepEqual(digest(verification), after);
-		assert.deepEqual(verifiedEntries.map(e => [e.name, e.dir, e.mode]), entries.map(e => [e.name, e.dir, e.mode]));
-		save("diagnostic-archive.json", { ...metadata.diagnostic, archiveSHA: fileHash(composed), size: statSync(composed).size, changedMembers: changes.map(member => ({ member, beforeSHA: before[member], afterSHA: after[member] })), unchangedMembers: Object.keys(before).length - changes.length, appPnpmBytesIdentical: true, untouchedCIArtifact: false, container: "deterministic ZIP recompression; original member names/types/modes retained; member SHA means uncompressed content" });
+		const memberShape = (list: typeof entries) => list.map(e => [e.name, e.dir, e.mode]).sort((a, b) => String(a[0]) < String(b[0]) ? -1 : String(a[0]) > String(b[0]) ? 1 : 0);
+		assert.deepEqual(memberShape(verifiedEntries), memberShape(entries));
+		save("diagnostic-archive.json", { ...metadata.diagnostic, archiveSHA: fileHash(composed), size: statSync(composed).size, changedMembers: changes.map(member => ({ member, beforeSHA: before[member], afterSHA: after[member] })), unchangedMembers: Object.keys(before).length - changes.length, appPnpmBytesIdentical: true, untouchedCIArtifact: false, container: "deterministic ZIP recompression/reordering; original member names/types/modes retained; member SHA means uncompressed content" });
 		const diagnosticManifest = { ...manifest, ...identity, builderCommit: originalHead, run: 1, attempt: 1, diagnostic: metadata.diagnostic, targets: { "windows-x64-modern": { file: "runtime-windows-x64-modern.zip", size: statSync(composed).size, sha256: fileHash(composed) } } };
 		save("diagnostic-manifest.json", diagnosticManifest);
 		const index = Object.assign(emptyIndex(), { diagnostic: { ...metadata.diagnostic, identityProvenance: provenance.identityProvenance } });
