@@ -793,8 +793,24 @@ fn privateAccess(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, file: st
         var present: win.BOOL = 0;
         var defaulted: win.BOOL = 0;
         var acl: ?*anyopaque = null;
-        if (GetSecurityDescriptorDacl(security.descriptor, &present, &acl, &defaulted) == 0 or present == 0 or acl == null) return error.PrivateAccessFailed;
-        if (SetSecurityInfo(handle, 1, 0x80000004, null, null, acl, null) != 0) return error.PrivateAccessFailed;
+        if (GetSecurityDescriptorDacl(security.descriptor, &present, &acl, &defaulted) == 0) {
+            const code = @intFromEnum(win.kernel32.GetLastError());
+            util.warn("snapshot private access: GetSecurityDescriptorDacl failed (GetLastError={d})", .{code});
+            return error.PrivateAccessFailed;
+        }
+        if (present == 0) {
+            util.warn("snapshot private access: security descriptor DACL is not present", .{});
+            return error.PrivateAccessFailed;
+        }
+        if (acl == null) {
+            util.warn("snapshot private access: security descriptor DACL is null", .{});
+            return error.PrivateAccessFailed;
+        }
+        const status = SetSecurityInfo(handle, 1, 0x80000004, null, null, acl, null);
+        if (status != 0) {
+            util.warn("snapshot private access: SetSecurityInfo failed (status={d})", .{status});
+            return error.PrivateAccessFailed;
+        }
     } else try file.chmod(0o700);
 }
 
@@ -815,17 +831,37 @@ const PrivateSecurity = struct {
     attributes: win.SECURITY_ATTRIBUTES,
     fn init(a: std.mem.Allocator) !PrivateSecurity {
         var token: win.HANDLE = undefined;
-        if (OpenProcessToken(win.GetCurrentProcess(), 8, &token) == 0) return error.PrivateAccessFailed;
+        if (OpenProcessToken(win.GetCurrentProcess(), 8, &token) == 0) {
+            const code = @intFromEnum(win.kernel32.GetLastError());
+            util.warn("snapshot private access: OpenProcessToken failed (GetLastError={d})", .{code});
+            return error.PrivateAccessFailed;
+        }
         defer win.CloseHandle(token);
         var needed: win.DWORD = 0;
-        _ = GetTokenInformation(token, 1, null, 0, &needed); // TokenUser
-        if (needed == 0) return error.PrivateAccessFailed;
+        const size_result = GetTokenInformation(token, 1, null, 0, &needed); // TokenUser; sizing normally fails with a nonzero required size.
+        const size_error = if (size_result == 0) @intFromEnum(win.kernel32.GetLastError()) else 0;
+        if (needed == 0) {
+            if (size_result == 0) {
+                util.warn("snapshot private access: GetTokenInformation(TokenUser,size) returned zero size (GetLastError={d})", .{size_error});
+            } else {
+                util.warn("snapshot private access: GetTokenInformation(TokenUser,size) returned zero size", .{});
+            }
+            return error.PrivateAccessFailed;
+        }
         const info = try a.alignedAlloc(u8, .of(usize), needed);
         defer a.free(info);
-        if (GetTokenInformation(token, 1, info.ptr, needed, &needed) == 0) return error.PrivateAccessFailed;
+        if (GetTokenInformation(token, 1, info.ptr, needed, &needed) == 0) {
+            const code = @intFromEnum(win.kernel32.GetLastError());
+            util.warn("snapshot private access: GetTokenInformation(TokenUser,data) failed (GetLastError={d})", .{code});
+            return error.PrivateAccessFailed;
+        }
         const sid = (@as(*const extern struct { sid: *anyopaque, attributes: win.DWORD }, @ptrCast(info.ptr))).sid;
         var sid_text: [*:0]u16 = undefined;
-        if (ConvertSidToStringSidW(sid, &sid_text) == 0) return error.PrivateAccessFailed;
+        if (ConvertSidToStringSidW(sid, &sid_text) == 0) {
+            const code = @intFromEnum(win.kernel32.GetLastError());
+            util.warn("snapshot private access: ConvertSidToStringSidW failed (GetLastError={d})", .{code});
+            return error.PrivateAccessFailed;
+        }
         defer _ = LocalFree(@ptrCast(sid_text));
         const sid_utf8 = try std.unicode.utf16LeToUtf8Alloc(a, std.mem.span(sid_text));
         defer a.free(sid_utf8);
@@ -834,7 +870,11 @@ const PrivateSecurity = struct {
         const wide = try std.unicode.utf8ToUtf16LeAllocZ(a, text);
         defer a.free(wide);
         var descriptor: ?*anyopaque = null;
-        if (ConvertStringSecurityDescriptorToSecurityDescriptorW(wide, 1, &descriptor, null) == 0) return error.PrivateAccessFailed;
+        if (ConvertStringSecurityDescriptorToSecurityDescriptorW(wide, 1, &descriptor, null) == 0) {
+            const code = @intFromEnum(win.kernel32.GetLastError());
+            util.warn("snapshot private access: ConvertStringSecurityDescriptorToSecurityDescriptorW failed (GetLastError={d})", .{code});
+            return error.PrivateAccessFailed;
+        }
         return .{ .descriptor = descriptor, .attributes = .{ .nLength = @sizeOf(win.SECURITY_ATTRIBUTES), .lpSecurityDescriptor = descriptor, .bInheritHandle = win.FALSE } };
     }
     fn deinit(self: PrivateSecurity) void {
