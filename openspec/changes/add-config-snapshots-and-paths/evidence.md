@@ -2,7 +2,15 @@
 
 ## 当前结论
 
-这是 `add-config-snapshots-and-paths` 的实施期记录，不是完整验收。固定生产候选 `500537c4c0ef0449ec992a02a0324e385cfae5d1` 已通过真实 rc.1→rc.2→rc.1 与 config／atomic／path 联合回归（19 pass /0 fail）。后续 `0629c8b` 及父 test/docs 提交未改生产行为。原四项协议发现仍独立 Closed（仅 Linux transport）；I/O/path 的 Opus 首审 BLOCK 仍待独立关闭，`213b6796` 与有界恢复 `232d391d` 均429无报告，本轮不再自动重试。Windows 第五轮 `37192195212` 两架构各13pass/2fail/0skip，生产managed install仍fail-closed。56场景语义映射已交付，但不等于全部场景接受；并发及真实产物夹具新测试已整合，正在父侧统一候选复跑。实际上游内部重启、规定原生矩阵、Office／CI组合产物和独审仍未闭合。下文旧基线为历史，不覆盖当前结论；尚不具备发布、合并、同步或归档条件。
+这是 `add-config-snapshots-and-paths` 的实施期记录，不是完整验收。父固定 `c18afcc95c832d3a519e2a936a2c7b0593f9cb9b`，以认证 raw 副本组装真实 rc.1/rc.2，two-runtime/config-I/O/atomic/path 联合 **19pass/0fail/1668assert**；同批真实产品 **6pass/2skip/0fail/194assert**，Office/CI组合 skip 不抵扣。生产行为与500537c一致。原四项协议发现独立 Closed（仅 Linux transport）；Opus复审 `213b6796`、`232d391d` 两次429无报告，仍blocked，不自动重试。Windows第六轮 `37194327297` 两架构各13pass/2fail/0skip，生产managed gate仍关闭，新token launcher未整合或原生运行。用户已确认固定 rc.1/rc.2 按实际上游能力验收：无入口的内部进程重启子项标不适用而非通过，真实服务重挂载、父退出、新进程上下文和使用保护继续必验；Windows owner策略未获修改批准。56场景映射不等于全部接受。规定原生矩阵、shell/Scoop、Office/CI组合和独审仍有缺口；不具备发布、合并、同步或归档条件。下文旧结果保留为历史。
+
+## 固定候选、真实能力及最新交付状态（2026-10-04）
+
+- 父联合日志：`parent-gates/product-unified/logs/fresh-source-c18afcc.log`，SHA256 `76031cb0fae99a66e8a9754f6e033b4223c0fef7159c226f03bc2ed570e69f7f`；同批产品日志 `fresh-products-c18afcc.log`，SHA256 `240a3f3311fc2d48cfaccbff21c47cfcfcd115ad5f5059a17f6ff485e5699362`。前者实际覆盖同P双C并发、真实watcher、复制相对accounts路径再启动及无宿主工具PATH；后者覆盖两manager、真实插件、argv/STDIN/exit及离线搬迁，不再记作待迁移旧夹具。
+- 独立搬迁凭据追加候选 `04efe85f24008536571fd494ad00bf88b2d5b3af` 尚未父整合/复跑。owner报告真实LocalCredentialProvider set/resolve、8个Linux trace、缺失文档red和6pass/1skip/0fail/656assert；不将worker报告计为父接受。现有父搬迁成功不单凭目录摘要外推凭据读写。
+- 第六Windows实际TokenOwner与零字节wx owner为Administrators，而DACL仅当前用户；此按旧owner契约被拒绝。父kill后child确已退出，不能称活着等待认证，inJob不定位具体原因。新test-only `508401f7`/`3dce8ee2` 仅本地语法/Linux skip，未整合、不继续用token改造制造产品正例。普通manager另有PrivateAccessFailed，API根因尚未定位。
+- rc.1 `4878cdabd87d4041bdaff61d04c966883b9fd07a`、rc.2 `639ed015397290b3745d163aafe02ffee4aa3f84` 的认证源码、raw和实际ZIP显示CLI无已识别的内部进程重启入口，Loader.exit空hook，Fiber.restart为同PID重挂载。证据 `/var/tmp/dsh-real-config-restart/logs/restart-entry-proof.json`，SHA256 `7b50e9e5e64e3907318995fa5422856f0ac9d79d1532bff0056c46e461d7b5c9`。用户已明确选择“按现有上游能力验收”；RB-RESTART仍需真实重挂载与独立父退出分项，不因适用范围澄清就整体通过。
+- CI候选A `37197218229`、B `37197221512` 都固定c18afcc且整体failure。A已核对manager与12目标runtime构建/aggregate成功，组合和publish为skip；两run均有Linux/macOS/Windows test及Scoop失败，包含PowerShell snapshot候选缺失和Windows manager PrivateAccessFailed。Office `37197223893` publish=false构建success；均未公开发布，构建不是组合接受。失败日志在 `parent-gates/ci-products-c18afcc/`，A/B SHA256分别 `21eba8632b6a70aa571be472bd4b34041facad0b06d35e58ee85f3d6d89f5b9e`、`3166ed3f2e1c37dfb37f613832c2160b560ff2372deddc520385b7f947514392`。
 
 ## 前置与保留场景核对
 
@@ -187,7 +195,7 @@ inner atomic/lock 的 read、复读、wx、rename、remove 检查已整合（`a0
 | RB-CONFIG-PROTOCOL | `U/launch.test.ts`新字段必需；`M/launch.test.ts`、`M/snapshots.test.ts`旧协议拒绝 | unit/manager通过；真实当前包协议2有两版本证据，native矩阵仍待补 |
 | RB-HOME | `R/config-io.test.ts`真实P/C/home分工；`U/transform-app.test.ts`standalone；`M/real-runtime.test.ts`显式外部home | 默认home实际通过；外部home真实归档fixture迁移中 |
 | RB-CONFIG-CONTEXT | `R/snapshot-start.test.ts`缺失/错根/busy/无guard拒app；`R/config-io.test.ts`真实escaping/loose根拒ready | Linux组件及真实I/O通过；正常linked ancestor已修复且已定点通过；独审与Windows待补 |
-| RB-RESTART | `M/in-use.test.ts`FAKE_RESTART、`R/snapshot-start.test.ts`STUB_RESTART；CI组合手写respawn | 明确仅transport/respawn形状，不是实际上游内部重启入口；真实A/P1/C1冻结与父退出保护尚缺 |
+| RB-RESTART | 认证源码/raw/ZIP的`restart-entry-proof.json`；已有`M/in-use.test.ts`、`R/snapshot-start.test.ts`仍仅transport | 用户批准固定rc.1/rc.2的内部进程重启子项不适用（非通过）；真实公开配置入口驱动的同PID重挂载待补，真实父退出/新进程验证/三claims不豁免 |
 | RB-PLUGIN | `M/real-runtime.test.ts`真实插件安装/跨snapshot；`R/plugin-runtime.test.ts`实际pluginManager入口；`R/atomic-config-io.test.ts`启停helper读写 | 启停helper实际已通过；pluginManager真实入口的历史定点证据见前节，本轮plugin-runtime仍因work/app缺失skip。真实安装→开关/config→其他C不变的完整组合待迁移/执行 |
 
-关键可执行缺口：CS-CONCURRENT 的真实并发、RB-RESTART 的实际上游内部重启与Windows父退出、CS-LOCAL-PATH 的自定义路径复制后启动、real-runtime/CI组合旧HOME夹具迁移、规定原生平台与shell／Scoop／真实搬家。当前已有全部56行定位，但任务1.2仍不勾选：计划中的入口不冒充已实现可执行测试，ID出现次数也不是覆盖率。后续每份测试交付须对本表更新实际命令/结果，再决定完整criterion是否可接受。
+当前关键缺口：RB-RESTART 的真实服务重挂载与Windows父退出、规定原生平台、shell/Scoop失败、Office/CI组合、独审；固定rc.1/rc.2内部进程重启按用户确认标不适用，不以同PID或手写respawn冒充通过。CS-CONCURRENT与CS-LOCAL-PATH已由父c18afcc真实联合通过；真实产品夹具迁移及P/C离线搬迁已父复跑，凭据搬迁追加候选仍待父验证。当前有全部56行定位，但任务1.2不勾选：计划入口不冒充可执行测试，ID数量不是覆盖率。历史表中未更新行由本节和顶部最新实际结果补充，不外推完整criterion。

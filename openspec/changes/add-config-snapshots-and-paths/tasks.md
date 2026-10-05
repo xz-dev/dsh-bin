@@ -17,7 +17,7 @@
 - [ ] 3.1 先建立协议 2 的入口拒绝／接受测试，再更新管理器载荷、运行包元数据、构建适配和协议支持声明；验证 RB-INDEPENDENT、RB-LEGACY、RB-CONFIG-PROTOCOL、RB-CONFIG-CONTEXT 通过，两个支持同协议的管理器无需重建同一运行包，旧协议不被降级为共享配置模式。
 - [ ] 3.2 在受支持版本的构建站点表中接管 profile patch 的读写／监视、settings 读取与 `.imported` 重命名／导入，保留插件解析基准与生成的 cordis.yml；用真实运行包和真实插件验证 CS-PLUGIN-BASE、CS-FORMAT、RB-HOME、RB-PLUGIN、PS-CONTAIN、PS-OVERRIDE 通过，未覆盖的已知路径变化使构建失败。
 - [ ] 3.3 接管内建本地凭据提供者的默认／显式路径、读取、更新与 watcher，在文件打开前验证配置根边界与私有权限；用真实提供者的专用测试凭据验证 CS-SWITCH、CS-EXTERNAL、CS-LOCAL-PATH、CS-PERMISSIONS 通过，外部路径及逃逸链接不会被访问或静默回退。
-- [ ] 3.4 使配置映射按进程上下文传递，不改写共享插件目录中的公共配置链接；扩展 runtime 的双快照使用保护和内部重启继承；验证 CS-CONCURRENT、RB-RESTART、MC-IN-USE 通过，同一插件环境配两套配置可并发，默认选择变化及管理器父进程退出不会切换既有会话或解除保护。
+- [ ] 3.4 使配置映射按进程上下文传递，不改写共享插件目录中的公共配置链接；扩展 runtime 的双快照使用保护和实际支持的生命周期继承；验证 CS-CONCURRENT、RB-RESTART、MC-IN-USE，同一插件环境配两套配置可并发，默认选择变化及管理器父进程退出不会切换既有会话或解除保护。认证 rc.1/rc.2 的内部进程重启子项标为不适用而非通过，并实际验证公开配置入口触发的同 PID 服务重挂载；其他提供进程重启入口的版本须单独实测，不能用手写 respawn 代替。
 - [ ] 3.5 完成 A→B 继承、B 修改设置／凭据、回切 A 的真实应用纵向验收，以及显式跨版本直用与复制后试用的对照；验证 CS-SWITCH、CS-FORMAT、CS-CROSS 通过，来源字节和共享 home 哨兵按场景保持不变，并明确区分格式改写 fixture 与真实上游服务结果。
 
 ## 4. 八类只读路径排障
@@ -32,7 +32,7 @@
 ## 5. 跨组件与平台验收
 
 - [ ] 5.1 运行真实程序软链接入口与原位置不可访问的离线搬家测试，包含真实插件、配置和凭据；验证 PS-MOVE、PATH-MODES 通过，移动后 path 与真实启动均使用新根，不恢复旧路径，也不改写用户外部资源。
-- [ ] 5.2 在 Gentoo／Scoop 前置测试夹具及支持的平台矩阵中复验路径、原生权限、选择与双快照保护，特别验证 Windows runtime 不依赖父管理器存活；验证 PATH-MODES、CS-PERMISSIONS、RB-RESTART、MC-IN-USE 通过，不能用 POSIX 权限模拟声称 Windows ACL 已验收。
+- [ ] 5.2 在 Gentoo／Scoop 前置测试夹具及支持的平台矩阵中复验路径、原生权限、选择与双快照保护，特别验证 Windows runtime 不依赖父管理器存活；验证 PATH-MODES、CS-PERMISSIONS、MC-IN-USE 及 RB-RESTART 的适用生命周期分项，分别记录真实服务重挂载、实际支持的进程重启与不适用证据；父退出和新进程自身保护不得因缺少内部重启入口而豁免，不能用 POSIX 权限模拟声称 Windows ACL 已验收。
 - [ ] 5.3 将同参数 path effective 与随后真实启动的组合逐项对比，再跑两类共享生命周期矩阵及真实应用组合回归；验证 PATH-CURRENT、CS-AUTO、CS-CREATE、CS-GAPS、CS-CONTENT、CS-CONCURRENT 和前置未被本增量替换的行为均通过，不用 fake-native 代替真实配置／凭据服务验收。
 
 ## 6. 帮助补全文档与交付核验
