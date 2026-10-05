@@ -144,7 +144,11 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
         } else try std.fs.rename(tmp, backup, bundles, e.id);
     }
     const exists = existsIn(bundles, e.id);
-    if (exists) try recognized(ctx, bundles, e.id, e.id);
+    var original: ?std.fs.Dir = if (builtin.os.tag == .freebsd and exists) try safe.openDir(bundles, e.id, .{ .no_follow = true }) else null;
+    defer if (original) |*held| held.close();
+    if (original) |held| {
+        try recognizedIn(ctx, held, e.id);
+    } else if (exists) try recognized(ctx, bundles, e.id, e.id);
     if (exists and !force) {
         _ = validate(ctx, dest, e, host) catch return error.IncompleteRuntimeUseForce;
         _ = try snapshot.ensure(ctx, .plugins, e.id, e.bundle().meta.?, "install");
@@ -155,10 +159,16 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
     }
     if (exists) try checkIdle(bundles, e.id, "dsh");
     const staging = try fetchTree(ctx, tmp, candidate.asset, e.tag);
-    defer tmp.deleteTree(staging) catch |err| util.warn("leftover tmp/{s} could not be deleted ({s}); run `dsh manager clean`", .{ staging, @errorName(err) });
+    defer if (builtin.os.tag != .freebsd) tmp.deleteTree(staging) catch |err| util.warn("leftover tmp/{s} could not be deleted ({s}); run `dsh manager clean`", .{ staging, @errorName(err) });
     var dir = try tmp.openDir(staging, .{ .no_follow = true });
     var dir_open = true;
     defer if (dir_open) dir.close();
+    var preserve_staging = false;
+    defer {
+        // FreeBSD cleanup authority is the validated held generation, never a substituted pathname.
+        if (builtin.os.tag == .freebsd and !preserve_staging and sameDirectory(tmp, staging, dir))
+            tmp.deleteTree(staging) catch |err| util.warn("leftover tmp/{s} could not be deleted ({s}); run `dsh manager clean`", .{ staging, @errorName(err) });
+    }
     const meta = try validateIn(ctx, dir, e, host);
     const installed_meta = try std.json.Stringify.valueAlloc(ctx.a, .{ .kind = "dsh-runtime-install", .schema = @as(u32, 1), .id = e.id, .target = host, .tag = e.tag, .asset = candidate.asset, .seq = e.seq }, .{});
     try dir.writeFile(.{ .sub_path = ".dsh-install.json", .data = installed_meta });
@@ -170,10 +180,16 @@ fn perform(ctx: *Ctx, query: []const u8, channel: []const u8, force: bool, autom
     crashPoint(ctx, "before-activation");
     if (builtin.os.tag == .freebsd) {
         @import("manager_binary.zig").testPause(ctx, "install-before-activation", staging);
-        if (!sameDirectory(tmp, staging, dir)) return error.RuntimeDirectoryConflict;
+        if (!sameDirectory(tmp, staging, dir)) {
+            preserve_staging = true;
+            return error.RuntimeDirectoryConflict;
+        }
     }
     if (existsIn(tmp, backup)) try recognized(ctx, tmp, backup, e.id);
-    try activate(ctx, tmp, staging, bundles, e.id, backup, exists);
+    activate(ctx, tmp, staging, bundles, e.id, backup, exists, original) catch |err| {
+        if (builtin.os.tag == .freebsd and err == error.RuntimeDirectoryConflict) preserve_staging = true;
+        return err;
+    };
     if (builtin.os.tag == .freebsd and !sameDirectory(bundles, e.id, dir)) return error.RuntimeDirectoryConflict;
     crashPoint(ctx, "after-activation");
     _ = try snapshot.ensure(ctx, .plugins, e.id, meta, "install");
@@ -214,6 +230,10 @@ pub fn existsIn(dir: std.fs.Dir, name: []const u8) bool {
 fn recognized(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, id: []const u8) !void {
     var dir = parent.openDir(name, .{ .no_follow = true }) catch return error.RuntimeDirectoryConflict;
     defer dir.close();
+    try recognizedIn(ctx, dir, id);
+}
+
+fn recognizedIn(ctx: *const Ctx, dir: std.fs.Dir, id: []const u8) !void {
     if ((try dir.stat()).kind != .directory) return error.RuntimeDirectoryConflict;
     const bytes = dir.readFileAlloc(ctx.a, "bundle.json", 1 << 20) catch return error.RuntimeDirectoryConflict;
     const Identity = struct { kind: []const u8, schemaVersion: u32, id: []const u8 };
@@ -323,7 +343,7 @@ pub fn remove(ctx: *const Ctx, parent: std.fs.Dir, name: []const u8, claim: *?lo
     tmp.deleteTree(retired) catch |err| util.warn("removed {s}; leftover tmp/{s} could not be deleted ({s}); run `dsh manager clean`", .{ name, retired, @errorName(err) });
 }
 
-fn sameDirectory(parent: std.fs.Dir, name: []const u8, held: std.fs.Dir) bool {
+pub fn sameDirectory(parent: std.fs.Dir, name: []const u8, held: std.fs.Dir) bool {
     const opened = std.posix.fstat(held.fd) catch return false;
     const named = std.posix.fstatat(parent.fd, name, std.posix.AT.SYMLINK_NOFOLLOW) catch return false;
     return opened.dev == named.dev and opened.ino == named.ino and named.mode & std.posix.S.IFMT == std.posix.S.IFDIR;
@@ -338,15 +358,16 @@ fn publishDirectory(ctx: *const Ctx, source: std.fs.Dir, name: []const u8, held:
 
 // Retain validated parent handles through activation, replacement and cleanup. POSIX exchange
 // keeps force reinstall visible; Windows retains the existing retirement/rollback protocol.
-pub fn activate(ctx: *const Ctx, tmp: std.fs.Dir, staging: []const u8, parent: std.fs.Dir, dest: []const u8, backup: []const u8, exists: bool) !void {
+pub fn activate(ctx: *const Ctx, tmp: std.fs.Dir, staging: []const u8, parent: std.fs.Dir, dest: []const u8, backup: []const u8, exists: bool, original: ?std.fs.Dir) !void {
     var source: ?std.fs.Dir = if (builtin.os.tag == .freebsd) try safe.openDir(tmp, staging, .{ .no_follow = true }) else null;
     defer if (source) |*held| held.close();
     if (!exists) {
         if (builtin.os.tag == .freebsd) return publishDirectory(ctx, tmp, staging, source.?, parent, dest);
         return std.fs.rename(tmp, staging, parent, dest);
     }
-    var current = try safe.openDir(parent, dest, .{ .no_follow = true });
-    var current_open = true;
+    if (builtin.os.tag == .freebsd and (original == null or !sameDirectory(parent, dest, original.?))) return error.RuntimeDirectoryConflict;
+    var current = if (builtin.os.tag == .freebsd) original.? else try safe.openDir(parent, dest, .{ .no_follow = true });
+    var current_open = builtin.os.tag != .freebsd;
     defer if (current_open) current.close();
     if ((try current.stat()).kind != .directory) return error.RuntimeDirectoryConflict;
     var claim = try idleClaim(parent, dest, "runtime/addon");
@@ -373,7 +394,7 @@ pub fn activate(ctx: *const Ctx, tmp: std.fs.Dir, staging: []const u8, parent: s
         current.close();
         current_open = false;
     }
-    if (existsIn(tmp, backup)) try tmp.deleteTree(backup);
+    if (builtin.os.tag != .freebsd and existsIn(tmp, backup)) try tmp.deleteTree(backup);
     try retire(ctx.a, parent, dest, tmp, backup, &claim);
     if (builtin.os.tag == .freebsd) {
         const held = try std.posix.fstat(current.fd);
@@ -381,6 +402,7 @@ pub fn activate(ctx: *const Ctx, tmp: std.fs.Dir, staging: []const u8, parent: s
         if (held.dev != retired.dev or held.ino != retired.ino) return error.RuntimeDirectoryConflict;
         crashPoint(ctx, "after-retire");
         @import("manager_binary.zig").testPause(ctx, "install-after-retire", backup);
+        if (!sameDirectory(tmp, backup, current)) return error.RuntimeDirectoryConflict;
         publishDirectory(ctx, tmp, staging, source.?, parent, dest) catch |err| {
             const restore = try std.posix.fstatat(tmp.fd, backup, std.posix.AT.SYMLINK_NOFOLLOW);
             if (held.dev != restore.dev or held.ino != restore.ino) return error.RuntimeDirectoryConflict;
@@ -395,6 +417,7 @@ pub fn activate(ctx: *const Ctx, tmp: std.fs.Dir, staging: []const u8, parent: s
     }
     if (claim) |l| l.release();
     claim = null; // POSIX replacements retain the claim; Windows retirement already released it.
+    if (builtin.os.tag == .freebsd and !sameDirectory(tmp, backup, current)) return error.RuntimeDirectoryConflict;
     tmp.deleteTree(backup) catch |err| util.warn("replacement {s} is active; leftover tmp/{s} could not be deleted ({s}); run `dsh manager clean`", .{ dest, backup, @errorName(err) });
 }
 extern "c" fn renameatx_np(c_int, [*:0]const u8, c_int, [*:0]const u8, c_uint) c_int;

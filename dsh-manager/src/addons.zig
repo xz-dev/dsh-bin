@@ -213,7 +213,10 @@ fn perform(ctx: *Ctx, t: Table, query: ?[]const u8, force: bool) !void {
         if (!installer.existsIn(parent, c.version)) try std.fs.rename(tmp, backup, parent, c.version);
     }
     const exists = installer.existsIn(parent, c.version);
+    var original: ?std.fs.Dir = if (@import("builtin").os.tag == .freebsd and exists) try @import("safe_open.zig").openDir(parent, c.version, .{ .no_follow = true }) else null;
+    defer if (original) |*held| held.close();
     if (exists) _ = try readIn(ctx, parent, c.version, c.version);
+    if (original) |held| if (!installer.sameDirectory(parent, c.version, held)) return error.AddonDirectoryConflict;
     if (exists and !force) {
         var current = try parent.openDir(c.version, .{ .no_follow = true });
         defer current.close();
@@ -242,7 +245,7 @@ fn perform(ctx: *Ctx, t: Table, query: ?[]const u8, force: bool) !void {
     try d.writeFile(.{ .sub_path = runtimes.guard_name, .data = "" });
     d.close();
     d_open = false;
-    try installer.activate(ctx, tmp, staging, parent, c.version, backup, exists);
+    try installer.activate(ctx, tmp, staging, parent, c.version, backup, exists, original);
     util.print("Installed the office addon {s}; selection unchanged.\n", .{c.version});
 }
 pub fn storedChoice(s: ?select.Selection) !?[]const u8 {

@@ -1,4 +1,6 @@
-// Bounded production publication/recovery acceptance. No application, profile or flock closure claim.
+// Bounded native acceptance: run `bun test ./test/publish.native.ts` with required artifact variables.
+// Not a *.test.ts file: ordinary Bun discovery does not opt into native prerequisites.
+// No application, profile or flock closure claim.
 import { beforeAll, expect, test } from "bun:test";
 import { spawnSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -16,7 +18,7 @@ const managerHost = `${process.platform === "darwin" ? "darwin" : process.platfo
 const nativeArm = process.platform === "freebsd" && process.arch === "arm64";
 const sha = (p: string) => createHash("sha256").update(readFileSync(p)).digest("hex");
 beforeAll(() => {
-    expect(["freebsd", "linux"]).toContain(process.platform); expect(process.getuid!()).not.toBe(0);
+    expect(process.platform).toBe("freebsd"); expect(process.getuid!()).not.toBe(0);
     for (const f of [manager, publisher, nextManager]) expect(f && existsSync(f)).toBe(true);
 });
 function fixture() {
@@ -200,3 +202,36 @@ test("FBSD-UPDATES actual self-update: occupied candidate and interrupted verifi
         }
     } finally { server.stop(true); }
 }, nativeArm ? 240000 : 120000);
+
+// Explicit ./test/publish.native.ts only: Bun ordinary *.test.ts discovery excludes native prerequisites.
+function repairSource() {
+    const zip = join(tempDir("repair-zip-"), "runtime.zip"), meta = bundleMeta(ID, { patch: { target: host } });
+    writeZip(zip, [{ name: "bundle.json", data: Buffer.from(JSON.stringify(meta)) }, { name: "dsh-native", data: readFileSync(manager), mode: 0o755 }]);
+    const bytes = readFileSync(zip), entry = { ...meta, tag: `runtime-v${ID}`, seq: 1, assets: { [host]: { name: "runtime.zip", size: bytes.length, sha256: sha(zip) } } };
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) { return new URL(req.url).pathname === "/runtime-index.json" ? Response.json({ schema: 1, channels: { release: [entry], live: [] }, addons: { office: [] } }) : new Response(bytes); } });
+    return { origin: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
+}
+for (const attack of ["target", "staging", "backup"] as const) test(`FBSD-REPAIR ${attack} substitution preserves user object and retained generation`, async () => {
+    expect(process.platform).toBe("freebsd");
+    const i = fixture(), s = repairSource(), installed = join(i.data, "bundles", ID);
+    writeFileSync(join(installed, "old-generation"), "OLD");
+    let replaced = "", held = "", staged = "";
+    try {
+        const r = await paused(i, s.origin, ["manager", "install", ID, "--force"], attack === "backup" ? "install-after-retire" : "install-before-activation", name => {
+            if (attack === "backup") replaced = join(i.data, "tmp", name);
+            else { staged = join(i.data, "tmp", name); replaced = attack === "target" ? installed : staged; }
+            held = `${replaced}.held`;
+            renameSync(replaced, held); mkdirSync(replaced); writeFileSync(join(replaced, "USERKEEP"), "USER KEEP");
+        });
+        console.info(JSON.stringify({ attack, status: r.status, stderr: r.stderr, userPresent: existsSync(join(replaced, "USERKEEP")), heldPresent: existsSync(held), stagedPresent: staged ? existsSync(staged) : null }));
+        expect(r.status, r.stderr).toBe(1); expect(r.stderr).toContain("RuntimeDirectoryConflict");
+        expect(readFileSync(join(replaced, "USERKEEP"), "utf8")).toBe("USER KEEP");
+        expect(existsSync(held)).toBe(true);
+        if (attack === "staging") expect(sha(join(held, "dsh-native"))).toBe(sha(manager));
+        else expect(readFileSync(join(held, "old-generation"), "utf8")).toBe("OLD");
+        if (attack === "target") expect(existsSync(join(staged, "dsh-native"))).toBe(true);
+        if (attack === "backup") expect(existsSync(installed)).toBe(false);
+        expect(readFileSync(join(i.data, "home", "sentinel"), "utf8")).toBe("PRIVATE KEEP");
+        expect(existsSync(join(i.data, "state", "selection.json"))).toBe(false);
+    } finally { s.stop(); }
+}, 60000);
