@@ -210,3 +210,35 @@ test.skipIf(!existsSync(join(ROOT, "work/app/lib/bin.js")))("real app tree: host
 	prunePrebuilds(copy, t);
 	expect(foreignBinaries(copy, t)).toEqual([]);
 });
+
+test("FreeBSD prunes only declared incompatible optional variants, preserving public JS and source", () => {
+	const f = fixture(), copy = join(f.dir, "copy"); cpSync(f.app, copy, { recursive: true });
+	const pkg = "@koromix/koffi-linux-x64", dir = join(copy, "node_modules", pkg);
+	put(join(dir, "package.json"), JSON.stringify({ name: pkg, os: ["linux"], cpu: ["x64"] }));
+	put(join(copy, "node_modules/koffi/package.json"), JSON.stringify({ name: "koffi", optionalDependencies: { [pkg]: "1" } }));
+	put(join(copy, "node_modules/koffi/index.js"), "unchanged public JS\n");
+	expect(prunePrebuilds(copy, target("freebsd-x64"))).toContain(`node_modules/${pkg}`);
+	expect(existsSync(dir)).toBe(false);
+	expect(readFileSync(join(copy, "node_modules/koffi/index.js"), "utf8")).toBe("unchanged public JS\n");
+	expect(existsSync(join(f.app, "node_modules", pkg))).toBe(true);
+});
+
+test("FreeBSD refuses required or unclassified incompatible packages without deleting them", () => {
+	for (const optional of [false, true]) {
+		const f = fixture(), pkg = "@koromix/koffi-linux-x64", dir = join(f.app, "node_modules", pkg);
+		put(join(dir, "package.json"), JSON.stringify({ name: pkg, os: ["!freebsd"] }));
+		if (optional) {
+			put(join(f.app, "node_modules/owner/package.json"), JSON.stringify({ optionalDependencies: { [pkg]: "1" } }));
+			put(join(f.app, "package.json"), JSON.stringify({ dependencies: { [pkg]: "1" } }));
+		}
+		expect(() => prunePrebuilds(f.app, target("freebsd-x64"))).toThrow(/required or unclassified/);
+		expect(existsSync(dir)).toBe(true);
+	}
+});
+
+test("FreeBSD foreign scan rejects same-machine Linux and mismatched FreeBSD machines", () => {
+	const root = tmp(), bytes = elf(0x3e); bytes[4] = 2; bytes[5] = 1; bytes[7] = 9; bytes.writeUInt16LE(2, 16);
+	put(join(root, "native"), bytes); expect(foreignBinaries(root, target("freebsd-x64"))).toEqual([]);
+	put(join(root, "linux"), elf(0x3e)); const arm = Buffer.from(bytes); arm.writeUInt16LE(0xb7, 18); put(join(root, "arm"), arm);
+	expect(foreignBinaries(root, target("freebsd-x64")).sort()).toEqual(["arm: elf/arm64", "linux: elf/x64"]);
+});

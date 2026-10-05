@@ -12,7 +12,7 @@
 //          run, attempt, builderCommit, slot:{commit,kitVersion}|null, index?:<path to runtime-index.json snapshot>}
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { binaryArch } from "./binary-arch.mjs";
+import { binaryArch, isFreebsdElf } from "./binary-arch.mjs";
 import { writeShims } from "./shims.mjs";
 import { target as targetById } from "./targets.mjs";
 import { warmTranspilerCache } from "./warm-transpiler-cache.mjs";
@@ -22,7 +22,7 @@ import { fixedCli } from "./completion.mjs";
 export const LAUNCH_PROTOCOL = 2;
 const isCommitTime = (s) => typeof s === "string" && !Number.isNaN(Date.parse(s)) && new Date(s).toISOString() === s;
 
-const FORMAT = { linux: "elf", darwin: "macho", windows: "pe" };
+const FORMAT = { linux: "elf", freebsd: "elf", darwin: "macho", windows: "pe" };
 const PLATFORM_DIR = /^(linux|darwin|win32|win|windows|freebsd|android|openbsd|sunos|aix)[-_](x64|arm64|ia32|arm|x86_64|aarch64|ppc64|s390x|riscv64|loong64)(?:[-_](gnu|musl|glibc))?$/;
 
 /**
@@ -44,6 +44,24 @@ const nodeOs = (t) => t.nodePlatform;
  */
 export function prunePrebuilds(app, t) {
 	const removed = [];
+	if (t.os === "freebsd") {
+		// Raw certified deployment may contain optional variants installed on its build host.
+		const packages = [];
+		const collect = (dir) => {
+			const manifest = join(dir, "package.json");
+			if (existsSync(manifest)) packages.push({ dir, meta: JSON.parse(readFileSync(manifest, "utf8")) });
+			for (const entry of readdirSync(dir, { withFileTypes: true })) if (entry.isDirectory()) collect(join(dir, entry.name));
+		};
+		collect(app);
+		const permits = (values, value) => !Array.isArray(values) || (!values.includes(`!${value}`) && (!values.some(v => !v.startsWith("!")) || values.includes(value) || values.includes("any")));
+		for (const { dir, meta } of packages) if (!permits(meta.os, t.nodePlatform) || !permits(meta.cpu, t.arch)) {
+			const optional = packages.some(p => Object.hasOwn(p.meta.optionalDependencies ?? {}, meta.name));
+			const required = packages.some(p => Object.hasOwn(p.meta.dependencies ?? {}, meta.name) && !Object.hasOwn(p.meta.optionalDependencies ?? {}, meta.name));
+			if (!optional || required) throw new Error(`incompatible required or unclassified package for ${t.id}: ${meta.name}`);
+			rmSync(dir, { recursive: true, force: true });
+			removed.push(relative(app, dir));
+		}
+	}
 	const keep = (name) => {
 		const m = PLATFORM_DIR.exec(name);
 		if (!m) return true;
@@ -88,7 +106,7 @@ export function foreignBinaries(dir, t) {
 				const got = binaryArch(head.subarray(0, n));
 				const rel = relative(dir, path).split(sep).join("/");
 				if (t.os === "windows" && WINDOWS_PNPM_HELPER.test(rel)) continue;
-				if (got.format !== "unknown" && (got.format !== FORMAT[t.os] || got.arch !== t.arch)) bad.push(`${relative(dir, path)}: ${got.format}/${got.arch}`);
+				if (got.format !== "unknown" && (got.format !== FORMAT[t.os] || got.arch !== t.arch || (t.os === "freebsd" && got.format === "elf" && !isFreebsdElf(readFileSync(path))))) bad.push(`${relative(dir, path)}: ${got.format}/${got.arch}`);
 			}
 		}
 	};

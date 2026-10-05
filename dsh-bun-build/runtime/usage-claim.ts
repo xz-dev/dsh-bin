@@ -15,9 +15,10 @@ const LOCK_EX = 2;
 const LOCK_NB = 4;
 const LOCK_UN = 8;
 
-function libcCandidates(): string[] {
-	if (process.platform === "darwin") return ["/usr/lib/libSystem.B.dylib"];
-	const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
+export function libcCandidates(platform = process.platform, architecture = process.arch): string[] {
+	if (platform === "darwin") return ["/usr/lib/libSystem.B.dylib"];
+	if (platform === "freebsd") return ["/lib/libc.so.7"];
+	const arch = architecture === "arm64" ? "aarch64" : "x86_64";
 	return ["libc.so.6", `libc.musl-${arch}.so.1`, `/lib/ld-musl-${arch}.so.1`, "libc.so"];
 }
 

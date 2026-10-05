@@ -35,3 +35,18 @@ test("binaryArch reads ELF, Mach-O and PE headers", () => {
 	expect(binaryArch(pe(0xaa64))).toEqual({ format: "pe", arch: "arm64" });
 	expect(binaryArch(Buffer.from("#!/bin/sh\n")).format).toBe("unknown");
 });
+
+test("FreeBSD identity accepts OSABI/note, rejects Linux, malformed, old and wrong headers", async () => {
+	const { isFreebsdElf } = await import("../../scripts/binary-arch.mjs");
+	const native = elf(0x3e); native[4] = 2; native[5] = 1; native[7] = 9; native.writeUInt16LE(2, 16);
+	expect(isFreebsdElf(native)).toBe(true);
+	for (const [offset, value] of [[4, 1], [5, 2], [7, 3], [16, 1]]) { const bad = Buffer.from(native); bad[offset] = value; expect(isFreebsdElf(bad)).toBe(false); }
+	const note = Buffer.alloc(144); native.copy(note); note[7] = 0;
+	note.writeBigUInt64LE(64n, 32); note.writeUInt16LE(56, 54); note.writeUInt16LE(1, 56);
+	note.writeUInt32LE(4, 64); note.writeBigUInt64LE(120n, 72); note.writeBigUInt64LE(24n, 96);
+	note.writeUInt32LE(8, 120); note.writeUInt32LE(4, 124); note.writeUInt32LE(1, 128); note.write("FreeBSD\0", 132, "latin1"); note.writeUInt32LE(1501000, 140);
+	expect(isFreebsdElf(note)).toBe(true);
+	for (const length of [0, 63, 119, 143]) expect(isFreebsdElf(note.subarray(0, length))).toBe(false);
+	const old = Buffer.from(note); old.writeUInt32LE(1500068, 140); expect(isFreebsdElf(old)).toBe(false);
+	const wrong = Buffer.from(note); wrong.write("Linux", 132); expect(isFreebsdElf(wrong)).toBe(false);
+});
