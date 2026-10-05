@@ -43,9 +43,21 @@ const SERVICES = {
 };
 
 const PROBE = `import z from '@deepseek-ai/schemastery';
-export const inject = ['settings', 'credentials', 'profileContext', 'appReady', 'appExit'];
+export const inject = ['settings', 'configEditor', 'credentials', 'profileContext', 'appReady', 'appExit'];
 export const Config = z.object({ label: z.string().default('bundle-default').volatile() });
+let mounts = 0, disposals = 0, lastProvider;
+const lifecycle = [];
 export function apply(ctx, config) {
+  const generation = ++mounts, provider = ctx.credentials, previousProvider = lastProvider;
+  lastProvider = provider;
+  let control;
+  lifecycle.push({ event: 'apply', generation, pid: process.pid, providerUid: provider.ctx.fiber.uid });
+  ctx.effect(() => () => {
+    disposals++;
+    lifecycle.push({ event: 'dispose', generation, pid: process.pid, providerUid: provider.ctx.fiber.uid });
+    console.log('TWO_RUNTIME_DISPOSE ' + JSON.stringify(lifecycle.at(-1)));
+    control?.stop(true);
+  });
   ctx.appReady.onReady(() => { void (async () => {
     await ctx.root.loader.await();
     const label = () => ctx.settings.describe().find(r => r.ns === 'io-probe')?.value.label;
@@ -59,13 +71,24 @@ export function apply(ctx, config) {
       ctx.on('credentials/reference-updated', ref => { if (ref === 'IO_TEST_KEY') events.push(ref); });
       const report = async () => ({ runtime: launch.runtime, snapshot: launch.snapshot,
         configSnapshot: launch.configSnapshot, exe: process.execPath, pid: process.pid,
-        observation: await read(), credentialEvents: events.length });
-      const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req) {
+        observation: await read(), credentialEvents: events.length,
+        remount: { generation, disposals, lifecycle, providerUid: provider.ctx.fiber.uid,
+          previousProviderClosed: previousProvider?.closed, providerReplaced: previousProvider ? previousProvider !== provider : false,
+          debounceMs: provider.spec.debounceMs } });
+      const server = control = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req) {
         try {
           const command = await req.json();
           if (command.op === 'update') {
             await ctx.settings.update('io-probe', { label: command.label });
             await ctx.credentials.set('IO_TEST_KEY', command.credential);
+          } else if (command.op === 'remount') {
+            // Public ordinary-config edit: settings forms intentionally expose volatile fields only.
+            const editor = ctx.configEditor, entry = editor.entries().find(e => e.options.id === 'credentials-local');
+            if (!entry) throw new Error('credentials-local entry missing');
+            // Red control: return current unchanged; a committed edit alone must NOT satisfy remount.
+            setTimeout(() => { void editor.edit(entry, current => ({ ...current, debounceMs: 10 }))
+              .then(() => console.log('TWO_RUNTIME_REMOUNT_COMMITTED'))
+              .catch(e => { console.error(e); ctx.appExit(1); }); }, 0);
           } else if (command.op === 'watch') {
             // Subscribe BEFORE acknowledging arm; resolve only on a real provider notification.
             const watched = new Promise((resolve, reject) => {
@@ -125,7 +148,7 @@ function digest(dir: string): Record<string, string> {
 }
 const content = (d: Record<string, string>) => Object.fromEntries(Object.entries(d).filter(([p]) => p !== "snapshot.json" && p !== ".usage.lock"));
 
-test("CS-FORMAT / CS-CROSS / CS-CONCURRENT / CS-LOCAL-PATH: real rc.1 → rc.2 → rc.1 plus simultaneous same-P copied relative-provider sessions", async () => {
+test("CS-FORMAT / CS-CROSS / CS-CONCURRENT / CS-LOCAL-PATH / RB-RESTART: real rc.1 → rc.2 → rc.1, same-P config isolation and same-PID provider remount", async () => {
 	expect(APP_A, "set DSH_BIN_REAL_IO_APP_A to authentic pre-transform dsh-v0.2.0-rc.1 app").toBeTruthy();
 	expect(APP_B, "set DSH_BIN_REAL_IO_APP_B to authentic pre-transform dsh-v0.2.0-rc.2 app").toBeTruthy();
 	expect(PNPM, "set DSH_BIN_TEST_PNPM to authenticated pnpm closure").toBeTruthy();
@@ -335,11 +358,11 @@ test("CS-FORMAT / CS-CROSS / CS-CONCURRENT / CS-LOCAL-PATH: real rc.1 → rc.2 �
 		const pOriginal = pluginSources(), c1Original = digest(config(C1));
 		await dsh(["manager", "select", "--use", ids.B, "--snapshot", P, "--config-snapshot", C1], "concurrent-default-C1");
 		expect(JSON.parse(readFileSync(join(data, "state/selection.json"), "utf8"))).toMatchObject({ snapshot: P, configSnapshot: C1 });
-		function session(C: string) {
+		function session(C: string, runtime = ids.B, plugin = P, watchedFile = credentialFile(C)) {
 			const stem = `${String(++count).padStart(2, "0")}-concurrent-${C}`, audit = join(root, `${stem}.audit`);
 			// Task-owned red control: replace only this launch mapping's C with C === C2 ? C1 : C.
 			// Actual C2 service roots/values/watch registration then fail; never mutate production.
-			const args = ["--use", ids.B, "--snapshot", P, "--config-snapshot", C, "--profile", "io", "concurrent"];
+			const args = ["--use", runtime, "--snapshot", plugin, "--config-snapshot", C, "--profile", "io", "concurrent"];
 			const proc = Bun.spawn([Bun.which("timeout")!, "--kill-after=2s", "120s", Bun.which("strace")!, "-f", "-qq", "-e", "trace=open,openat,rename,renameat,renameat2,inotify_add_watch", "-o", audit, exe, ...args],
 				{ cwd: userHome, env, stdout: "pipe", stderr: "pipe" });
 			let stdout = "", stderr = "", ended = false;
@@ -360,12 +383,12 @@ test("CS-FORMAT / CS-CROSS / CS-CONCURRENT / CS-LOCAL-PATH: real rc.1 → rc.2 �
 			}
 			let url = "";
 			return { proc, done, audit, until,
-				async ready() {
-					await until(() => stdout.split("\n").slice(0, -1).some(l => l.startsWith("TWO_RUNTIME_READY ")), "real services ready");
-					const ready = JSON.parse(stdout.split("\n").find(l => l.startsWith("TWO_RUNTIME_READY "))!.slice(18));
+				async ready(generation = 1) {
+					await until(() => stdout.split("\n").slice(0, -1).filter(l => l.startsWith("TWO_RUNTIME_READY ")).length >= generation, `real services ready generation ${generation}`);
+					const ready = JSON.parse(stdout.split("\n").filter(l => l.startsWith("TWO_RUNTIME_READY "))[generation - 1]!.slice(18));
 					url = ready.url;
 					// Wait for the actual kernel watcher registration, not an arbitrary settle sleep.
-					await until(() => readFileSync(audit, "utf8").split("\n").some(l => l.includes("inotify_add_watch(") && l.includes(`"${credentialFile(C)}"`) && / = [0-9]+$/.test(l)), "credential watcher registered on own C");
+					await until(() => readFileSync(audit, "utf8").split("\n").some(l => l.includes("inotify_add_watch(") && l.includes(`"${watchedFile}"`) && / = [0-9]+$/.test(l)), "credential watcher registered on own C");
 					return ready;
 				},
 				async command(command: Record<string, string>) {
@@ -375,6 +398,7 @@ test("CS-FORMAT / CS-CROSS / CS-CONCURRENT / CS-LOCAL-PATH: real rc.1 → rc.2 �
 					console.log(`TWO_RUNTIME_CONCURRENT ${JSON.stringify({ C, command, report })}`);
 					return report;
 				},
+				committed: () => until(() => stdout.includes("TWO_RUNTIME_REMOUNT_COMMITTED\n"), "public configuration edit reconciled"),
 				armed: (value: string) => until(() => stdout.includes(`TWO_RUNTIME_ARMED ${value}\n`), `watch armed ${value}`),
 				async stop() { if (!ended) { try { await this.command({ op: "exit" }); } catch { proc.kill(); } } await done; },
 			};
@@ -446,8 +470,71 @@ test("CS-FORMAT / CS-CROSS / CS-CONCURRENT / CS-LOCAL-PATH: real rc.1 → rc.2 �
 			await dsh(["manager", "snapshot", "config", "remove", C2], "concurrent-release-C2");
 			await dsh(["manager", "snapshot", "plugins", "remove", P], "concurrent-release-P");
 			expect(existsSync(config(C2))).toBe(false); expect(existsSync(plugins(P))).toBe(false);
-			writeFileSync(join(root, "concurrent-summary.json"), JSON.stringify({ P, C1, C2, credentialPath, c1Seed, defaultCredentialHash, pOriginal, c1Original, c1Reloaded, c2Updated, observations, outputs, restartGate: "RB-RESTART remains open: no internal app restart exercised" }, null, 2));
+			writeFileSync(join(root, "concurrent-summary.json"), JSON.stringify({ P, C1, C2, credentialPath, c1Seed, defaultCredentialHash, pOriginal, c1Original, c1Reloaded, c2Updated, observations, outputs, restartGate: "fixed rc.1/rc.2 process restart not-applicable; actual same-PID remount is recorded separately in reload-summary.json; parent-exit/native gates remain separate" }, null, 2));
 		} finally { await Promise.all(sessions.map(s => s.stop())); }
+
+		// RB-RESTART (fixed upstream capability): real same-PID provider dispose/remount, NOT process respawn.
+		// Parent-independent/new-process and native Windows cases remain separate gates.
+		const reloadC = `${ids.A}@2`, defaultP = `${ids.B}@2`;
+		await dsh(["manager", "snapshot", "config", "new", "--use", ids.A, "--target", A1], "reload-copy-C1");
+		privateFile(join(config(reloadC), "profiles/io/cordis.patch.yml"), patch("A-remount"));
+		privateFile(join(config(reloadC), ".credentials.yaml"), creds("A-remount"));
+		await dsh(["manager", "snapshot", "plugins", "new", "--use", ids.B, "--target", A1], "reload-copy-default-P2");
+		await dsh(["manager", "select", "--use", ids.A, "--snapshot", A1, "--config-snapshot", reloadC], "reload-default-A");
+		const otherConfig = digest(config(B2)), otherPlugins = digest(plugins(defaultP));
+		const oldPluginSources = () => Object.fromEntries(Object.entries(digest(plugins(A1))).filter(([p]) => !/(^|\/)cordis\.yml$/.test(p)));
+		const reloadPlugins = oldPluginSources(), reloadObservations: unknown[] = [];
+		const reload = session(reloadC, ids.A, A1, join(config(reloadC), ".credentials.yaml"));
+		const assertReload = (report: any, label: string, credential: string) => {
+			expect(report.runtime).toBe(ids.A); expect(report.snapshot).toEqual({ id: A1, dir: plugins(A1) });
+			expect(report.configSnapshot).toEqual({ id: reloadC, dir: config(reloadC) }); expect(report.exe).toBe(bundleFile("A"));
+			expect(report.observation).toMatchObject({ label, credential: { value: credential, source: "file" }, home,
+				dir: join(plugins(A1), "profiles/io"), patch: join(config(reloadC), "profiles/io/cordis.patch.yml"), credentialFile: join(config(reloadC), ".credentials.yaml") });
+			expect(report.observation.plugin).toContain(join(plugins(A1), "profiles/io/node_modules/io-bundle"));
+			reloadObservations.push(report);
+		};
+		async function reloadBusy(label: string) {
+			for (const [args, path] of [
+				[["manager", "uninstall", ids.A], join(data, "bundles", ids.A)],
+				[["manager", "snapshot", "plugins", "remove", A1], plugins(A1)],
+				[["manager", "snapshot", "config", "remove", reloadC], config(reloadC)],
+			] as [string[], string][]) {
+				const refused = await dsh(args, `reload-${label}-${args.at(-1)}`, 1);
+				expect(refused.stderr).toContain("in use"); expect(existsSync(path)).toBe(true);
+			}
+		}
+		try {
+			const initial = await reload.ready(); assertReload(initial, "A-remount", "synthetic-A-remount");
+			expect(initial.remount.generation).toBe(1); expect(initial.remount.disposals).toBe(0);
+			await dsh(["manager", "select", "--use", ids.B, "--snapshot", defaultP, "--config-snapshot", B2], "reload-change-default-B");
+			expect(JSON.parse(readFileSync(join(data, "state/selection.json"), "utf8"))).toMatchObject({ use: ids.B, snapshot: defaultP, configSnapshot: B2 });
+			await reloadBusy("before-remount");
+			await reload.command({ op: "remount" });
+			const mounted = await reload.ready(2); await reload.committed();
+			assertReload(mounted, "A-remount", "synthetic-A-remount"); expect(mounted.pid).toBe(initial.pid);
+			expect(mounted.remount).toMatchObject({ generation: 2, disposals: 1, previousProviderClosed: true, providerReplaced: true, debounceMs: 10 });
+			expect(mounted.remount.lifecycle.map((e: any) => e.event)).toEqual(["apply", "dispose", "apply"]);
+			expect(mounted.remount.lifecycle.every((e: any) => e.pid === initial.pid)).toBe(true);
+			await reloadBusy("after-remount");
+			const saved = await reload.command({ op: "update", label: "A-after-remount", credential: "synthetic-A-after-remount" });
+			assertReload(saved, "A-after-remount", "synthetic-A-after-remount"); expect(saved.pid).toBe(initial.pid);
+			expect(readFileSync(join(config(reloadC), "profiles/io/cordis.patch.yml"), "utf8")).toContain("debounceMs: 10");
+			expect(readFileSync(join(config(reloadC), ".credentials.yaml"), "utf8")).toContain("synthetic-A-after-remount");
+			expect(digest(config(B2))).toEqual(otherConfig); expect(digest(plugins(defaultP))).toEqual(otherPlugins);
+			expect(oldPluginSources()).toEqual(reloadPlugins); expect(digest(home)).toEqual(homeBytes);
+			await reload.stop(); expect(await reload.done).toBe(0);
+			const accesses = readFileSync(reload.audit, "utf8");
+			for (const p of sensitiveHome) expect(accesses, `reload forbidden shared-HOME open ${p}`).not.toContain(`"${p}"`);
+			for (const p of [".credentials.yaml", "profiles/io/cordis.patch.yml", "settings.yaml"]) expect(accesses).not.toContain(`"${join(config(B2), p)}"`);
+			const reloadOutputs = { C1: digest(config(reloadC)), P1: oldPluginSources(), C2: digest(config(B2)), P2: digest(plugins(defaultP)), home: digest(home) };
+			await dsh(["manager", "snapshot", "config", "remove", reloadC], "reload-release-C1");
+			await dsh(["manager", "snapshot", "plugins", "remove", A1], "reload-release-P1");
+			await dsh(["manager", "uninstall", ids.A], "reload-release-R");
+			for (const path of [config(reloadC), plugins(A1), join(data, "bundles", ids.A)]) expect(existsSync(path)).toBe(false);
+			writeFileSync(join(root, "reload-summary.json"), JSON.stringify({ runtime: ids.A, P1: A1, C1: reloadC, defaultRuntime: ids.B, P2: defaultP, C2: B2,
+				reloadObservations, reloadOutputs, guardSampling: "actual removal attempts before and after remount, not within disposal gap",
+				processRestart: "not-applicable for authenticated rc.1/rc.2; no respawn exercised", parentExit: "not exercised in this slice", windows: "not exercised" }, null, 2));
+		} finally { await reload.stop(); }
 		writeFileSync(join(root, "summary.json"), JSON.stringify({ ids, aOriginal, homeBytes, pluginOriginal }, null, 2));
 	} finally {
 		server.stop(true);
