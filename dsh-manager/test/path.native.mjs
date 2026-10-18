@@ -3,13 +3,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
-const [root, manager, receipt, bindingFile] = process.argv.slice(2);
 const sha = p => createHash("sha256").update(readFileSync(p)).digest("hex");
-const save = (name, value) => writeFileSync(join(root, name), JSON.stringify(value, null, 2) + "\n");
 const scopes = ["self", "home", "runtime", "snapshot", "addon", "cache", "tmp", "completion"];
-const row = (v, role) => { const r = v.records.find(r => r.role === role); assert.ok(r, role); return r; };
 
 // lstat only: never read config, credentials, rc or application bodies for tree comparison.
 function tree(path) {
@@ -24,225 +21,318 @@ function tree(path) {
 }
 const digest = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
-// kdump -d -t cn: retain syscall/namei only; never I/O, argv or environment content dumps.
+// Fixed FreeBSD15.1 kdump -d -t cn contract, one process, complete exec-to-exit capture.
 const loaderFiles = ["/etc/libmap.conf", "/var/run/ld-elf.so.hints", "/lib/libthr.so.3", "/lib/libc.so.7", "/lib/libsys.so.7"];
-function audit(text, executable) {
-    const calls = []; const pending = new Map(); const opens = []; const loaderOpens = [];
-    let startup = true;
-    const originalOutput = new Set([1, 2]);
-    for (const line of text.split("\n")) {
-        const m = line.match(/^\s*(\d+)\s+\S+\s+(CALL|NAMI)\s+(.*)$/);
-        if (!m) continue;
-        const [, pid, type, body] = m;
-        if (type === "CALL") {
-            const name = body.match(/^(\w+)/)?.[1]; assert.ok(name, "unparsed syscall");
-            const c = { pid, name, body, paths: [] }; calls.push(c); pending.set(pid, c);
-        } else {
-            const c = pending.get(pid); assert.ok(c, "namei without syscall");
-            c.paths.push(JSON.parse(body));
-        }
-    }
-    const execs = calls.filter(c => /^(execve|fexecve|execveat)$/.test(c.name));
-    assert.equal(execs.length, 1, "child/extra exec attempt");
-    assert.ok(execs[0].paths.includes(executable), "initial exec identity");
-    for (const c of calls) {
-        assert.ok(!/^(fork|vfork|rfork|pdfork|posix_spawn|socket|socketpair|connect|bind|listen|accept|accept4|sendto|sendmsg|sendmmsg|recvfrom|recvmsg|recvmmsg|sctp_peeloff|sctp_generic_sendmsg|sctp_generic_sendmsg_iov)$/.test(c.name), `process/network attempt: ${c.name}`);
-        assert.ok(!/^(flock|lockf|mkdir|mkdirat|unlink|unlinkat|rename|renameat|renameat2|link|linkat|symlink|symlinkat|truncate|ftruncate|chmod|fchmod|fchmodat|chown|fchown|lchown|mknod|mknodat|mkfifo|mkfifoat|utimes|futimes|futimesat|utimensat|chflags|fchflags)$/.test(c.name), `mutation/lock: ${c.name}`);
-        if (c.name === "fcntl") assert.ok(!/F_(SETLK|SETLKW|OFD_SETLK|OFD_SETLKW)/.test(c.body), "fcntl lock");
-        if (c.name === "close") originalOutput.delete(Number(c.body.match(/^close\((\d+)/)?.[1]));
-        if (/^dup[23]$/.test(c.name)) originalOutput.delete(Number(c.body.match(/^dup[23]\([^,]+,(\d+)/)?.[1]));
-        if (c.name === "closefrom") for (const fd of originalOutput) { if (fd >= Number(c.body.match(/\((\d+)/)?.[1])) originalOutput.delete(fd); }
-        if (c.name === "close_range") {
-            const m = c.body.match(/\((\d+),(\d+)/); assert.ok(m, "unparsed close_range");
-            for (const fd of originalOutput) if (fd >= Number(m[1]) && fd <= Number(m[2])) originalOutput.delete(fd);
-        }
-        if (/^(write|writev|pwrite|pwritev)$/.test(c.name)) {
-            const fd = Number(c.body.match(/\((\d+),/)?.[1]);
-            assert.ok(originalOutput.has(fd), "write outside original stdout/stderr");
-        }
-        if (/^(open|openat|openat2)$/.test(c.name)) {
-            assert.ok(!/O_(WRONLY|RDWR|CREAT|TRUNC|APPEND|EXLOCK|SHLOCK)/.test(c.body), "write/lock open");
-            assert.ok(c.paths.length > 0, "open missing namei coverage");
-            for (const p of c.paths) {
-                opens.push(p);
-                // Fixed FreeBSD ELF dependencies only, before context opens its own executable.
-                if (p === executable) startup = false;
-                else if (startup && loaderFiles.includes(p)) loaderOpens.push(p);
-                else if (!/O_DIRECTORY/.test(c.body)) assert.ok([".dsh-manager-install.json", ".dsh-bin-data.json", "bundle.json", "snapshot.json", "selection.json", "channel", "completion.json"].includes(basename(p)), `non-metadata body open: ${p}`);
-                assert.ok(!/credentials|settings\.ya?ml|(?:^|\/)\.(?:bashrc|zshrc|profile)$/.test(p), "sensitive body open");
-            }
-        }
-    }
-    return { syscallCount: calls.length, pids: [...new Set(calls.map(c => c.pid))], execs: execs.length, opens, loaderOpens };
+export function auditIdentity(exe, installed, fixtureRoot, cwd) {
+    const data = join(dirname(exe), "dsh-bin"), negative = exe === join(fixtureRoot, "negative/dsh");
+    return { exe, data, cwd, runtimes: [installed.id, ...(negative ? [`${installed.id}.duplicate`] : [])], snapshots: { plugins: [installed.selection.snapshot], config: [installed.selection.configSnapshot] } };
 }
-function selfCheck() {
-    const ok = ' 1 ktrace CALL execve(0)\n 1 ktrace NAMI "/manager"\n 1 dsh CALL openat(3,0,0x100000<O_RDONLY|O_CLOEXEC>)\n 1 dsh NAMI "bundle.json"\n';
-    assert.equal(audit(ok, "/manager").execs, 1);
-    for (const extra of [
-        ' 1 dsh CALL execve(0)\n 1 dsh NAMI "/bin/sh"\n',
-        ' 1 dsh CALL fork\n', ' 1 dsh CALL socket(2,1,0)\n', ' 1 dsh CALL flock(3,2)\n',
-        ' 1 dsh CALL fcntl(3,F_SETLK,0)\n', ' 1 dsh CALL write(3,0,1)\n',
-        ' 1 dsh CALL openat(3,0,0x601<O_WRONLY|O_CREAT|O_TRUNC>)\n 1 dsh NAMI "new"\n',
-        ' 1 dsh CALL open(0,0<O_RDONLY>)\n 1 dsh NAMI ".credentials.yaml"\n'
-    ]) assert.throws(() => audit(ok + extra, "/manager"));
-    assert.throws(() => audit('', '/manager'));
-    audit(ok + ' 1 dsh CALL pwritev(1,0,1,0)\n 1 dsh RET pwritev -1 errno 29 Illegal seek\n 1 dsh CALL writev(1,0,1)\n 1 dsh CALL write(2,0,1)\n 1 dsh CALL pwrite(2,0,1,0)\n', '/manager');
-    for (const bad of ['pwrite(3,0,1,0)', 'pwritev(3,0,1,0)', 'close(1)\n 1 dsh CALL writev(1,0,1)', 'dup2(3,2)\n 1 dsh CALL pwritev(2,0,1,0)']) assert.throws(() => audit(ok + ` 1 dsh CALL ${bad}\n`, '/manager'));
-    assert.throws(() => audit(ok + ' 1 dsh CALL open(0,0<O_RDONLY>)\n 1 dsh NAMI "/etc/other.conf"\n', '/manager'));
-    assert.throws(() => audit(ok + ' 1 dsh CALL open(0,0<O_RDONLY>)\n 1 dsh NAMI "/manager"\n 1 dsh CALL open(0,0<O_RDONLY>)\n 1 dsh NAMI "/etc/libmap.conf"\n', '/manager'));
+export function audit(text, identity, expectedExit) {
+    const { exe, data, cwd, runtimes, snapshots } = identity;
+    assert.ok([exe, data, cwd].every(isAbsolute)); assert.equal(data, join(dirname(exe), "dsh-bin"));
+    assert.ok([0, 1].includes(expectedExit));
+    const dirs = new Set([dirname(exe), data, join(data, "state"), join(data, "bundles"), join(data, "snapshots"), join(data, "config-snapshots"), join(data, "addons"), join(data, "addons/office")]);
+    const metadata = new Set([join(dirname(exe), ".dsh-manager-install.json"), join(data, ".dsh-bin-data.json"), ...["selection.json", "channel", "completion.json"].map(n => join(data, "state", n))]);
+    for (const id of runtimes) { const p = join(data, "bundles", id); dirs.add(p); metadata.add(join(p, "bundle.json")); }
+    for (const [kind, ids] of Object.entries(snapshots)) for (const id of ids) { const p = join(data, kind === "plugins" ? "snapshots" : "config-snapshots", id); dirs.add(p); metadata.add(join(p, "snapshot.json")); }
+    const arity = { execve: 3, mmap: 6, mprotect: 3, issetugid: 0, sigfastblock: 2, open: 2, fstat: 2, read: 3, close: 1, pread: 4, munmap: 2, sysarch: 2, exterrctl: 3, readlink: 3, cpuset_getaffinity: 5, thr_self: 1, rtprio_thread: 3, sigaction: 3, sigprocmask: 3, _umtx_op: 5, thr_wake: 1, getpid: 0, getcontext: 1, __sysctl: 6, openat: 3, fcntl: 3, fstatat: 4, pwritev: 4, pwrite: 4, writev: 3, _exit: 1, lseek: 3, getdirentries: 4, faccessat: 4, write: 3 };
+    const symbols = { "openat:0": "AT_FDCWD", "fstatat:0": "AT_FDCWD", "faccessat:0": "AT_FDCWD", "sysarch:0": "AMD64_SET_TLSBASE AMD64_GET_TLSBASE AMD64_GET_XFPUSTATE", "rtprio_thread:0": "RTP_LOOKUP", "sigprocmask:0": "SIG_UNBLOCK SIG_BLOCK SIG_SETMASK", "sigaction:0": "SIGPIPE SIGTHR", "lseek:2": "SEEK_SET" };
+    const flagGroups = { "mmap:2": "PROT_", "mmap:3": "MAP_", "mprotect:2": "PROT_", "open:1": "O_", "openat:2": "O_", "fstatat:3": "AT_", "faccessat:2": "F_", "_umtx_op:1": "UMTX_OP_" };
+    const flags = new Set("AT_SYMLINK_NOFOLLOW F_OK MAP_ANON MAP_GUARD MAP_PRIVATE MAP_FIXED MAP_NOCORE MAP_PREFAULT_READ MAP_ALIGNED_12 MAP_ALIGNED_21 O_RDONLY O_CLOEXEC O_VERIFY O_DIRECTORY O_NOFOLLOW O_NONBLOCK PROT_NONE PROT_READ PROT_EXEC PROT_WRITE UMTX_OP_WAKE".split(" "));
+    assert.ok(text.endsWith("\n"), "truncated trace line");
+    const lines = text.slice(0, -1).split("\n"), calls = [];
+    let pending, pid, exited = false;
+    for (const [i, line] of lines.entries()) {
+        const m = line.match(/^\s*(\d+)\s+(ktrace|dsh)\s+(CALL|NAMI|RET)\s+(.+)$/);
+        assert.ok(m, `unknown/malformed/dropped trace record: ${line}`);
+        const [, p, comm, type, body] = m;
+        if (i === 0) { assert.equal(comm, "ktrace"); assert.equal(type, "RET"); assert.equal(body, "ktrace 0"); pid = p; continue; }
+        assert.equal(p, pid, "unexpected process"); assert.ok(!exited, "record after terminal exit");
+        if (type === "CALL") {
+            assert.equal(pending, undefined, "missing syscall return");
+            const c = body.replace(/MAP_ALIGNED\((12|21)\)/g, "MAP_ALIGNED_$1").match(/^(\w+)(?:\(([^()]*)\))?$/); assert.ok(c, "malformed syscall");
+            const [, name, args = ""] = c; assert.ok(Object.hasOwn(arity, name), `unneeded/unsafe syscall: ${name}`);
+            assert.equal(comm, calls.length === 0 ? "ktrace" : "dsh");
+            assert.equal(name === "execve", calls.length === 0, "initial/extra exec");
+            const values = args ? args.split(",") : [];
+            assert.equal(values.length, arity[name], "malformed syscall arguments");
+            for (const [index, value] of values.entries()) {
+                const position = `${name}:${index}`;
+                if ((symbols[position] ?? "").split(" ").includes(value) || (name === "fcntl" && index === 1 && /^F_[A-Z0-9_]+$/.test(value))) continue;
+                const number = value.match(/^(?:-?\d+|0x[0-9a-f]+)(?:<([A-Z0-9_|]+)>)?$/);
+                assert.ok(number, "unparsed syscall argument");
+                if (number[1]) for (const flag of number[1].split("|")) assert.ok(flagGroups[position] && flag.startsWith(flagGroups[position]) && flags.has(flag), "unparsed syscall flags/position");
+            }
+            pending = { name, body, args: values, paths: [] }; calls.push(pending);
+            if (name === "_exit") { assert.equal(body, `_exit(${expectedExit})`, "terminal manager status"); exited = true; pending = undefined; }
+        } else if (type === "NAMI") {
+            assert.ok(pending, "orphan namei"); const path = JSON.parse(body); assert.equal(typeof path, "string");
+            assert.equal(comm, pending.name === "execve" ? "ktrace" : "dsh"); pending.paths.push(path);
+        } else {
+            assert.equal(comm, "dsh"); assert.ok(pending, "orphan return");
+            const r = body.match(/^(\w+) (JUSTRETURN|-1 errno \d+ [A-Za-z ]+|\d+(?:\/0x[0-9a-f]+)?)$/); assert.ok(r, "malformed return");
+            assert.equal(r[1], pending.name, "return does not match syscall");
+            const nameiCount = { execve: 2, open: 1, openat: 1, readlink: 1, __sysctl: 1, fstatat: 1, faccessat: 1 };
+            assert.equal(pending.paths.length, nameiCount[pending.name] ?? 0, "missing/unexpected namei records");
+            if (pending.name === "__sysctl") assert.equal(pending.paths[0], exe, "unexpected executable sysctl lookup");
+            if (pending.name === "execve") { assert.equal(r[2], "JUSTRETURN"); assert.deepEqual(pending.paths, [exe, "/libexec/ld-elf.so.1"]); }
+            else assert.notEqual(r[2], "JUSTRETURN", "unexpected special return");
+            if (r[2].includes("/0x")) { const [decimal, hex] = r[2].split("/"); assert.equal(BigInt(decimal), BigInt(hex), "inconsistent numeric return"); }
+            pending.result = r[2].startsWith("-1 ") ? -1 : Number.parseInt(r[2], 10); pending = undefined;
+        }
+    }
+    assert.ok(exited && pending === undefined && calls.length > 1, "incomplete exec-to-exit trace");
+    const fds = new Map(), originalOutput = new Set([1, 2]), opens = [], loaderOpens = [];
+    let startup = true;
+    const pathFor = (c, p) => {
+        if (isAbsolute(p)) return resolve(p);
+        const parent = c.name === "openat" ? c.args[0] : "AT_FDCWD";
+        const base = parent === "AT_FDCWD" ? cwd : fds.get(Number(parent))?.directory;
+        assert.ok(base, "relative open without owned parent descriptor"); return resolve(base, p);
+    };
+    for (const c of calls) {
+        if (c.name === "fcntl") assert.match(c.body, /^fcntl\(\d+,F_KINFO,\d+\)$/, "unneeded fcntl command");
+        if (c.name === "close") { const fd = Number(c.args[0]); originalOutput.delete(fd); fds.delete(fd); }
+        if (/^(write|writev|pwrite|pwritev)$/.test(c.name)) assert.ok(originalOutput.has(Number(c.args[0])), "write outside original stdout/stderr");
+        if (/^(open|openat)$/.test(c.name)) {
+            const openFlags = c.args[c.name === "openat" ? 2 : 1];
+            assert.match(openFlags, /O_RDONLY/, "unparsed readonly flags");
+            assert.ok(!/O_(WRONLY|RDWR|CREAT|TRUNC|APPEND|EXLOCK|SHLOCK)/.test(openFlags), "write/lock open");
+            assert.equal(c.paths.length, 1, "open namei coverage");
+            const p = pathFor(c, c.paths[0]), directory = /O_DIRECTORY/.test(openFlags); opens.push(p);
+            if (p === exe && !directory) startup = false;
+            else if (startup && !directory && loaderFiles.includes(p)) loaderOpens.push(p);
+            else if (startup && directory && p === "/usr/local/etc/libmap.d") { /* fixed loader search directory */ }
+            else assert.ok(directory ? dirs.has(p) : metadata.has(p), `unowned manager ${directory ? "directory" : "metadata"}: ${p}`);
+            if (c.result >= 0) { assert.ok(c.result > 2, "open rebound original output"); fds.set(c.result, { path: p, directory: directory ? p : null }); }
+        }
+        if (/^(read|pread|getdirentries)$/.test(c.name)) {
+            const owner = fds.get(Number(c.args[0])); assert.ok(owner, "read without owned descriptor");
+            if (c.name === "getdirentries") assert.ok(owner.directory, "inventory on non-directory descriptor");
+        }
+    }
+    return { syscallCount: calls.length, pids: [pid], execs: 1, opens, loaderOpens, terminalExit: expectedExit };
+}
+export function selfCheck() {
+    const identity = { exe: "/fixture/dsh", data: "/fixture/dsh-bin", cwd: "/fixture/home", runtimes: ["v1"], snapshots: { plugins: ["v1@1"], config: ["v1@1"] } };
+    const head = ' 1 ktrace RET ktrace 0\n 1 ktrace CALL execve(0,0,0)\n 1 ktrace NAMI "/fixture/dsh"\n 1 ktrace NAMI "/libexec/ld-elf.so.1"\n 1 dsh RET execve JUSTRETURN\n';
+    const end = ' 1 dsh CALL _exit(0)\n';
+    assert.equal(audit(head + end, identity, 0).execs, 1);
+    const output = ' 1 dsh CALL pwritev(1,0,1,0)\n 1 dsh RET pwritev -1 errno 29 Illegal seek\n 1 dsh CALL writev(1,0,1)\n 1 dsh RET writev 1\n 1 dsh CALL write(2,0,1)\n 1 dsh RET write 1\n';
+    audit(head + output + end, identity, 0);
+    for (const extra of ['Events dropped.\n', ' 1 dsh WHAT unknown\n', ' 1 dsh PSIG SIGTERM\n']) assert.throws(() => audit(head + extra + end, identity, 0));
+    for (const body of ['fcntl(3,F_OSETLK,0)', 'fcntl(3,F_DUP2FD,1)', 'fcntl(3,F_DUP2FD_CLOEXEC,2)', 'pwritev(3,0,1,0)', 'dup2(3,2)', 'fork', 'socket(2,1,0)']) assert.throws(() => audit(head + ` 1 dsh CALL ${body}\n 1 dsh RET ${body.split('(')[0]} 0\n` + output + end, identity, 0));
+    assert.throws(() => audit(head, identity, 0));
+    assert.throws(() => audit(head + ' 1 dsh CALL close(1)\n 1 dsh RET close 0\n' + output + end, identity, 0));
 }
 
-if (root === "--audit-replay") {
-    selfCheck(); console.log(JSON.stringify({ selfChecks: "PASS", replay: manager, audit: audit(readFileSync(manager, "utf8"), receipt) })); process.exit(0);
+// Expectations derive only from declared fixtures and CLI contract, never query output.
+export function expectedReport(c, installed, fixtureRoot) {
+    const cold = c.exe === join(fixtureRoot, "empty/dsh"), copied = c.exe === join(fixtureRoot, "negative/dsh");
+    const data = join(dirname(c.exe), "dsh-bin"), scope = c.scope[0] ?? "overview", overview = scope === "overview";
+    const records = [], diagnostics = [];
+    const add = (role, path, status, source, reason, patch = {}) => records.push({ role, path, status, source, reason, kind: null, id: null, version: null, slot: null, ...patch });
+    const status = exists => exists ? "exists" : "not-created";
+    const dir = (role, relative, exists, source, reason, patch) => add(role, join(data, relative), status(exists), source, reason, patch);
+    const name = c.name.replace(/-(json|human)$/, "");
+    const snapshotRoot = kind => kind === "plugins" ? "snapshots" : "config-snapshots";
+    const snapshotId = kind => installed.selection[kind === "plugins" ? "snapshot" : "configSnapshot"];
+    if (overview || scope === "self") {
+        add("self.executable", c.exe, "exists", "real-executable", "resolved executable, not the invocation symlink or cwd");
+        dir("self.data", "", !cold, "executable-adjacent", "portable");
+        dir("self.state", "state", !cold, "manager-data", "manager state, not application configuration");
+    }
+    if (overview || scope === "home") dir("home", "home", false, "manager-data-default", "non-configuration application home; no configuration/credential fallback");
+    if (overview) {
+        dir("runtime.root", "bundles", !cold, "manager-data", "installed runtime inventory");
+        for (const kind of ["config", "plugins"]) dir("snapshot.root", snapshotRoot(kind), !cold, "manager-data", "typed snapshot inventory, independent of application home", { kind });
+    }
+    if (overview || scope === "addon") dir("addon.root", "addons", false, "manager-data", "local addon inventory");
+    if (overview || scope === "cache") {
+        dir("cache.manager", "cache", !cold && !copied, "manager-data", "manager cache");
+        dir("cache.app-default", "home/cache", false, "application-default", "default only; custom plugin caches are not discovered");
+        for (const [id, path] of [["BUN_INSTALL_CACHE_DIR", "cache/bun"], ["BUN_RUNTIME_TRANSPILER_CACHE_PATH", "cache/transpiler"], ["PNPM_HOME", "cache/pnpm/home"], ["npm_config_cache", "cache/npm"], ["pnpm_config_cache_dir", "cache/pnpm/cache"], ["pnpm_config_store_dir", "cache/pnpm/store"]]) dir("cache.controlled", path, !cold && !copied, "launch-controlled", "controlled launch cache; no environment dump", { id });
+    }
+    if (overview || scope === "tmp") dir("tmp", "tmp", !cold && !copied, "manager-data", "manager work root; ongoing transactions are not enumerated or authorized for deletion");
+    if (scope === "runtime") {
+        dir("runtime.root", "bundles", !cold, "manager-data", "installed local runtimes");
+        if (!cold && !name.startsWith("invalid-") && !name.startsWith("ambiguous-")) add("runtime", join(data, "bundles", installed.id), "exists", "local-inventory", "installed runtime", { id: installed.id, version: installed.id });
+    }
+    if (scope === "snapshot") for (const kind of ["config", "plugins"]) {
+        if (c.scope[1] && c.scope[1] !== kind) continue;
+        dir("snapshot.root", snapshotRoot(kind), !cold, "manager-data", "typed local snapshot inventory", { kind });
+        if (!cold && !name.startsWith("invalid-")) add("snapshot", join(data, snapshotRoot(kind), snapshotId(kind)), "exists", "local-inventory", "snapshot remains queryable without its runtime", { kind, id: snapshotId(kind), version: installed.id });
+    }
+    if (scope === "completion" && !name.startsWith("invalid-")) {
+        const legacy = name === "legacy-completion-unknown-no-rc-read";
+        for (const shell of legacy ? ["bash"] : ["bash", "fish", "powershell", "pwsh", "zsh"]) for (const role of ["completion.registration", "completion.script"]) add(role, null, legacy ? "unknown" : "not-created", "recorded-registration", legacy ? "registration-path-not-recorded" : "not-registered", { id: shell });
+    }
+    const errors = {
+        "invalid-runtime-missing": ["target-not-found", "runtime", "explicit runtime is not installed"],
+        [`invalid-snapshot-config-${installed.id}@99`]: ["invalid-target", "snapshot", "SnapshotNotFound"],
+        "invalid-addon-office:missing": ["target-not-found", "addon", "explicit addon version is not installed"],
+        "invalid-completion-unknown": ["invalid-target", "completion", "unsupported completion shell"],
+        "invalid-explicit-use-no-fallback": ["not_installed", "effective", "runtime intent cannot be resolved; no fallback or initialization"],
+        "invalid-explicit-snapshot-no-fallback": ["invalid-snapshot-reference", "snapshot", "SnapshotNotFound"],
+        "ambiguous-runtime-inventory": ["ambiguous-target", "runtime", "runtime prefix is ambiguous"],
+        "ambiguous-explicit-use-no-fallback": ["ambiguous", "effective", "runtime intent cannot be resolved; no fallback or initialization"],
+        "malformed-selection": ["invalid-selection", "selection", "cannot parse persistent selection; no fallback", join(data, "state/selection.json")],
+        "legacy-completion-unknown-no-rc-read": ["completion-path-unrecorded", "completion.registration", "historical registration has no recorded location; not guessed"]
+    };
+    const error = errors[name];
+    if (error) { const [code, role, message, path = null] = error; diagnostics.push({ code, role, path, message }); }
+    let effective = null;
+    if (overview) {
+        effective = { status: error ? "unresolved" : cold ? "empty" : "resolved", runtime: null, plugins: null, config: null, addons: { office: null }, reason: error ? error[0] : cold ? "no-installed-runtime" : null };
+        if (!cold && !error) {
+            effective.runtime = { id: installed.id, path: join(data, "bundles", installed.id), source: "persistent-use" };
+            for (const kind of ["plugins", "config"]) effective[kind] = { id: snapshotId(kind), path: join(data, snapshotRoot(kind), snapshotId(kind)), source: "persistent-snapshot" };
+        }
+    }
+    const key = r => [r.role, r.kind ?? "", r.id ?? "", r.path ?? ""].join("\0");
+    records.sort((a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0);
+    return { schemaVersion: 1, scope, complete: !error, records, effective, diagnostics };
 }
-const manifest = { scope: "FreeBSD 15.1 amd64 ordinary manager path only; not application/service/full-8.5 acceptance", cases: [], audit: "ktrace -i -t cn; kdump -d -t cn; initial manager exec only; no content dumps", status: "NOTRUN" };
-let oldBefore, oldRoot, server, requests = 0, activeCase;
-async function child(argv, env, cwd) {
-    const p = Bun.spawn(argv, { cwd, env, stdout: "pipe", stderr: "pipe" });
-    const timer = setTimeout(() => { if (p.exitCode === null) p.kill("SIGKILL"); }, 20000);
+export function pathCases(installed, root, manager) {
+    const cases = [], empty = join(root, "empty/dsh"), negative = join(root, "negative/dsh");
+    const add = (name, exe, scope, status = 0, leading = []) => { for (const format of ["json", "human"]) cases.push({ name: `${name}-${format}`, exe, scope, status, leading, format }); };
+    for (const [name, exe] of [["empty", empty], ["installed", manager]]) for (const scope of [[], ...scopes.map(s => [s])]) add(`${name}-${scope[0] ?? "overview"}`, exe, scope);
+    add("runtime-exact", manager, ["runtime", installed.id]);
+    for (const kind of ["plugins", "config"]) add(`snapshot-${kind}-exact`, manager, ["snapshot", kind, installed.selection[kind === "plugins" ? "snapshot" : "configSnapshot"]]);
+    for (const scope of [["runtime", "missing"], ["snapshot", "config", `${installed.id}@99`], ["addon", "office:missing"], ["completion", "unknown"]]) add(`invalid-${scope.join("-")}`, manager, scope, 1);
+    add("invalid-explicit-use-no-fallback", manager, [], 1, ["--use", "missing"]);
+    add("invalid-explicit-snapshot-no-fallback", manager, [], 1, ["--config-snapshot", `${installed.id}@99`]);
+    add("copied-genuine-selection", negative, []);
+    add("ambiguous-runtime-inventory", negative, ["runtime", "0.2"], 1);
+    add("ambiguous-explicit-use-no-fallback", negative, [], 1, ["--use", "0.2"]);
+    add("malformed-selection", negative, [], 1);
+    add("malformed-selection-self-still-inventory", negative, ["self"]);
+    add("empty-kind-unresolved-selection", negative, ["addon"]);
+    add("legacy-completion-unknown-no-rc-read", negative, ["completion", "bash"], 1);
+    add("offline-installed-overview", manager, []);
+    return cases;
+}
+
+export function assertResult(c, result, installed, fixtureRoot) {
+    const expected = expectedReport(c, installed, fixtureRoot);
+    assert.equal(result.status, expected.complete ? 0 : 1, "expected command status");
+    assert.ok(!/NATIVE-PATH-PRIVATE-SENTINEL|\u001b/.test(result.stdout + result.stderr));
+    if (c.format === "json") { assert.equal(result.stderr, ""); assert.deepEqual(JSON.parse(result.stdout), expected, "expected JSON fields"); }
+    else {
+        let stdout = expected.records.map(r => `${r.role} ${r.path ?? "unknown"} [${r.status}] source=${r.source} ${r.id ?? ""} ${r.reason}\n`).join("");
+        if (expected.effective) {
+            const e = expected.effective; stdout += `effective: ${e.status} ${e.reason ?? ""}\n`;
+            for (const key of ["runtime", "plugins", "config"]) if (e[key]) { const r = e[key]; stdout += `  ${key}: ${r.id} ${r.path} (${r.source})\n`; }
+        }
+        const stderr = expected.diagnostics.map(d => `dsh: path ${d.code}: ${d.path ?? ""} ${d.message}\n`).join("");
+        assert.equal(result.stdout, stdout, "expected human fields/selection explanation"); assert.equal(result.stderr, stderr, "expected human diagnostics");
+    }
+}
+
+async function nativeMain() {
+    const [root, manager, receipt, bindingFile] = process.argv.slice(2);
+    const save = (name, value) => writeFileSync(join(root, name), JSON.stringify(value, null, 2) + "\n");
+    const manifest = { scope: "FreeBSD 15.1 amd64 ordinary manager path only; not application/service/full-8.5 acceptance", cases: [], audit: "ktrace -i -t cn; kdump -d -t cn; initial manager exec only; no content dumps", status: "NOTRUN" };
+    let oldBefore, oldRoot, server, requests = 0, activeCase;
+    async function child(argv, env, cwd) {
+        const p = Bun.spawn(argv, { cwd, env, stdout: "pipe", stderr: "pipe" });
+        const timer = setTimeout(() => { if (p.exitCode === null) p.kill("SIGKILL"); }, 20000);
+        try {
+            const [status, stdout, stderr] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
+            assert.equal(p.signalCode, null, "timeout/signal"); return { status, stdout, stderr };
+        } finally { clearTimeout(timer); }
+    }
     try {
-        const [status, stdout, stderr] = await Promise.all([p.exited, new Response(p.stdout).text(), new Response(p.stderr).text()]);
-        assert.equal(p.signalCode, null, "timeout/signal"); return { status, stdout, stderr };
-    } finally { clearTimeout(timer); }
-}
-try {
-    assert.equal(process.platform, "freebsd"); assert.equal(process.arch, "x64"); assert.equal(process.getuid(), 1001);
-    assert.equal(Bun.version, "1.4.2");
-    for (const p of [root, manager, receipt, bindingFile]) assert.ok(p && isAbsolute(p));
-    assert.ok(["/var/tmp/dsh-freebsd-native-path", "/var/tmp/dsh-freebsd-native-path/recheck", "/var/tmp/dsh-freebsd-native-path/final"].includes(root));
-    assert.ok(!existsSync(join(root, "empty")), "fresh owned fixtures required; never retry over previous evidence");
-    selfCheck(); manifest.selfChecks = "PASS: extra exec, fork, socket, locks, write, sensitive open, empty trace rejected";
-    const installed = JSON.parse(readFileSync(receipt, "utf8")), binding = JSON.parse(readFileSync(bindingFile, "utf8"));
-    assert.equal(sha(manager), binding.managerSha256);
-    assert.equal(sha(join(installed.roots.R, "dsh-native")), binding.runtimeSha256);
-    assert.equal(sha(join(installed.roots.R, "bundle.json")), binding.bundleMetaSha256);
-    const meta = JSON.parse(readFileSync(join(installed.roots.R, "bundle.json"), "utf8"));
-    assert.equal(meta.id, installed.id); assert.equal(meta.builderCommit, binding.builderCommit); assert.equal(meta.target, "freebsd-x64");
-    assert.equal(meta.id, binding.id); assert.equal(meta.entry, "dsh-native"); assert.equal(meta.launchProtocol, 2);
-    for (const [kind, folder, key] of [["P", "snapshots", "snapshot"], ["C", "config-snapshots", "configSnapshot"]]) {
-        assert.equal(installed.roots[kind], join(installed.data, folder, installed.selection[key]));
-        assert.equal(JSON.parse(readFileSync(join(installed.roots[kind], "snapshot.json"), "utf8")).id, installed.selection[key]);
-    }
-    assert.deepEqual(JSON.parse(readFileSync(join(installed.data, "state/selection.json"), "utf8")), installed.selection);
-    oldRoot = dirname(manager); oldBefore = tree(oldRoot); save("old-before.json", oldBefore);
-    assert.deepEqual(Object.keys(binding.loaderSha256).sort(), [...loaderFiles, "/libexec/ld-elf.so.1"].sort());
-    for (const [p, expected] of Object.entries(binding.loaderSha256)) { assert.equal(lstatSync(p).uid, 0); assert.equal(sha(p), expected); }
-    manifest.input = { manager, installed, binding, scriptSha256: sha(import.meta.path), helper: process.execPath, helperSha256: sha(process.execPath), receiptSha256: sha(receipt), bindingSha256: sha(bindingFile) };
-    const env = { HOME: join(root, "home"), TMPDIR: join(root, "tmp"), XDG_CACHE_HOME: join(root, "cache"), PATH: "", NO_COLOR: "1", LC_ALL: "C" };
-    for (const p of [env.HOME, env.TMPDIR, env.XDG_CACHE_HOME]) mkdirSync(p, { mode: 0o700 });
-    for (const n of [".credentials.yaml", "settings.yaml", ".bashrc", ".zshrc"]) writeFileSync(join(env.HOME, n), "NATIVE-PATH-PRIVATE-SENTINEL\n", { mode: 0o600 });
-    const empty = join(root, "empty"); mkdirSync(empty); copyFileSync(manager, join(empty, "dsh"));
-    assert.equal(sha(join(empty, "dsh")), binding.managerSha256);
-    assert.notEqual(lstatSync(join(empty, "dsh")).ino, lstatSync(manager).ino);
-    server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { requests++; return new Response("unexpected query request", { status: 503 }); } });
-    env.DSH_MANAGER_TEST = "1"; env.DSH_MANAGER_TEST_ORIGIN = `http://127.0.0.1:${server.port}`;
-    assert.ok(!Object.keys(env).some(k => k.startsWith("LD_")), "no loader redirection in product environment");
-    manifest.environment = env;
-    const cases = [];
-    const add = (name, exe, scope, check, status = 0, leading = []) => {
-        for (const format of ["json", "human"]) cases.push({ name: `${name}-${format}`, exe, scope, check, status, leading, format, result: "NOTRUN" });
-    };
-    const success = v => { assert.equal(v.complete, true); assert.deepEqual(v.diagnostics, []); };
-    const failure = code => v => { assert.equal(v.complete, false); assert.ok(v.diagnostics.some(d => d.code === code), code); };
-    const emptyExe = join(empty, "dsh");
-    for (const scope of [[], ...scopes.map(s => [s])]) add(`empty-${scope[0] ?? "overview"}`, emptyExe, scope, v => {
-        success(v);
-        if (!scope.length) { assert.equal(v.effective.status, "empty"); assert.equal(v.effective.reason, "no-installed-runtime"); }
-        if (scope[0] === "self") assert.equal(row(v, "self.data").status, "not-created");
-        if (scope[0] === "cache") assert.equal(row(v, "cache.app-default").path, join(empty, "dsh-bin/home/cache"));
-    });
-    for (const scope of [[], ...scopes.map(s => [s])]) add(`installed-${scope[0] ?? "overview"}`, manager, scope, v => {
-        success(v);
-        if (!scope.length) {
-            assert.equal(v.effective.status, "resolved");
-            for (const [key, id, p] of [["runtime", installed.id, installed.roots.R], ["plugins", installed.selection.snapshot, installed.roots.P], ["config", installed.selection.configSnapshot, installed.roots.C]]) {
-                assert.equal(v.effective[key].id, id); assert.equal(v.effective[key].path, p);
+        assert.equal(process.platform, "freebsd"); assert.equal(process.arch, "x64"); assert.equal(process.getuid(), 1001);
+        assert.equal(Bun.version, "1.4.2");
+        for (const p of [root, manager, receipt, bindingFile]) assert.ok(p && isAbsolute(p));
+        assert.ok(["/var/tmp/dsh-freebsd-native-path", "/var/tmp/dsh-freebsd-native-path/recheck", "/var/tmp/dsh-freebsd-native-path/final"].includes(root));
+        assert.ok(!existsSync(join(root, "empty")), "fresh owned fixtures required; never retry over previous evidence");
+        selfCheck(); manifest.selfChecks = "PASS: extra exec, fork, socket, locks, write, sensitive open, empty trace rejected";
+        const installed = JSON.parse(readFileSync(receipt, "utf8")), binding = JSON.parse(readFileSync(bindingFile, "utf8"));
+        assert.equal(sha(manager), binding.managerSha256);
+        assert.equal(sha(join(installed.roots.R, "dsh-native")), binding.runtimeSha256);
+        assert.equal(sha(join(installed.roots.R, "bundle.json")), binding.bundleMetaSha256);
+        const meta = JSON.parse(readFileSync(join(installed.roots.R, "bundle.json"), "utf8"));
+        assert.equal(meta.id, installed.id); assert.equal(meta.builderCommit, binding.builderCommit); assert.equal(meta.target, "freebsd-x64");
+        assert.equal(meta.id, binding.id); assert.equal(meta.entry, "dsh-native"); assert.equal(meta.launchProtocol, 2);
+        for (const [kind, folder, key] of [["P", "snapshots", "snapshot"], ["C", "config-snapshots", "configSnapshot"]]) {
+            assert.equal(installed.roots[kind], join(installed.data, folder, installed.selection[key]));
+            assert.equal(JSON.parse(readFileSync(join(installed.roots[kind], "snapshot.json"), "utf8")).id, installed.selection[key]);
+        }
+        assert.deepEqual(JSON.parse(readFileSync(join(installed.data, "state/selection.json"), "utf8")), installed.selection);
+        oldRoot = dirname(manager); oldBefore = tree(oldRoot); save("old-before.json", oldBefore);
+        assert.deepEqual(Object.keys(binding.loaderSha256).sort(), [...loaderFiles, "/libexec/ld-elf.so.1"].sort());
+        for (const [p, expected] of Object.entries(binding.loaderSha256)) { assert.equal(lstatSync(p).uid, 0); assert.equal(sha(p), expected); }
+        manifest.input = { manager, installed, binding, scriptSha256: sha(import.meta.path), helper: process.execPath, helperSha256: sha(process.execPath), receiptSha256: sha(receipt), bindingSha256: sha(bindingFile) };
+        const env = { HOME: join(root, "home"), TMPDIR: join(root, "tmp"), XDG_CACHE_HOME: join(root, "cache"), PATH: "", NO_COLOR: "1", LC_ALL: "C" };
+        for (const p of [env.HOME, env.TMPDIR, env.XDG_CACHE_HOME]) mkdirSync(p, { mode: 0o700 });
+        for (const n of [".credentials.yaml", "settings.yaml", ".bashrc", ".zshrc"]) writeFileSync(join(env.HOME, n), "NATIVE-PATH-PRIVATE-SENTINEL\n", { mode: 0o600 });
+        const empty = join(root, "empty"); mkdirSync(empty); copyFileSync(manager, join(empty, "dsh"));
+        assert.equal(sha(join(empty, "dsh")), binding.managerSha256);
+        assert.notEqual(lstatSync(join(empty, "dsh")).ino, lstatSync(manager).ino);
+        server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() { requests++; return new Response("unexpected query request", { status: 503 }); } });
+        env.DSH_MANAGER_TEST = "1"; env.DSH_MANAGER_TEST_ORIGIN = `http://127.0.0.1:${server.port}`;
+        assert.ok(!Object.keys(env).some(k => k.startsWith("LD_")), "no loader redirection in product environment");
+        manifest.environment = env;
+        const cases = pathCases(installed, root, manager);
+        const prepare = (name, fn) => { const c = cases.find(c => c.name === `${name}-json`); assert.ok(c); c.prepare = fn; };
+        // Minimal independent copies of genuine metadata/native bytes, not forged launch payloads.
+        const negative = join(root, "negative"), data = join(negative, "dsh-bin");
+        const setupNegative = () => {
+            mkdirSync(negative); copyFileSync(manager, join(negative, "dsh")); mkdirSync(data);
+            copyFileSync(join(installed.data, ".dsh-bin-data.json"), join(data, ".dsh-bin-data.json"));
+            for (const [source, target, files] of [[installed.roots.R, join(data, "bundles", installed.id), ["bundle.json", "dsh-native", ".usage.lock"]], [installed.roots.P, join(data, "snapshots", installed.selection.snapshot), ["snapshot.json", ".usage.lock"]], [installed.roots.C, join(data, "config-snapshots", installed.selection.configSnapshot), ["snapshot.json", ".usage.lock"]]]) {
+                mkdirSync(target, { recursive: true });
+                for (const file of files) { copyFileSync(join(source, file), join(target, file)); assert.equal(sha(join(source, file)), sha(join(target, file))); assert.notEqual(lstatSync(join(source, file)).ino, lstatSync(join(target, file)).ino); }
             }
+            mkdirSync(join(data, "state")); copyFileSync(join(installed.data, "state/selection.json"), join(data, "state/selection.json"));
+            save("negative-copy-binding.json", { source: installed.roots, copiedRuntimeSha256: sha(join(data, "bundles", installed.id, "dsh-native")) });
+        };
+        prepare("copied-genuine-selection", setupNegative);
+        prepare("ambiguous-runtime-inventory", () => {
+            const target = join(data, "bundles", `${installed.id}.duplicate`); mkdirSync(target);
+            for (const file of ["bundle.json", "dsh-native", ".usage.lock"]) copyFileSync(join(installed.roots.R, file), join(target, file));
+            assert.equal(sha(join(target, "dsh-native")), binding.runtimeSha256);
+        });
+        prepare("malformed-selection", () => writeFileSync(join(data, "state/selection.json"), "broken"));
+        prepare("legacy-completion-unknown-no-rc-read", () => writeFileSync(join(data, "state/completion.json"), JSON.stringify({ schema: 1, shells: { bash: { result: "registered" } } })));
+        prepare("offline-installed-overview", () => server.stop(true));
+        manifest.cases = cases.map(({ name, status, format }) => ({ name, expectedStatus: status, format, result: "NOTRUN" }));
+        for (let n = 0; n < cases.length; n++) {
+            const c = cases[n]; activeCase = manifest.cases[n];
+            c.prepare?.();
+            const before = { target: tree(dirname(c.exe)), home: tree(env.HOME), tmp: tree(env.TMPDIR), cache: tree(env.XDG_CACHE_HOME) };
+            const requestsBefore = requests;
+            const args = [...c.leading, "manager", "path", ...c.scope, ...(c.format === "json" ? ["--json"] : [])];
+            const trace = join(root, `${c.name}.ktrace`), dump = join(root, `${c.name}.kdump`);
+            const argv = ["/usr/bin/ktrace", "-i", "-t", "cn", "-f", trace, c.exe, ...args];
+            const r = await child(argv, env, env.HOME);
+            Object.assign(activeCase, { argv, env: "manifest.environment", cwd: env.HOME, ...r, trace, dump, requestsBefore });
+            const decoded = await child(["/usr/bin/kdump", "-d", "-f", trace, "-t", "cn"], { PATH: "", LC_ALL: "C" }, root);
+            assert.equal(decoded.status, 0, "audit capability unavailable/failed"); assert.equal(decoded.stderr, ""); writeFileSync(dump, decoded.stdout);
+            activeCase.audit = audit(decoded.stdout, auditIdentity(c.exe, installed, root, env.HOME), c.status);
+            await Bun.sleep(5); activeCase.requestsAfter = requests; assert.equal(requests, requestsBefore, "controlled origin request");
+            const after = { target: tree(dirname(c.exe)), home: tree(env.HOME), tmp: tree(env.TMPDIR), cache: tree(env.XDG_CACHE_HOME) };
+            activeCase.treeBeforeSha256 = digest(before); activeCase.treeAfterSha256 = digest(after); assert.deepEqual(after, before, "query mutated managed/private roots");
+            assertResult(c, r, installed, root);
+            if (c.format === "json") activeCase.json = JSON.parse(r.stdout);
+            activeCase.traceSha256 = sha(trace); activeCase.dumpSha256 = sha(dump); activeCase.result = "PASS"; save("manifest.json", manifest);
+            console.log(`PASS ${c.name}`);
         }
-        if (scope[0] === "runtime") { assert.equal(row(v, "runtime").id, installed.id); assert.equal(row(v, "runtime").path, installed.roots.R); }
-        if (scope[0] === "addon") assert.equal(v.records.filter(r => r.role === "addon").length, 0);
-    });
-    add("runtime-exact", manager, ["runtime", installed.id], v => { success(v); assert.equal(row(v, "runtime").id, installed.id); });
-    for (const kind of ["plugins", "config"]) add(`snapshot-${kind}-exact`, manager, ["snapshot", kind, installed.selection[kind === "plugins" ? "snapshot" : "configSnapshot"]], v => { success(v); assert.equal(row(v, "snapshot").kind, kind); });
-    for (const [scope, code] of [[["runtime", "missing"], "target-not-found"], [["snapshot", "config", `${installed.id}@99`], "invalid-target"], [["addon", "office:missing"], "target-not-found"], [["completion", "unknown"], "invalid-target"]]) add(`invalid-${scope.join("-")}`, manager, scope, failure(code), 1);
-    add("invalid-explicit-use-no-fallback", manager, [], v => { failure("not_installed")(v); assert.equal(v.effective.status, "unresolved"); assert.equal(v.effective.reason, "not_installed"); assert.equal(v.effective.runtime, null); }, 1, ["--use", "missing"]);
-    add("invalid-explicit-snapshot-no-fallback", manager, [], v => { failure("invalid-snapshot-reference")(v); assert.equal(v.effective.runtime, null); }, 1, ["--config-snapshot", `${installed.id}@99`]);
-    // Minimal independent copies of genuine metadata/native bytes, not forged launch payloads.
-    const negative = join(root, "negative"), data = join(negative, "dsh-bin");
-    const setupNegative = () => {
-        mkdirSync(negative); copyFileSync(manager, join(negative, "dsh")); mkdirSync(data);
-        copyFileSync(join(installed.data, ".dsh-bin-data.json"), join(data, ".dsh-bin-data.json"));
-        for (const [source, target, files] of [[installed.roots.R, join(data, "bundles", installed.id), ["bundle.json", "dsh-native", ".usage.lock"]], [installed.roots.P, join(data, "snapshots", installed.selection.snapshot), ["snapshot.json", ".usage.lock"]], [installed.roots.C, join(data, "config-snapshots", installed.selection.configSnapshot), ["snapshot.json", ".usage.lock"]]]) {
-            mkdirSync(target, { recursive: true });
-            for (const file of files) { copyFileSync(join(source, file), join(target, file)); assert.equal(sha(join(source, file)), sha(join(target, file))); assert.notEqual(lstatSync(join(source, file)).ino, lstatSync(join(target, file)).ino); }
+        manifest.status = "PASS";
+    } catch (error) {
+        manifest.status = "FAIL"; manifest.failure = String(error); if (activeCase) activeCase.result = "FAIL";
+        console.error(manifest.failure); process.exitCode = 1;
+    } finally {
+        server?.stop(true); manifest.controlledRequests = requests;
+        if (oldBefore) {
+            const after = tree(oldRoot); save("old-after.json", after);
+            manifest.oldRoot = { path: oldRoot, entries: oldBefore.length, beforeSha256: digest(oldBefore), afterSha256: digest(after), unchanged: digest(oldBefore) === digest(after) };
+            if (!manifest.oldRoot.unchanged) { manifest.status = "FAIL"; process.exitCode = 1; }
         }
-        mkdirSync(join(data, "state")); copyFileSync(join(installed.data, "state/selection.json"), join(data, "state/selection.json"));
-        save("negative-copy-binding.json", { source: installed.roots, copiedRuntimeSha256: sha(join(data, "bundles", installed.id, "dsh-native")) });
-    };
-    const negativeExe = join(negative, "dsh");
-    add("copied-genuine-selection", negativeExe, [], v => { success(v); assert.equal(v.effective.status, "resolved"); assert.equal(v.effective.runtime.id, installed.id); });
-    cases[cases.length - 2].prepare = setupNegative;
-    add("ambiguous-runtime-inventory", negativeExe, ["runtime", "0.2"], failure("ambiguous-target"), 1);
-    cases[cases.length - 2].prepare = () => {
-        const target = join(data, "bundles", `${installed.id}.duplicate`); mkdirSync(target);
-        for (const file of ["bundle.json", "dsh-native", ".usage.lock"]) copyFileSync(join(installed.roots.R, file), join(target, file));
-        assert.equal(sha(join(target, "dsh-native")), binding.runtimeSha256);
-    };
-    add("ambiguous-explicit-use-no-fallback", negativeExe, [], v => { failure("ambiguous")(v); assert.equal(v.effective.reason, "ambiguous"); assert.equal(v.effective.runtime, null); }, 1, ["--use", "0.2"]);
-    add("malformed-selection", negativeExe, [], v => { failure("invalid-selection")(v); assert.equal(v.effective.reason, "invalid-selection"); assert.equal(v.effective.status, "unresolved"); }, 1);
-    cases[cases.length - 2].prepare = () => writeFileSync(join(data, "state/selection.json"), "broken");
-    add("malformed-selection-self-still-inventory", negativeExe, ["self"], success);
-    add("empty-kind-unresolved-selection", negativeExe, ["addon"], v => { success(v); assert.equal(v.effective, null); assert.equal(v.records.filter(r => r.role === "addon").length, 0); });
-    add("legacy-completion-unknown-no-rc-read", negativeExe, ["completion", "bash"], v => {
-        failure("completion-path-unrecorded")(v); const r = row(v, "completion.registration"); assert.equal(r.status, "unknown"); assert.equal(r.path, null); assert.equal(r.reason, "registration-path-not-recorded");
-    }, 1);
-    cases[cases.length - 2].prepare = () => writeFileSync(join(data, "state/completion.json"), JSON.stringify({ schema: 1, shells: { bash: { result: "registered" } } }));
-    add("offline-installed-overview", manager, [], v => { success(v); assert.equal(v.effective.status, "resolved"); assert.equal(v.effective.runtime.id, installed.id); });
-    cases[cases.length - 2].prepare = () => server.stop(true);
-    manifest.cases = cases.map(({ name, status, format }) => ({ name, expectedStatus: status, format, result: "NOTRUN" }));
-    const jsonResults = new Map();
-    for (let n = 0; n < cases.length; n++) {
-        const c = cases[n]; activeCase = manifest.cases[n];
-        c.prepare?.();
-        const before = { target: tree(dirname(c.exe)), home: tree(env.HOME), tmp: tree(env.TMPDIR), cache: tree(env.XDG_CACHE_HOME) };
-        const requestsBefore = requests;
-        const args = [...c.leading, "manager", "path", ...c.scope, ...(c.format === "json" ? ["--json"] : [])];
-        const trace = join(root, `${c.name}.ktrace`), dump = join(root, `${c.name}.kdump`);
-        const argv = ["/usr/bin/ktrace", "-i", "-t", "cn", "-f", trace, c.exe, ...args];
-        const r = await child(argv, env, env.HOME);
-        Object.assign(activeCase, { argv, env: "manifest.environment", cwd: env.HOME, ...r, trace, dump, requestsBefore });
-        const decoded = await child(["/usr/bin/kdump", "-d", "-f", trace, "-t", "cn"], { PATH: "", LC_ALL: "C" }, root);
-        assert.equal(decoded.status, 0, "audit capability unavailable/failed"); assert.equal(decoded.stderr, ""); writeFileSync(dump, decoded.stdout);
-        activeCase.audit = audit(decoded.stdout, c.exe);
-        await Bun.sleep(5); activeCase.requestsAfter = requests; assert.equal(requests, requestsBefore, "controlled origin request");
-        const after = { target: tree(dirname(c.exe)), home: tree(env.HOME), tmp: tree(env.TMPDIR), cache: tree(env.XDG_CACHE_HOME) };
-        activeCase.treeBeforeSha256 = digest(before); activeCase.treeAfterSha256 = digest(after); assert.deepEqual(after, before, "query mutated managed/private roots");
-        assert.equal(r.status, c.status, `${c.name} exit status`); assert.ok(!/NATIVE-PATH-PRIVATE-SENTINEL|\u001b/.test(r.stdout + r.stderr));
-        if (c.format === "json") {
-            const v = JSON.parse(r.stdout); assert.equal(v.schemaVersion, 1); assert.equal(v.scope, c.scope[0] ?? "overview"); assert.ok(Array.isArray(v.records)); assert.ok(Array.isArray(v.diagnostics));
-            for (const item of v.records) if (item.path !== null) assert.ok(isAbsolute(item.path));
-            assert.equal(r.stderr, ""); c.check(v); activeCase.json = v; jsonResults.set(c.name.replace(/-json$/, ""), v);
-        } else {
-            const v = jsonResults.get(c.name.replace(/-human$/, "")); assert.ok(v);
-            for (const item of v.records) { assert.ok(r.stdout.includes(item.role)); assert.ok(r.stdout.includes(`[${item.status}]`)); if (item.path) assert.ok(r.stdout.includes(item.path)); }
-            if (v.effective) assert.ok(r.stdout.includes(`effective: ${v.effective.status}`));
-            for (const d of v.diagnostics) assert.ok(r.stderr.includes(`path ${d.code}:`));
-            if (c.status === 0) assert.equal(r.stderr, "");
-        }
-        activeCase.traceSha256 = sha(trace); activeCase.dumpSha256 = sha(dump); activeCase.result = "PASS"; save("manifest.json", manifest);
-        console.log(`PASS ${c.name}`);
+        if (root && existsSync(root)) save("manifest.json", manifest);
+        console.log(JSON.stringify({ status: manifest.status, passed: manifest.cases.filter(c => c.result === "PASS").length, failed: manifest.cases.filter(c => c.result === "FAIL").length, notRun: manifest.cases.filter(c => c.result === "NOTRUN").length, oldRoot: manifest.oldRoot }));
     }
-    manifest.status = "PASS";
-} catch (error) {
-    manifest.status = "FAIL"; manifest.failure = String(error); if (activeCase) activeCase.result = "FAIL";
-    console.error(manifest.failure); process.exitCode = 1;
-} finally {
-    server?.stop(true); manifest.controlledRequests = requests;
-    if (oldBefore) {
-        const after = tree(oldRoot); save("old-after.json", after);
-        manifest.oldRoot = { path: oldRoot, entries: oldBefore.length, beforeSha256: digest(oldBefore), afterSha256: digest(after), unchanged: digest(oldBefore) === digest(after) };
-        if (!manifest.oldRoot.unchanged) { manifest.status = "FAIL"; process.exitCode = 1; }
-    }
-    if (root && existsSync(root)) save("manifest.json", manifest);
-    console.log(JSON.stringify({ status: manifest.status, passed: manifest.cases.filter(c => c.result === "PASS").length, failed: manifest.cases.filter(c => c.result === "FAIL").length, notRun: manifest.cases.filter(c => c.result === "NOTRUN").length, oldRoot: manifest.oldRoot }));
 }
+if (import.meta.main) await nativeMain();
