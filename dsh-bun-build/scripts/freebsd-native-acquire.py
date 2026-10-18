@@ -6,6 +6,7 @@ import sys
 import urllib.request
 
 INPUTS = {
+    'node-v24.0.0-headers.tar.gz': ('https://nodejs.org/dist/v24.0.0/', '4605ee37eef345568f43de8c1843f3f7a243865654c1e942c50584de6bd59bb5'),
     'bun-freebsd-x64-baseline.zip': ('https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/', 'f01d1789358f02625300776925cc8f67cf7c232fb8a394e186f5fa59300eed2d'),
     'bun-freebsd-aarch64.zip': ('https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/', 'a554958e5691c5036e576da78efb4114665da354c882cb0ca059bbd4a896b44a'),
     'zig-x86_64-freebsd-0.15.2.tar.xz': ('https://ziglang.org/download/0.15.2/', '5509ff57cd3f219165caed0da10221739af82742b9edfcda3f7bfaf4da7212dd'),

@@ -9,7 +9,8 @@
 //
 // usage: bun scripts/assemble-bundle.mjs <spec.json>
 //   spec: {target, out, app, pnpm, native, identity:{id,tag,channel}, upstream:{commit,commitTime,tag?,version},
-//          run, attempt, builderCommit, slot:{commit,kitVersion}|null, index?:<path to runtime-index.json snapshot>}
+//          run, attempt, builderCommit, slot:{commit,kitVersion}|null, index?:<path to runtime-index.json snapshot>,
+//          system?:<verified FreeBSD system component directory>}
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { createRequire } from "node:module";
@@ -18,6 +19,7 @@ import { writeShims } from "./shims.mjs";
 import { target as targetById } from "./targets.mjs";
 import { warmTranspilerCache } from "./warm-transpiler-cache.mjs";
 import { fixedCli } from "./completion.mjs";
+import { installFreebsdSystem } from "./freebsd-system.mjs";
 
 /** Launch protocol between the manager and this runtime (`DSH_MANAGER_LAUNCH`, runtime/launch.ts). */
 export const LAUNCH_PROTOCOL = 2;
@@ -172,6 +174,7 @@ export function assembleBundle(spec) {
 	writeShims(bundle, t.os);
 	writeFileSync(join(bundle, ".usage.lock"), "");
 
+	if (t.os === "freebsd") installFreebsdSystem(join(bundle, "app"), t.arch, spec.system);
 	const pruned = prunePrebuilds(join(bundle, "app"), t);
 	// Reviewed upstream postinstall that deploy --ignore-scripts skips: node-pty's macOS spawn-helper mode.
 	if (t.os === "darwin") {
