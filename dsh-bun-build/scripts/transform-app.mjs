@@ -94,6 +94,8 @@ export const CONFIG_SITES = [
 	rule('node_modules/@deepseek-ai/dsh-hmr/lib/index.js', 'return readFileSync(filename, "utf8");', 'return readFileSync(__dshBinPaths.checkWatchPath(filename), "utf8");'),
 ];
 export const CONFIG_SITES_BY_VERSION = { "0.2.0-rc.2": CONFIG_SITES };
+/** Complete default production write-set; unknown sites/counts still fail before transform writes. */
+export const TRANSFORM_WRITE_FILES = [...new Set([...KNOWN_FILES, ...Object.keys(PROFILE_SITES), ...CONFIG_SITES.map(site => site.file)])].sort();
 const occurrences = (text, needle) => text.split(needle).length - 1;
 function rewriteConfigSites(texts, sites, rewritten) {
 	for (const { file, from, to, count } of sites) {

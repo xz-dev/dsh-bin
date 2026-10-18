@@ -13,7 +13,7 @@
 //          system?:{directory:<FreeBSD component>, expected:<independently trusted build receipt>},
 //          search?:{directory:<FreeBSD ripgrep>, expected:<independently trusted build receipt>}}
 // FreeBSD app input is raw (already transformed input must pass the same idempotent transform checks).
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { createRequire } from "node:module";
 import { binaryArch, isFreebsdElf } from "./binary-arch.mjs";
@@ -23,7 +23,7 @@ import { warmTranspilerCache } from "./warm-transpiler-cache.mjs";
 import { fixedCli } from "./completion.mjs";
 import { installFreebsdSystem, verifyFreebsdSystemPackage } from "./freebsd-system.mjs";
 import { stageFreebsdSearch, verifyFreebsdSearchPackage } from "./freebsd-search.mjs";
-import { transformApp } from "./transform-app.mjs";
+import { transformApp, TRANSFORM_WRITE_FILES } from "./transform-app.mjs";
 
 /** Launch protocol between the manager and this runtime (`DSH_MANAGER_LAUNCH`, runtime/launch.ts). */
 export const LAUNCH_PROTOCOL = 2;
@@ -161,23 +161,56 @@ export function requiredPaths(t) {
 	return [t.executable, "bundle.json", "completion.json", ".usage.lock", "app/package.json", "app/lib/bin.js", "pnpm/dist/pnpm.mjs", ...shims];
 }
 
+const FREEBSD_APP_WRITES = [...TRANSFORM_WRITE_FILES, "node_modules/@deepseek-ai/node-addon-system/lib/flock.js", "node_modules/@deepseek-ai/node-addon-system/package.json"];
+
+// Check only actual downstream write targets and their ancestors, never unrelated app links.
+function assertFreebsdAppWritePaths(app) {
+	for (const file of FREEBSD_APP_WRITES) {
+		const parts = file.split("/");
+		for (let i = 1; i <= parts.length; i++) {
+			const path = parts.slice(0, i).join("/"), stat = lstatSync(join(app, path), { throwIfNoEntry: false });
+			if (!stat) break; // Existing strict transform/installer validates required files.
+			if (stat.isSymbolicLink() || (i < parts.length ? !stat.isDirectory() : !stat.isFile())) throw new Error(`unsafe linked FreeBSD assembly write path: ${path}`);
+		}
+	}
+}
+
 export function assembleBundle(spec) {
 	const t = targetById(spec.target);
 	const { id, tag, channel } = spec.identity;
 	const bundle = spec.out;
+	let systemDirectory;
 	if (t.os === "freebsd") {
 		verifyFreebsdSystemPackage(spec.system?.directory, t.arch, spec.system?.expected);
 		verifyFreebsdSearchPackage(spec.search?.directory, t.arch, spec.search?.expected);
 	}
 	if (existsSync(bundle)) throw new Error(`output exists: ${bundle}`);
+	if (t.os === "freebsd") {
+		assertFreebsdAppWritePaths(spec.app);
+		if (lstatSync(join(spec.app, "node_modules/@deepseek-ai", `node-addon-system-freebsd-${t.arch}`), { throwIfNoEntry: false })) throw new Error("reserved FreeBSD system destination already present or linked");
+		// The installer copies this directory and writes loader-provenance.json into that copy.
+		systemDirectory = realpathSync(spec.system.directory);
+		const component = lstatSync(resolve(spec.system.directory)), provenance = lstatSync(join(systemDirectory, "loader-provenance.json"), { throwIfNoEntry: false });
+		if (!component.isDirectory() || (provenance && !provenance.isFile())) throw new Error("unsafe linked FreeBSD system component write destination");
+	}
 	mkdirSync(bundle, { recursive: true });
 
-	cpSync(spec.native, join(bundle, t.executable));
-	chmodSync(join(bundle, t.executable), 0o755);
 	if (t.os === "freebsd") {
-		stageFreebsdSearch(spec.app, join(bundle, "app"), t.arch, spec.search.directory, spec.search.expected);
-		transformApp(join(bundle, "app"));
-	} else cpSync(spec.app, join(bundle, "app"), { recursive: true, dereference: true });
+		const app = join(bundle, "app");
+		stageFreebsdSearch(spec.app, app, t.arch, spec.search.directory, spec.search.expected);
+		assertFreebsdAppWritePaths(app);
+		for (const file of FREEBSD_APP_WRITES) {
+			const path = join(app, file), stat = lstatSync(path, { throwIfNoEntry: false });
+			if (stat) chmodSync(path, (stat.mode & 0o777) | 0o200); // Only independent copied files become writable.
+		}
+		copyFileSync(spec.native, join(bundle, t.executable)); // A linked native input must not receive chmod through its copy.
+		chmodSync(join(bundle, t.executable), 0o755);
+		transformApp(app);
+	} else {
+		cpSync(spec.native, join(bundle, t.executable));
+		chmodSync(join(bundle, t.executable), 0o755);
+		cpSync(spec.app, join(bundle, "app"), { recursive: true, dereference: true });
+	}
 	writeFileSync(join(bundle, "completion.json"), `${JSON.stringify(fixedCli(join(bundle, "app")), null, 2)}\n`);
 	if (existsSync(join(bundle, "app/node_modules/@deepseek-ai/libreoffice-kit"))) throw new Error("app tree still contains the office kit; run split-addon first");
 	cpSync(join(spec.pnpm, "dist"), join(bundle, "pnpm", "dist"), { recursive: true, dereference: true });
@@ -185,7 +218,7 @@ export function assembleBundle(spec) {
 	writeShims(bundle, t.os);
 	writeFileSync(join(bundle, ".usage.lock"), "");
 
-	if (t.os === "freebsd") installFreebsdSystem(join(bundle, "app"), t.arch, spec.system);
+	if (t.os === "freebsd") installFreebsdSystem(join(bundle, "app"), t.arch, { ...spec.system, directory: systemDirectory });
 	const pruned = prunePrebuilds(join(bundle, "app"), t);
 	// Reviewed upstream postinstall that deploy --ignore-scripts skips: node-pty's macOS spawn-helper mode.
 	if (t.os === "darwin") {
