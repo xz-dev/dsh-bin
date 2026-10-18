@@ -242,3 +242,85 @@ test("FreeBSD foreign scan rejects same-machine Linux and mismatched FreeBSD mac
 	put(join(root, "linux"), elf(0x3e)); const arm = Buffer.from(bytes); arm.writeUInt16LE(0xb7, 18); put(join(root, "arm"), arm);
 	expect(foreignBinaries(root, target("freebsd-x64")).sort()).toEqual(["arm: elf/arm64", "linux: elf/x64"]);
 });
+
+function optionalVariant(platform: Record<string, unknown> = { os: ["linux"] }) {
+	const f = fixture(), name = "foreign-variant", variant = join(f.app, "node_modules", name);
+	put(join(f.app, "package.json"), JSON.stringify({ optionalDependencies: { [name]: "1.0.0" } }));
+	put(join(variant, "package.json"), JSON.stringify({ name, ...platform }));
+	put(join(variant, "index.js"), "module.exports = 'mandatory functionality';\n");
+	return { ...f, name, variant };
+}
+
+test("FreeBSD rejects aliased incompatible instances without deleting mandatory or optional bytes", () => {
+	const f = optionalVariant(), alias = join(f.app, "node_modules/must-keep");
+	cpSync(f.variant, alias, { recursive: true });
+	put(join(f.app, "package.json"), JSON.stringify({ dependencies: { "must-keep": "npm:foreign-variant@1.0.0" }, optionalDependencies: { [f.name]: "1.0.0" } }));
+	const before = readFileSync(join(alias, "index.js"));
+	expect(() => prunePrebuilds(f.app, target("freebsd-x64"))).toThrow(/required or unclassified/);
+	expect(readFileSync(join(alias, "index.js"))).toEqual(before);
+	expect(existsSync(f.variant)).toBe(true);
+});
+
+test("FreeBSD required peers prevent deletion; explicitly optional peers do not", () => {
+	for (const optional of [false, true]) {
+		const f = optionalVariant();
+		put(join(f.app, "node_modules/consumer/package.json"), JSON.stringify({ name: "consumer", peerDependencies: { [f.name]: "1.0.0" }, peerDependenciesMeta: { [f.name]: { optional } } }));
+		if (optional) expect(prunePrebuilds(f.app, target("freebsd-x64"))).toContain(`node_modules/${f.name}`);
+		else {
+			expect(() => prunePrebuilds(f.app, target("freebsd-x64"))).toThrow(/required or unclassified/);
+			expect(existsSync(join(f.variant, "index.js"))).toBe(true);
+		}
+	}
+});
+
+test("FreeBSD validates both complete platform arrays before deleting anything", () => {
+	for (const platform of [{ os: ["linux", null] }, { os: ["linux"], cpu: ["x64", null] }, { os: ["any"], cpu: ["arm64", false] }, { os: "linux" }, { cpu: null }, { os: ["linux", ""] }]) {
+		const f = optionalVariant(platform);
+		expect(() => prunePrebuilds(f.app, target("freebsd-x64"))).toThrow(/invalid.*(os|cpu)/);
+		expect(existsSync(join(f.variant, "index.js"))).toBe(true);
+	}
+});
+
+test("FreeBSD authorizes the resolved optional instance, not a same-name hoisted instance", () => {
+	for (const requiredHoisted of [false, true]) {
+		const f = optionalVariant({ os: requiredHoisted ? ["any"] : ["linux"] }), nested = join(f.app, "node_modules/owner/node_modules", f.name);
+		put(join(f.app, "package.json"), JSON.stringify(requiredHoisted ? { dependencies: { [f.name]: "1.0.0" } } : {}));
+		put(join(f.app, "node_modules/owner/package.json"), JSON.stringify({ name: "owner", optionalDependencies: { [f.name]: "1.0.0" } }));
+		put(join(nested, "package.json"), JSON.stringify({ name: f.name, os: requiredHoisted ? ["linux"] : ["any"] }));
+		if (requiredHoisted) {
+			expect(prunePrebuilds(f.app, target("freebsd-x64"))).toContain(`node_modules/owner/node_modules/${f.name}`);
+			expect(existsSync(nested)).toBe(false);
+		} else {
+			expect(() => prunePrebuilds(f.app, target("freebsd-x64"))).toThrow(/required or unclassified/);
+			expect(existsSync(nested)).toBe(true);
+		}
+		expect(existsSync(join(f.variant, "index.js"))).toBe(true);
+	}
+});
+
+test("FreeBSD keeps valid positive, negative and any OS/CPU restrictions", () => {
+	for (const [platform, prune] of [[{ os: ["linux"] }, true], [{ os: ["!freebsd"] }, true], [{ os: ["any"] }, false], [{ os: ["any", "!freebsd"] }, true], [{ os: ["!linux"] }, false], [{ cpu: ["arm64"] }, true], [{ cpu: ["!x64"] }, true], [{ cpu: ["any"] }, false], [{ cpu: ["x64"] }, false]] as const) {
+		const f = optionalVariant(platform);
+		const removed = prunePrebuilds(f.app, target("freebsd-x64"));
+		expect(removed.includes(`node_modules/${f.name}`)).toBe(prune);
+		expect(existsSync(f.variant)).toBe(!prune);
+	}
+});
+
+test("FreeBSD rejects ownership obscured by an unclassified lookup directory", () => {
+	const f = optionalVariant(), owner = join(f.app, "node_modules/consumer");
+	put(join(owner, "package.json"), JSON.stringify({ name: "consumer", peerDependencies: { [f.name]: "1.0.0" } }));
+	mkdirSync(join(owner, "node_modules", f.name), { recursive: true });
+	expect(() => prunePrebuilds(f.app, target("freebsd-x64"))).toThrow(/required or unclassified/);
+	expect(existsSync(join(f.variant, "index.js"))).toBe(true);
+});
+
+test("FreeBSD does not treat a scope container as an optional installed package", () => {
+	const f = fixture(), scope = join(f.app, "node_modules/@scope"), mandatory = join(scope, "must-keep/index.js");
+	put(join(f.app, "package.json"), JSON.stringify({ dependencies: { "@scope/must-keep": "1.0.0" }, optionalDependencies: { "@scope": "1.0.0" } }));
+	put(join(scope, "package.json"), JSON.stringify({ name: "@scope", os: ["linux"] }));
+	put(join(scope, "must-keep/package.json"), JSON.stringify({ name: "@scope/must-keep" }));
+	put(mandatory, "mandatory bytes\n");
+	expect(() => prunePrebuilds(f.app, target("freebsd-x64"))).toThrow(/required or unclassified/);
+	expect(readFileSync(mandatory, "utf8")).toBe("mandatory bytes\n");
+});

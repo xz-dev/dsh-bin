@@ -11,7 +11,8 @@
 //   spec: {target, out, app, pnpm, native, identity:{id,tag,channel}, upstream:{commit,commitTime,tag?,version},
 //          run, attempt, builderCommit, slot:{commit,kitVersion}|null, index?:<path to runtime-index.json snapshot>}
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, rmSync, writeFileSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
+import { createRequire } from "node:module";
 import { binaryArch, isFreebsdElf } from "./binary-arch.mjs";
 import { writeShims } from "./shims.mjs";
 import { target as targetById } from "./targets.mjs";
@@ -52,12 +53,40 @@ export function prunePrebuilds(app, t) {
 			if (existsSync(manifest)) packages.push({ dir, meta: JSON.parse(readFileSync(manifest, "utf8")) });
 			for (const entry of readdirSync(dir, { withFileTypes: true })) if (entry.isDirectory()) collect(join(dir, entry.name));
 		};
-		collect(app);
-		const permits = (values, value) => !Array.isArray(values) || (!values.includes(`!${value}`) && (!values.some(v => !v.startsWith("!")) || values.includes(value) || values.includes("any")));
+		const appRoot = resolve(app);
+		collect(appRoot);
+		const installedName = (dir) => /(?:^|\/)node_modules\/((?:@[^/]+\/)?[^@/][^/]*)$/.exec(relative(app, dir).split(sep).join("/"))?.[1];
+		for (const { meta } of packages) for (const field of ["os", "cpu"]) {
+			if (Object.hasOwn(meta, field) && (!Array.isArray(meta[field]) || !meta[field].every(v => typeof v === "string" && v.length > 0 && v !== "!" && v.trim() === v))) {
+				throw new Error(`invalid ${field} declaration for ${t.id}: ${meta.name}`);
+			}
+		}
+		const permits = (values, value) => values === undefined || (!values.includes(`!${value}`) && (!values.some(v => !v.startsWith("!")) || values.includes(value) || values.includes("any")));
+		const pending = [];
 		for (const { dir, meta } of packages) if (!permits(meta.os, t.nodePlatform) || !permits(meta.cpu, t.arch)) {
-			const optional = packages.some(p => Object.hasOwn(p.meta.optionalDependencies ?? {}, meta.name));
-			const required = packages.some(p => Object.hasOwn(p.meta.dependencies ?? {}, meta.name) && !Object.hasOwn(p.meta.optionalDependencies ?? {}, meta.name));
-			if (!optional || required) throw new Error(`incompatible required or unclassified package for ${t.id}: ${meta.name}`);
+			const name = installedName(dir);
+			const conflict = () => new Error(`incompatible required or unclassified package for ${t.id}: ${relative(app, dir)}`);
+			if (!name || name !== meta.name) throw conflict(); // Aliases cannot authorize removal of another installed name.
+			let optional = false, required = false;
+			for (const owner of packages) {
+				if (owner.dir !== appRoot && !installedName(owner.dir)) continue;
+				const opt = Object.hasOwn(owner.meta.optionalDependencies ?? {}, name);
+				const req = (Object.hasOwn(owner.meta.dependencies ?? {}, name) && !opt) || (Object.hasOwn(owner.meta.peerDependencies ?? {}, name) && owner.meta.peerDependenciesMeta?.[name]?.optional !== true);
+				if (!opt && !req) continue;
+				// Node's lookup paths identify the concrete instance, even when another version is hoisted.
+				const paths = createRequire(join(owner.dir, "package.json")).resolve.paths(name) ?? [];
+				const instance = paths.map(base => join(base, name)).find(path => existsSync(path));
+				if (!packages.some(p => p.dir === instance && p.meta.name === name)) throw conflict();
+				if (instance !== dir) continue;
+				if (opt && (typeof owner.meta.optionalDependencies[name] !== "string" || !owner.meta.optionalDependencies[name].trim() || owner.meta.optionalDependencies[name].startsWith("npm:"))) throw conflict();
+				optional ||= opt;
+				required ||= req;
+			}
+			if (!optional || required) throw conflict();
+			pending.push(dir);
+		}
+		// Validate every candidate before removing any bytes from the staged tree.
+		for (const dir of pending) {
 			rmSync(dir, { recursive: true, force: true });
 			removed.push(relative(app, dir));
 		}
