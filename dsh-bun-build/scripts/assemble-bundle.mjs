@@ -10,7 +10,9 @@
 // usage: bun scripts/assemble-bundle.mjs <spec.json>
 //   spec: {target, out, app, pnpm, native, identity:{id,tag,channel}, upstream:{commit,commitTime,tag?,version},
 //          run, attempt, builderCommit, slot:{commit,kitVersion}|null, index?:<path to runtime-index.json snapshot>,
-//          system?:{directory:<FreeBSD component>, expected:<independently trusted build receipt>}}
+//          system?:{directory:<FreeBSD component>, expected:<independently trusted build receipt>},
+//          search?:{directory:<FreeBSD ripgrep>, expected:<independently trusted build receipt>}}
+// FreeBSD app input is raw (already transformed input must pass the same idempotent transform checks).
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { createRequire } from "node:module";
@@ -19,7 +21,9 @@ import { writeShims } from "./shims.mjs";
 import { target as targetById } from "./targets.mjs";
 import { warmTranspilerCache } from "./warm-transpiler-cache.mjs";
 import { fixedCli } from "./completion.mjs";
-import { installFreebsdSystem } from "./freebsd-system.mjs";
+import { installFreebsdSystem, verifyFreebsdSystemPackage } from "./freebsd-system.mjs";
+import { stageFreebsdSearch, verifyFreebsdSearchPackage } from "./freebsd-search.mjs";
+import { transformApp } from "./transform-app.mjs";
 
 /** Launch protocol between the manager and this runtime (`DSH_MANAGER_LAUNCH`, runtime/launch.ts). */
 export const LAUNCH_PROTOCOL = 2;
@@ -161,12 +165,19 @@ export function assembleBundle(spec) {
 	const t = targetById(spec.target);
 	const { id, tag, channel } = spec.identity;
 	const bundle = spec.out;
+	if (t.os === "freebsd") {
+		verifyFreebsdSystemPackage(spec.system?.directory, t.arch, spec.system?.expected);
+		verifyFreebsdSearchPackage(spec.search?.directory, t.arch, spec.search?.expected);
+	}
 	if (existsSync(bundle)) throw new Error(`output exists: ${bundle}`);
 	mkdirSync(bundle, { recursive: true });
 
 	cpSync(spec.native, join(bundle, t.executable));
 	chmodSync(join(bundle, t.executable), 0o755);
-	cpSync(spec.app, join(bundle, "app"), { recursive: true, dereference: true });
+	if (t.os === "freebsd") {
+		stageFreebsdSearch(spec.app, join(bundle, "app"), t.arch, spec.search.directory, spec.search.expected);
+		transformApp(join(bundle, "app"));
+	} else cpSync(spec.app, join(bundle, "app"), { recursive: true, dereference: true });
 	writeFileSync(join(bundle, "completion.json"), `${JSON.stringify(fixedCli(join(bundle, "app")), null, 2)}\n`);
 	if (existsSync(join(bundle, "app/node_modules/@deepseek-ai/libreoffice-kit"))) throw new Error("app tree still contains the office kit; run split-addon first");
 	cpSync(join(spec.pnpm, "dist"), join(bundle, "pnpm", "dist"), { recursive: true, dereference: true });

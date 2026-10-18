@@ -4,6 +4,7 @@
 // usage: bun scripts/build-target.mjs <target-id> <channel> <upstream-ref|commit> <out-dir>
 //          --run N --attempt N --index index.json [--work dir] [--git-dir upstream.git]
 //          FreeBSD: --system component-dir --system-receipt independently-authenticated-receipt.json
+//                   --search component-dir --search-receipt independently-authenticated-receipt.json
 //   Writes <out>/<tag>-<asset>, <out>/<tag>.<target>.json (release manifest) and, for the linux-x64-modern
 //   builder, <out>/addon-tree/ (input of build-addon.mjs).
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -17,15 +18,19 @@ import { splitOfficeAddon } from "./split-addon.mjs";
 import { BUN_VERSION, hostTargetId, target } from "./targets.mjs";
 import { transformApp } from "./transform-app.mjs";
 import { verifyFreebsdSystemPackage } from "./freebsd-system.mjs";
+import { verifyFreebsdSearchPackage } from "./freebsd-search.mjs";
 
-export async function buildTarget({ targetId, channel, ref, expectedCommit, out, run, attempt, index, work, gitDir, system }) {
+export async function buildTarget({ targetId, channel, ref, expectedCommit, out, run, attempt, index, work, gitDir, system, search }) {
 	const t = target(targetId);
 	// The compiled dsh-native embeds the building Bun, so a mismatched runner or musl image ships another Bun.
 	if (process.versions.bun !== BUN_VERSION) throw new Error(`build with Bun ${BUN_VERSION} (this is Bun ${process.versions.bun})`);
 	if (hostTargetId().replace(/-(baseline|modern)$/, "") !== t.id.replace(/-(baseline|modern)$/, "")) {
 		throw new Error(`build ${t.id} on its native runner (this host is ${hostTargetId()})`);
 	}
-	if (t.os === "freebsd") verifyFreebsdSystemPackage(system?.directory, t.arch, system?.expected);
+	if (t.os === "freebsd") {
+		verifyFreebsdSystemPackage(system?.directory, t.arch, system?.expected);
+		verifyFreebsdSearchPackage(search?.directory, t.arch, search?.expected);
+	}
 	const upstream = /^[0-9a-f]{40}$/.test(ref) ? { commit: ref } : resolveRef(ref);
 	if (expectedCommit && upstream.commit !== expectedCommit) throw new Error(`upstream ref moved: ${upstream.commit} != frozen ${expectedCommit}`);
 	if (channel === "release" && !upstream.tag) throw new Error("the release channel builds a dsh-v* tag");
@@ -38,10 +43,10 @@ export async function buildTarget({ targetId, channel, ref, expectedCommit, out,
 	await fetchPnpm(src, t.id, pnpmDir);
 	const app = join(work, "app");
 	buildApp(src, pnpmDir, app);
-	transformApp(app);
+	if (t.os !== "freebsd") transformApp(app);
 	const addon = join(work, "addon-office");
 	splitOfficeAddon(app, addon);
-	const r = localBuild({ out, channel, run, attempt, index, upstreamCommit: upstream.commit, upstreamCommitTime: commitTime(src, upstream.commit), upstreamVersion: upstreamVersion ?? readVersion(src), slot, work, system, targetId: t.id, warm: true });
+	const r = localBuild({ out, channel, run, attempt, index, upstreamCommit: upstream.commit, upstreamCommitTime: commitTime(src, upstream.commit), upstreamVersion: upstreamVersion ?? readVersion(src), slot, work, system, search, targetId: t.id, warm: true });
 	rmSync(r.root, { recursive: true, force: true });
 	// The per-target release manifest, named per target: aggregate merges all 12 artifacts into one dir.
 	writeFileSync(join(out, `${r.tag}.${t.id}.json`), `${JSON.stringify(r.manifest, null, 2)}\n`);
@@ -67,6 +72,7 @@ if (import.meta.main) {
 		work: resolve(opt("--work") ?? "work"),
 		gitDir: resolve(opt("--git-dir") ?? "work/upstream.git"),
 		system: opt("--system") && opt("--system-receipt") ? { directory: resolve(opt("--system")), expected: JSON.parse(readFileSync(opt("--system-receipt"), "utf8")) } : undefined,
+		search: opt("--search") && opt("--search-receipt") ? { directory: resolve(opt("--search")), expected: JSON.parse(readFileSync(opt("--search-receipt"), "utf8")) } : undefined,
 	});
 	console.log(JSON.stringify({ tag: r.tag, asset: r.asset, slot: r.slot }));
 }
