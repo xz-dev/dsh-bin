@@ -4,18 +4,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { adaptFreebsdSystemLoader, installFreebsdSystem, SYSTEM_SOURCE, verifyFreebsdSystemPackage } from "../../scripts/freebsd-system.mjs";
+import { localBuild } from "../../scripts/local-build.mjs";
 
-const loader = `import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
-export async function tryLockExclusive(fd) {
-	const { platform, arch } = process;
-	if (platform !== 'linux' && platform !== 'darwin') {
-		throw Object.assign(new Error('unsupported'), { code: 'ERR_FLOCK_UNSUPPORTED_PLATFORM' });
-	}
-	const require = createRequire(import.meta.url);
-	const manifest = require.resolve(\`@deepseek-ai/node-addon-system-\${platform}-\${arch}/package.json\`);
-	return require(join(dirname(manifest), 'bin', 'system.node')).tryLock(fd);
-}`;
+const loader = readFileSync(join(import.meta.dir, "../fixtures/system-flock.js"), "utf8");
 
 test("FreeBSD loader remains lazy, selects only matching package, rejects unsupported OS", () => {
 	const dir = mkdtempSync(join(tmpdir(), "system-loader-"));
@@ -40,7 +31,7 @@ test("FreeBSD loader remains lazy, selects only matching package, rejects unsupp
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-// Header-only package fixture exercises packaging gates, never native acceptance.
+// Deliberately invalid ELF with convincing strings/claims must never become a positive fixture.
 function packageFixture(dir: string) {
 	const bytes = Buffer.alloc(256);
 	bytes.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 9]);
@@ -52,25 +43,20 @@ function packageFixture(dir: string) {
 	write("package.json", { name: "@deepseek-ai/node-addon-system-freebsd-x64", version: "0.1.2", os: ["freebsd"], cpu: ["x64"] });
 	write("prebuilds.json", { platform: "freebsd-x64", binaries: [{ tool: "flock", kind: "node-api", napi: 8, path: "bin/system.node" }] });
 	write("provenance.json", { source: SYSTEM_SOURCE, napi: 8, dependencies: ["libc.so.7"], sha256: createHash("sha256").update(bytes).digest("hex") });
-	return bytes;
+	return { platform: "freebsd-x64", sha256: createHash("sha256").update(bytes).digest("hex"), provenanceSha256: createHash("sha256").update(readFileSync(join(dir, "provenance.json"))).digest("hex") };
 }
 
-test("FreeBSD package rejects foreign same-CPU ELF, wrong arch and changed payload", () => {
+test("header-only fake ELF rejects even when caller pins its claimed identity", () => {
 	const dir = mkdtempSync(join(tmpdir(), "system-package-"));
 	try {
-		const bytes = packageFixture(dir);
-		expect(verifyFreebsdSystemPackage(dir, "x64").napi).toBe(8);
-		expect(() => verifyFreebsdSystemPackage(dir, "arm64")).toThrow(/identity/);
-		bytes[7] = 0; // Linux/System V, same CPU, no FreeBSD ABI note.
-		writeFileSync(join(dir, "bin/system.node"), bytes);
-		expect(() => verifyFreebsdSystemPackage(dir, "x64")).toThrow(/FreeBSD shared ELF/);
-		bytes[7] = 9; bytes[255] = 1;
-		writeFileSync(join(dir, "bin/system.node"), bytes);
-		expect(() => verifyFreebsdSystemPackage(dir, "x64")).toThrow(/hash/);
+		const expected = packageFixture(dir);
+		expect(() => verifyFreebsdSystemPackage(dir, "x64")).toThrow(/trusted.*receipt/);
+		expect(() => verifyFreebsdSystemPackage(dir, "x64", expected)).toThrow(/ELF/);
+		expect(() => verifyFreebsdSystemPackage(dir, "arm64", expected)).toThrow(/receipt/);
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("assembly requires verified component; adapts copied entry and records exact loader hashes", () => {
+test("install fails before loader mutation without authenticated component; unrelated loader rejects", () => {
 	const dir = mkdtempSync(join(tmpdir(), "system-install-"));
 	try {
 		const app = join(dir, "app"), entry = join(app, "node_modules/@deepseek-ai/node-addon-system");
@@ -78,15 +64,25 @@ test("assembly requires verified component; adapts copied entry and records exac
 		writeFileSync(join(entry, "package.json"), JSON.stringify({ version: "0.1.2" }));
 		writeFileSync(join(entry, "lib/flock.js"), loader);
 		expect(() => installFreebsdSystem(app, "x64")).toThrow(/component required/);
-		expect(readFileSync(join(entry, "lib/flock.js"), "utf8")).toBe(loader);
 		const component = join(dir, "component"); mkdirSync(component);
-		packageFixture(component);
-		installFreebsdSystem(app, "x64", component);
-		expect(readFileSync(join(entry, "lib/flock.js"), "utf8")).toContain("platform !== 'freebsd'");
-		const installed = join(app, "node_modules/@deepseek-ai/node-addon-system-freebsd-x64");
-		expect(verifyFreebsdSystemPackage(installed, "x64").napi).toBe(8);
-		const provenance = JSON.parse(readFileSync(join(installed, "loader-provenance.json"), "utf8"));
-		expect(provenance.before).toBe(createHash("sha256").update(loader).digest("hex"));
-		expect(provenance.after).not.toBe(provenance.before);
+		const expected = packageFixture(component);
+		expect(() => installFreebsdSystem(app, "x64", { directory: component })).toThrow(/trusted.*receipt/);
+		expect(() => installFreebsdSystem(app, "x64", { directory: component, expected })).toThrow(/ELF/);
+		expect(readFileSync(join(entry, "lib/flock.js"), "utf8")).toBe(loader);
+		expect(() => adaptFreebsdSystemLoader(loader.replace("loadBinding().tryLock(fd, resolve)", "resolve(0)"))).toThrow(/source changed/);
 	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("local FreeBSD build requires independent component receipt before filesystem/compile work", () => {
+	for (const targetId of ["freebsd-x64", "freebsd-arm64"]) {
+		expect(() => localBuild({ targetId })).toThrow(/trusted.*receipt/);
+		expect(() => localBuild({ targetId, system: { directory: "/missing/component" } })).toThrow(/trusted.*receipt/);
+	}
+});
+
+test("native-runner source build refuses missing component before upstream work", () => {
+	const script = `Object.defineProperty(process, 'platform', {value:'freebsd'}); Object.defineProperty(process, 'arch', {value:'x64'}); const {buildTarget} = await import(${JSON.stringify(join(import.meta.dir, "../../scripts/build-target.mjs"))}); try { await buildTarget({targetId:'freebsd-x64'}); } catch (error) { console.log(error.message); }`;
+	const result = Bun.spawnSync([process.execPath, "-e", script]);
+	expect(result.exitCode).toBe(0);
+	expect(result.stdout.toString()).toContain("independently trusted FreeBSD system receipt required");
 });

@@ -10,7 +10,7 @@
 // usage: bun scripts/assemble-bundle.mjs <spec.json>
 //   spec: {target, out, app, pnpm, native, identity:{id,tag,channel}, upstream:{commit,commitTime,tag?,version},
 //          run, attempt, builderCommit, slot:{commit,kitVersion}|null, index?:<path to runtime-index.json snapshot>,
-//          system?:<verified FreeBSD system component directory>}
+//          system?:{directory:<FreeBSD component>, expected:<independently trusted build receipt>}}
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { createRequire } from "node:module";
