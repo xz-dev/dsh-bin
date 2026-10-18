@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SEARCH_SOURCE, SEARCH_BUILD_INPUTS, buildFreebsdSearch, stageFreebsdSearch, verifyFreebsdSearchPackage } from "../../scripts/freebsd-search.mjs";
@@ -10,8 +10,9 @@ function fixture(directory: string, bytes: Buffer) {
   mkdirSync(join(directory, "bin"));
   writeFileSync(join(directory, "bin/rg"), bytes);
   writeFileSync(join(directory, "LICENSE"), "test fixture\n");
-  writeFileSync(join(directory, "package.json"), JSON.stringify({ name: "@vscode/ripgrep-freebsd-x64", version: "1.18.0", os: ["freebsd"], cpu: ["x64"], license: "MIT", files: ["bin/", "build-receipt.json", "LICENSE"] }));
-  const receipt = JSON.stringify({ source: SEARCH_SOURCE, inputs: SEARCH_BUILD_INPUTS, platform: "freebsd-x64", sha256: hash(bytes), compiler: "/usr/bin/cc", freebsdVersion: "15.1-RELEASE", dependencies: ["libc.so.7", "libgcc_s.so.1", "libthr.so.3"] });
+  writeFileSync(join(directory, "THIRD_PARTY_NOTICES"), "fixture notices\n");
+  writeFileSync(join(directory, "package.json"), JSON.stringify({ name: "@vscode/ripgrep-freebsd-x64", version: "1.18.0", os: ["freebsd"], cpu: ["x64"], license: "MIT", files: ["bin/", "build-receipt.json", "LICENSE", "THIRD_PARTY_NOTICES"] }));
+  const receipt = JSON.stringify({ licenseSha256: hash("test fixture\n"), notices: { sha256: hash("fixture notices\n"), inventory: [], inventorySha256: hash("[]") }, source: SEARCH_SOURCE, inputs: SEARCH_BUILD_INPUTS, platform: "freebsd-x64", sha256: hash(bytes), compiler: "/usr/bin/cc", freebsdVersion: "15.1-RELEASE", dependencies: ["libc.so.7", "libgcc_s.so.1", "libthr.so.3"] });
   writeFileSync(join(directory, "build-receipt.json"), receipt);
   return { platform: "freebsd-x64", sha256: hash(bytes), receiptSha256: hash(receipt) };
 }
@@ -55,6 +56,36 @@ test("search refuses resolver redirects and symlinked payloads before ELF consum
     symlinkSync("../LICENSE", join(directory, "bin/rg"));
     expect(() => verifyFreebsdSearchPackage(directory, "x64", expected)).toThrow(/regular files/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+for (const linked of ["node_modules", "node_modules/@vscode", "node_modules/@vscode/ripgrep", "node_modules/@vscode/ripgrep/package.json", "node_modules/@vscode/ripgrep-freebsd-x64"]) {
+  test(`staging refuses linked write destination ${linked} before output creation`, () => {
+    const root = mkdtempSync(join(tmpdir(), "search-linked-stage-"));
+    try {
+      const source = join(root, "source"), external = join(root, "external"), output = join(root, "output");
+      mkdirSync(source); mkdirSync(external);
+      const sentinel = join(external, "sentinel"); writeFileSync(sentinel, "external unchanged");
+      const target = join(source, linked);
+      mkdirSync(join(target, ".."), { recursive: true });
+      if (linked.endsWith("package.json")) symlinkSync(sentinel, target);
+      else symlinkSync(external, target);
+      expect(() => stageFreebsdSearch(source, output, "x64", "/missing", undefined)).toThrow(/linked|reserved/);
+      expect(existsSync(output)).toBe(false);
+      expect(readFileSync(sentinel, "utf8")).toBe("external unchanged");
+      expect(existsSync(join(external, "bin"))).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+}
+
+test("staging refuses a dangling reserved component destination before output creation", () => {
+  const root = mkdtempSync(join(tmpdir(), "search-dangling-stage-"));
+  try {
+    const source = join(root, "source"), output = join(root, "output");
+    mkdirSync(join(source, "node_modules/@vscode"), { recursive: true });
+    symlinkSync(join(root, "absent"), join(source, "node_modules/@vscode/ripgrep-freebsd-x64"));
+    expect(() => stageFreebsdSearch(source, output, "x64", "/missing", undefined)).toThrow(/reserved/);
+    expect(existsSync(output)).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("search freezes real upstream version and rejects unsupported native build hosts", () => {
