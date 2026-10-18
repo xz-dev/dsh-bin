@@ -61,6 +61,12 @@ export function prunePrebuilds(app, t) {
 				throw new Error(`invalid ${field} declaration for ${t.id}: ${meta.name}`);
 			}
 		}
+		for (const { meta } of packages) {
+			const optional = meta.optionalDependencies;
+			if (Object.hasOwn(meta, "optionalDependencies") && (optional === null || typeof optional !== "object" || Array.isArray(optional))) {
+				throw new Error(`invalid optionalDependencies declaration for ${t.id}: ${meta.name}`);
+			}
+		}
 		const permits = (values, value) => values === undefined || (!values.includes(`!${value}`) && (!values.some(v => !v.startsWith("!")) || values.includes(value) || values.includes("any")));
 		const pending = [];
 		for (const { dir, meta } of packages) if (!permits(meta.os, t.nodePlatform) || !permits(meta.cpu, t.arch)) {

@@ -261,6 +261,18 @@ test("FreeBSD rejects aliased incompatible instances without deleting mandatory 
 	expect(existsSync(f.variant)).toBe(true);
 });
 
+test("FreeBSD rejects malformed optional dependency containers before deleting required bytes", () => {
+	for (const optionalDependencies of ["x", ["1.0.0"], null, true, 1]) {
+		const f = fixture(), name = "0", variant = join(f.app, "node_modules", name), file = join(variant, "index.js");
+		put(join(f.app, "package.json"), JSON.stringify({ dependencies: { [name]: "1.0.0" }, optionalDependencies }));
+		put(join(variant, "package.json"), JSON.stringify({ name, os: ["linux"] }));
+		put(file, "module.exports = 'mandatory functionality';\n");
+		const before = readFileSync(file);
+		expect(() => prunePrebuilds(f.app, target("freebsd-x64"))).toThrow(/invalid optionalDependencies/);
+		expect(readFileSync(file)).toEqual(before);
+	}
+});
+
 test("FreeBSD required peers prevent deletion; explicitly optional peers do not", () => {
 	for (const optional of [false, true]) {
 		const f = optionalVariant();
